@@ -1,0 +1,22 @@
+@import 'bootstrap/dist/css/bootstrap.min.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #f8f9fa;
+}
+
+.app-sidebar {
+  min-height: 100vh;
+}
+
+.app-sidebar .nav-link {
+  color: #212529;
+}
+
+.app-sidebar .nav-link.active,
+.app-sidebar .nav-link:hover {
+  background-color: #e9ecef;
+  border-radius: 0.375rem;
+}
