@@ -1,110 +1,113 @@
 @extends('layouts.app')
 
 @section('content')
-    <div class="container-fluid">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <h1 class="h4 mb-0">Danh sách máy</h1>
-            <div class="d-flex gap-2">
-                <a class="btn btn-outline-secondary" href="{{ route('machines.import.form') }}">Import Excel</a>
-                <a class="btn btn-outline-success" href="{{ route('machines.export', request()->query()) }}">Xuất Excel</a>
-                <a class="btn btn-primary" href="{{ route('machines.create') }}">Thêm máy</a>
-            </div>
+<div class="page-shell">
+    <div class="page-header">
+        <div>
+            <div class="page-eyebrow">Quản lý thiết bị</div>
+            <h1 class="page-title">Danh sách máy</h1>
+            <p class="page-subtitle">Theo dõi trạng thái, dự án, tài xế và hồ sơ của toàn bộ máy thiết bị.</p>
         </div>
+        <div class="page-actions">
+            <a class="btn btn-outline-secondary" href="{{ route('machines.import.form') }}">Import Excel</a>
+            <a class="btn btn-outline-success" href="{{ route('machines.export', request()->query()) }}">Xuất Excel</a>
+            <a class="btn btn-primary" href="{{ route('machines.create') }}">+ Thêm máy</a>
+        </div>
+    </div>
 
-        @if (session('success'))
-            <div class="alert alert-success">{{ session('success') }}</div>
-        @endif
+    @if (session('success'))
+        <div class="alert alert-success">{{ session('success') }}</div>
+    @endif
 
-        @if ($errors->any())
-            <div class="alert alert-danger">
-                <ul class="mb-0">
-                    @foreach ($errors->all() as $error)
-                        <li>{{ $error }}</li>
-                    @endforeach
-                </ul>
-            </div>
-        @endif
+    @if ($errors->any())
+        <div class="alert alert-danger">
+            <ul class="mb-0">
+                @foreach ($errors->all() as $error)
+                    <li>{{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
 
-        @php
-            use Carbon\Carbon;
+    @php
+        use Carbon\Carbon;
+        $statusClassMap = [
+            'WAIT_HANDOVER' => 'status-wait',
+            'HANDED_OVER' => 'status-handover',
+            'ACTIVE' => 'status-active',
+            'RETURNED' => 'status-returned',
+        ];
+    @endphp
 
-            $badgeMap = [
-                'WAIT_HANDOVER' => 'bg-secondary',
-                'HANDED_OVER' => 'bg-primary',
-                'ACTIVE' => 'bg-success',
-                'RETURNED' => 'bg-danger',
-            ];
-        @endphp
-
-        <form method="GET" class="row g-2 mb-3">
-            <div class="col-12 col-md-3">
+    <div class="app-card filter-card">
+        <div class="filter-heading">
+            <svg viewBox="0 0 24 24"><path d="M4 5h16l-6 7v5l-4 2v-7L4 5Z"/></svg>
+            Bộ lọc nhanh
+        </div>
+        <form method="GET">
+            <div class="filter-grid">
                 <input type="text" name="q" class="form-control" placeholder="Tìm theo mã máy" value="{{ $search }}">
-            </div>
-            <div class="col-12 col-md-2">
+
                 <select class="form-select" name="company">
-                    <option value="">-- Company --</option>
+                    <option value="">Tất cả công ty</option>
                     <option value="VINCONS" @selected(($filters['company'] ?? '') === 'VINCONS')>VINCONS</option>
                     <option value="VINALPHA" @selected(($filters['company'] ?? '') === 'VINALPHA')>VINALPHA</option>
                 </select>
-            </div>
-            <div class="col-12 col-md-2">
+
                 <select class="form-select" name="status">
-                    <option value="">-- Trạng thái --</option>
+                    <option value="">Tất cả trạng thái</option>
                     @foreach (['WAIT_HANDOVER', 'HANDED_OVER', 'ACTIVE', 'RETURNED'] as $status)
                         <option value="{{ $status }}" @selected(($filters['status'] ?? '') === $status)>{{ $status }}</option>
                     @endforeach
                 </select>
-            </div>
-            <div class="col-12 col-md-2">
+
                 <select class="form-select" name="project_id">
-                    <option value="">-- Dự án --</option>
+                    <option value="">Tất cả dự án</option>
                     @foreach ($projects as $project)
                         <option value="{{ $project->id }}" @selected((string) ($filters['project_id'] ?? '') === (string) $project->id)>
                             {{ $project->name }}
                         </option>
                     @endforeach
                 </select>
-            </div>
-            <div class="col-12 col-md-2">
+
                 <select class="form-select" name="command_center_id">
-                    <option value="">-- BCH --</option>
+                    <option value="">Tất cả BCH</option>
                     @foreach ($commandCenters as $commandCenter)
                         <option value="{{ $commandCenter->id }}" @selected((string) ($filters['command_center_id'] ?? '') === (string) $commandCenter->id)>
                             {{ $commandCenter->name }}
                         </option>
                     @endforeach
                 </select>
-            </div>
-            <div class="col-12 col-md-2">
+
                 <select class="form-select" name="return_app_status">
-                    <option value="">-- App trả --</option>
+                    <option value="">Tất cả trạng thái app trả</option>
                     <option value="pending" @selected(($filters['return_app_status'] ?? '') === 'pending')>Chưa đẩy app trả</option>
                 </select>
             </div>
-            <div class="col-12 col-md-1 d-grid">
-                <button class="btn btn-outline-primary" type="submit">Lọc</button>
-            </div>
-            <div class="col-12 col-md-1 d-grid">
-                <a class="btn btn-outline-secondary" href="{{ route('machines.index') }}">Xóa lọc</a>
+            <div class="filter-actions">
+                <button class="btn btn-primary px-4" type="submit">Áp dụng bộ lọc</button>
+                <a class="btn btn-outline-secondary px-4" href="{{ route('machines.index') }}">Xóa bộ lọc</a>
             </div>
         </form>
+    </div>
 
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <div class="text-muted">Đã chọn: <span id="selectedCount">0</span> máy</div>
-            <button class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#batchActionModal" id="openBatchModal" disabled>
-                Hành động hàng loạt
-            </button>
+    <div class="selection-toolbar">
+        <div class="selection-copy">
+            <span class="selection-count" id="selectedCount">0</span>
+            <span>máy đang được chọn</span>
         </div>
+        <button class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#batchActionModal" id="openBatchModal" disabled>
+            Hành động hàng loạt
+        </button>
+    </div>
 
-        <div class="table-responsive">
-            <table class="table table-bordered table-hover align-middle">
-                <thead class="table-light">
+    <div class="app-card table-card">
+        <div class="table-scroll">
+            <table class="table-modern">
+                <thead>
                     <tr>
-                        <th style="width: 40px;">
-                            <input type="checkbox" id="selectAll">
-                        </th>
+                        <th style="width: 44px;"><input class="form-check-input" type="checkbox" id="selectAll"></th>
                         <th>Mã máy</th>
-
                         <th>Trạng thái</th>
                         <th>Công ty</th>
                         <th>Số khung</th>
@@ -114,9 +117,9 @@
                         <th>Dự án hiện tại</th>
                         <th>BCH</th>
                         <th>Tài xế</th>
-                        <th>Ngày Vào</th>
-                        <th>Ngày Ra</th>
-                        <th class="text-end">Thao tác</th>
+                        <th>Ngày vào</th>
+                        <th>Ngày ra</th>
+                        <th class="text-end sticky-action">Thao tác</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -127,53 +130,44 @@
                             $documentBadges = [];
 
                             foreach ($machine->documents as $document) {
-                                if (!$document->expiry_date) {
-                                    continue;
-                                }
-
+                                if (!$document->expiry_date) continue;
                                 $expiryDate = Carbon::parse($document->expiry_date)->startOfDay();
-
                                 $daysLeft = $today->diffInDays($expiryDate, false);
 
                                 if ($daysLeft < 0) {
                                     $documentBadges[$document->doc_type . '_expired'] = [
-                                        'class' => 'bg-danger',
+                                        'class' => 'notice-danger',
                                         'text' => $document->doc_type . ' hết hạn',
                                     ];
                                 } elseif ($daysLeft <= 30) {
                                     $documentBadges[$document->doc_type . '_soon'] = [
-                                        'class' => 'bg-warning text-dark',
+                                        'class' => 'notice-warning',
                                         'text' => $document->doc_type . ' sắp hết hạn',
                                     ];
                                 }
                             }
                         @endphp
                         <tr>
+                            <td><input class="form-check-input machine-checkbox" type="checkbox" value="{{ $machine->id }}" data-asset-code="{{ $machine->asset_code }}"></td>
+                            <td class="machine-code">{{ $machine->asset_code }}</td>
                             <td>
-                                <input class="machine-checkbox" type="checkbox" value="{{ $machine->id }}" data-asset-code="{{ $machine->asset_code }}">
-                            </td>
-                            <td>{{ $machine->asset_code }}</td>
-                            
-                            <td>
-                                <div class="d-flex flex-column gap-1">
-                                    <span class="badge {{ $badgeMap[$machine->status] ?? 'bg-secondary' }}">
-                                        {{ $machine->status }}
-                                    </span>
+                                <div class="status-stack">
+                                    <span class="status-badge {{ $statusClassMap[$machine->status] ?? 'status-wait' }}">{{ $machine->status }}</span>
                                     @if ($machine->has_missing_handover_proof)
-                                        <span class="badge bg-danger">Thiếu biên bản bàn giao</span>
+                                        <span class="notice-badge notice-danger">Thiếu biên bản bàn giao</span>
                                     @endif
                                     @if ($machine->status === 'RETURNED' && !$machine->returned_to_app)
-                                        <span class="badge bg-danger">Chưa đẩy app trả</span>
+                                        <span class="notice-badge notice-danger">Chưa đẩy app trả</span>
                                     @endif
                                     @foreach ($documentBadges as $documentBadge)
-                                        <span class="badge {{ $documentBadge['class'] }}">{{ $documentBadge['text'] }}</span>
+                                        <span class="notice-badge {{ $documentBadge['class'] }}">{{ $documentBadge['text'] }}</span>
                                     @endforeach
                                 </div>
                             </td>
                             <td>{{ $machine->company }}</td>
-                            <td>{{ $machine->chassis_no }}</td>
-                            <td>{{ $machine->engine_no }}</td>
-                            <td>{{ $machine->plate_no }}</td>
+                            <td>{{ $machine->chassis_no ?: '-' }}</td>
+                            <td>{{ $machine->engine_no ?: '-' }}</td>
+                            <td>{{ $machine->plate_no ?: '-' }}</td>
                             <td>{{ $machine->manufacture_year ?? '-' }}</td>
                             <td>{{ $currentAssignment?->project?->name ?? '-' }}</td>
                             <td>{{ $machine->currentAssignment?->commandCenter?->name ?? 'Chưa có BCH' }}</td>
@@ -181,33 +175,31 @@
                             <td>{{ $machine->latestAssignment?->time_in?->format('d/m/Y') ?? '---' }}</td>
                             <td>
                                 @if ($machine->status === 'ACTIVE')
-                                    Đang hoạt động
+                                    <span class="text-success fw-semibold">Đang hoạt động</span>
                                 @else
                                     {{ $machine->latestAssignment?->time_out?->format('d/m/Y') ?? '---' }}
                                 @endif
                             </td>
-                            <td class="text-end">
-                                <a class="btn btn-sm btn-outline-secondary" href="{{ route('machines.show', $machine) }}">Xem</a>
-                                <a class="btn btn-sm btn-outline-primary" href="{{ route('machines.edit', $machine) }}">Sửa</a>
-                                <form method="POST" action="{{ route('machines.delete', $machine) }}" class="d-inline" onsubmit="return confirm('Xoá máy này?')">
-                                    @csrf
-                                    <button class="btn btn-sm btn-outline-danger" type="submit">Xoá</button>
-                                </form>
+                            <td class="sticky-action">
+                                <div class="action-group">
+                                    <a class="btn btn-sm btn-outline-secondary" href="{{ route('machines.show', $machine) }}">Xem</a>
+                                    <a class="btn btn-sm btn-outline-primary" href="{{ route('machines.edit', $machine) }}">Sửa</a>
+                                    <form method="POST" action="{{ route('machines.delete', $machine) }}" class="d-inline" onsubmit="return confirm('Xoá máy này?')">
+                                        @csrf
+                                        <button class="btn btn-sm btn-outline-danger" type="submit">Xoá</button>
+                                    </form>
+                                </div>
                             </td>
                         </tr>
                     @empty
-                        <tr>
-                            <td colspan="14" class="text-center text-muted">Chưa có dữ liệu máy.</td>
-                        </tr>
+                        <tr><td colspan="14" class="text-center text-muted py-5">Chưa có dữ liệu máy.</td></tr>
                     @endforelse
                 </tbody>
             </table>
         </div>
-
-        <div>
-            {{ $machines->links() }}
-        </div>
+        <div class="pagination-wrap">{{ $machines->links() }}</div>
     </div>
+</div>
 
     <div class="modal fade" id="batchActionModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
