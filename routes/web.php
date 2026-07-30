@@ -42,6 +42,20 @@ Route::middleware('auth')->group(function () {
         ->name('machines.index');
     Route::get('/machines/create', [App\Http\Controllers\MachineController::class, 'create'])
         ->name('machines.create');
+
+    Route::prefix('machines/wizard')->name('machines.wizard.')->group(function () {
+    Route::get('/', [App\Http\Controllers\MachineWizardController::class, 'index'])->name('index');
+    Route::get('/step-1', [App\Http\Controllers\MachineWizardController::class, 'step1'])->name('step1');
+    Route::post('/step-1', [App\Http\Controllers\MachineWizardController::class, 'storeStep1'])->name('step1.store');
+    Route::get('/step-2', [App\Http\Controllers\MachineWizardController::class, 'step2'])->name('step2');
+    Route::post('/step-2', [App\Http\Controllers\MachineWizardController::class, 'storeStep2'])->name('step2.store');
+    Route::get('/step-3', [App\Http\Controllers\MachineWizardController::class, 'step3'])->name('step3');
+    Route::post('/step-3', [App\Http\Controllers\MachineWizardController::class, 'storeStep3'])->name('step3.store');
+    Route::get('/review', [App\Http\Controllers\MachineWizardController::class, 'review'])->name('review');
+    Route::post('/finish', [App\Http\Controllers\MachineWizardController::class, 'finish'])->name('finish');
+    Route::post('/cancel', [App\Http\Controllers\MachineWizardController::class, 'cancel'])->name('cancel');
+    });
+    
     Route::get('/machines/import', [App\Http\Controllers\MachineImportController::class, 'form'])
         ->name('machines.import.form');
     Route::post('/machines/import', [App\Http\Controllers\MachineImportController::class, 'import'])

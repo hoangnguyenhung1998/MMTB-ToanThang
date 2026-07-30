@@ -12,6 +12,7 @@
             <a class="btn btn-outline-secondary" href="{{ route('machines.import.form') }}">Import Excel</a>
             <a class="btn btn-outline-success" href="{{ route('machines.export', request()->query()) }}">Xuất Excel</a>
             <a class="btn btn-primary" href="{{ route('machines.create') }}">+ Thêm máy</a>
+            <a class="btn btn-outline-primary" href="{{ route('machines.wizard.index') }}">+ Thêm máy đầy đủ</a>
         </div>
     </div>
 
