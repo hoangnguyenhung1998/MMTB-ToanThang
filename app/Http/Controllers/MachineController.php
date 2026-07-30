@@ -118,11 +118,19 @@ class MachineController extends Controller
         $currentInfo = $this->machineService->getCurrentInfo($machine->id);
         $history = $this->machineService->getHistory($machine->id);
 
-        $proofEvents = MachineEvent::with(['fromProject', 'toProject', 'fromCommandCenter', 'toCommandCenter'])
+        $proofEvents = MachineEvent::with([
+                'fromProject',
+                'toProject',
+                'fromCommandCenter',
+                'toCommandCenter',
+            ])
             ->where('machine_id', $machine->id)
             ->whereIn('type', ['HANDOVER', 'TRANSFER', 'RETURN'])
             ->orderByDesc('occurred_at')
             ->get();
+
+        $timeline = app(\App\Services\MachineTimelineService::class)
+            ->build($machine);
 
         return view('machines.show', [
             'machine' => $machine,
@@ -131,8 +139,10 @@ class MachineController extends Controller
             'driverHistory' => $history['driver_history'],
             'events' => $history['events'],
             'proofEvents' => $proofEvents,
+            'timeline' => $timeline,
         ]);
     }
+
 
     public function edit(Machine $machine): View
     {

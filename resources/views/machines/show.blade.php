@@ -350,6 +350,245 @@
             </div>
         </section>
 
+
+        <section class="detail-section" id="machine-timeline">
+            <div class="section-heading-row timeline-heading-row">
+                <div>
+                    <div class="section-kicker">Timeline tổng hợp</div>
+                    <h2 class="section-title">Toàn bộ lịch sử thiết bị</h2>
+                    <p class="section-description">
+                        Gộp hoạt động hệ thống, nghiệp vụ vận hành, tài xế và hồ sơ theo thời gian.
+                    </p>
+                </div>
+                <div class="timeline-total">
+                    <strong id="timelineVisibleCount">{{ count($timeline) }}</strong>
+                    <span>sự kiện</span>
+                </div>
+            </div>
+
+            <div class="app-card timeline-filter-card">
+                <div class="timeline-filter-grid">
+                    <div class="timeline-filter-field timeline-search-field">
+                        <label for="timelineSearch">Tìm kiếm</label>
+                        <div class="timeline-search-wrap">
+                            <svg viewBox="0 0 24 24"><path d="m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+                            <input id="timelineSearch" class="form-control" type="search"
+                                   placeholder="Tài xế, dự án, hồ sơ, sự kiện...">
+                        </div>
+                    </div>
+
+                    <div class="timeline-filter-field">
+                        <label for="timelineType">Loại sự kiện</label>
+                        <select id="timelineType" class="form-select">
+                            <option value="">Tất cả</option>
+                            <option value="system">Hệ thống</option>
+                            <option value="status">Trạng thái</option>
+                            <option value="handover">Bàn giao</option>
+                            <option value="transfer">Điều chuyển</option>
+                            <option value="return">Trả máy</option>
+                            <option value="driver">Tài xế</option>
+                            <option value="document">Hồ sơ</option>
+                        </select>
+                    </div>
+
+                    <div class="timeline-filter-field">
+                        <label for="timelineDateFrom">Từ ngày</label>
+                        <input id="timelineDateFrom" class="form-control" type="date">
+                    </div>
+
+                    <div class="timeline-filter-field">
+                        <label for="timelineDateTo">Đến ngày</label>
+                        <input id="timelineDateTo" class="form-control" type="date">
+                    </div>
+
+                    <div class="timeline-filter-actions">
+                        <button id="timelineReset" class="btn btn-outline-secondary" type="button">Xóa lọc</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="app-card timeline-card">
+                <div id="timelineList" class="machine-timeline-list">
+                    @forelse ($timeline as $item)
+                        <article
+                            class="machine-timeline-item"
+                            data-group="{{ $item['group'] }}"
+                            data-date="{{ $item['occurred_at']->format('Y-m-d') }}"
+                            data-search="{{ Str::lower($item['search'].' '.$item['meta'].' '.$item['actor']) }}"
+                        >
+                            <div class="timeline-axis">
+                                <span class="timeline-icon timeline-{{ $item['tone'] }}">
+                                    @switch($item['icon'])
+                                        @case('handover')
+                                            <svg viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6M4 6h5v12H4"/></svg>
+                                            @break
+                                        @case('play')
+                                            <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg>
+                                            @break
+                                        @case('transfer')
+                                            <svg viewBox="0 0 24 24"><path d="M7 7h11l-3-3m3 3-3 3M17 17H6l3 3m-3-3 3-3"/></svg>
+                                            @break
+                                        @case('return')
+                                            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+                                            @break
+                                        @case('user')
+                                            <svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7 8a7 7 0 0 0-14 0"/></svg>
+                                            @break
+                                        @case('document')
+                                            <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6V3Zm3 7h6m-6 4h6m-6 4h4"/></svg>
+                                            @break
+                                        @case('plus')
+                                            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                                            @break
+                                        @default
+                                            <svg viewBox="0 0 24 24"><path d="M12 12h.01"/></svg>
+                                    @endswitch
+                                </span>
+                                @unless ($loop->last)
+                                    <span class="timeline-connector"></span>
+                                @endunless
+                            </div>
+
+                            <div class="timeline-event-card">
+                                <div class="timeline-event-top">
+                                    <div>
+                                        <div class="timeline-event-title-row">
+                                            <h3>{{ $item['title'] }}</h3>
+                                            <span class="timeline-group-badge">{{ $item['group'] }}</span>
+                                        </div>
+                                        <time datetime="{{ $item['occurred_at']->toIso8601String() }}">
+                                            {{ $item['occurred_at']->format('d/m/Y H:i') }}
+                                            <span>•</span>
+                                            {{ $item['occurred_at']->diffForHumans() }}
+                                        </time>
+                                    </div>
+                                </div>
+
+                                <p>{{ $item['description'] }}</p>
+
+                                @if ($item['meta'] || $item['actor'])
+                                    <div class="timeline-event-meta">
+                                        @if ($item['meta'])
+                                            <span>{{ $item['meta'] }}</span>
+                                        @endif
+                                        @if ($item['actor'])
+                                            <span>Người thao tác: {{ $item['actor'] }}</span>
+                                        @endif
+                                    </div>
+                                @endif
+                            </div>
+                        </article>
+                    @empty
+                        <div class="empty-state empty-state-large">Chưa có dữ liệu timeline cho thiết bị này.</div>
+                    @endforelse
+                </div>
+
+                <div id="timelineNoResult" class="empty-state empty-state-large d-none">
+                    Không có sự kiện phù hợp với bộ lọc.
+                </div>
+            </div>
+        </section>
+
+        <style>
+            .timeline-heading-row{align-items:flex-end}
+            .timeline-total{display:flex;align-items:baseline;gap:6px;padding:10px 14px;border:1px solid #dbe5f0;border-radius:12px;background:#fff}
+            .timeline-total strong{font-size:22px;color:#0f172a}
+            .timeline-total span{font-size:12px;color:#64748b}
+            .timeline-filter-card{margin-bottom:16px;padding:18px}
+            .timeline-filter-grid{display:grid;grid-template-columns:minmax(240px,1fr) 170px 155px 155px auto;gap:12px;align-items:end}
+            .timeline-filter-field label{display:block;margin-bottom:6px;color:#475569;font-size:12px;font-weight:700}
+            .timeline-search-wrap{position:relative}
+            .timeline-search-wrap svg{position:absolute;left:12px;top:50%;width:17px;height:17px;fill:none;stroke:#94a3b8;stroke-width:1.8;transform:translateY(-50%)}
+            .timeline-search-wrap input{padding-left:38px}
+            .timeline-filter-actions{display:flex;align-items:flex-end}
+            .timeline-card{padding:20px}
+            .machine-timeline-list{display:flex;flex-direction:column}
+            .machine-timeline-item{display:grid;grid-template-columns:46px minmax(0,1fr);gap:14px}
+            .timeline-axis{display:flex;flex-direction:column;align-items:center}
+            .timeline-icon{position:relative;z-index:2;display:flex;width:38px;height:38px;flex:0 0 38px;align-items:center;justify-content:center;border-radius:12px}
+            .timeline-icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+            .timeline-blue{background:#dbeafe;color:#1d4ed8}
+            .timeline-green{background:#dcfce7;color:#15803d}
+            .timeline-yellow{background:#fef3c7;color:#a16207}
+            .timeline-red{background:#fee2e2;color:#b91c1c}
+            .timeline-purple{background:#ede9fe;color:#6d28d9}
+            .timeline-orange{background:#ffedd5;color:#c2410c}
+            .timeline-connector{width:2px;min-height:72px;flex:1;background:#e2e8f0}
+            .timeline-event-card{margin-bottom:14px;padding:16px 18px;border:1px solid #e2e8f0;border-radius:14px;background:#fff;transition:.15s ease}
+            .timeline-event-card:hover{border-color:#cbd5e1;box-shadow:0 6px 18px rgba(15,23,42,.05)}
+            .timeline-event-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+            .timeline-event-title-row h3{margin:0;color:#0f172a;font-size:15px;font-weight:800}
+            .timeline-group-badge{padding:3px 8px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:10px;font-weight:800;text-transform:uppercase}
+            .timeline-event-card time{display:block;margin-top:4px;color:#94a3b8;font-size:11px}
+            .timeline-event-card p{margin:10px 0 0;color:#475569;font-size:13px;line-height:1.55}
+            .timeline-event-meta{display:flex;flex-wrap:wrap;gap:7px 18px;margin-top:10px;color:#64748b;font-size:11px}
+            .timeline-event-meta span+span{position:relative}
+            .timeline-event-meta span+span:before{content:"";position:absolute;left:-10px;top:50%;width:3px;height:3px;border-radius:50%;background:#cbd5e1;transform:translateY(-50%)}
+            @media(max-width:1100px){
+                .timeline-filter-grid{grid-template-columns:1fr 1fr}
+                .timeline-search-field{grid-column:1/-1}
+            }
+            @media(max-width:700px){
+                .timeline-heading-row{align-items:flex-start}
+                .timeline-filter-grid{grid-template-columns:1fr}
+                .timeline-search-field{grid-column:auto}
+                .timeline-total{margin-top:10px}
+            }
+        </style>
+
+        <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                const search = document.getElementById('timelineSearch');
+                const type = document.getElementById('timelineType');
+                const from = document.getElementById('timelineDateFrom');
+                const to = document.getElementById('timelineDateTo');
+                const reset = document.getElementById('timelineReset');
+                const items = Array.from(document.querySelectorAll('.machine-timeline-item'));
+                const noResult = document.getElementById('timelineNoResult');
+                const visibleCount = document.getElementById('timelineVisibleCount');
+
+                const normalize = value => (value || '')
+                    .toLocaleLowerCase('vi-VN')
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '');
+
+                function applyTimelineFilters() {
+                    const keyword = normalize(search.value.trim());
+                    let count = 0;
+
+                    items.forEach(item => {
+                        const searchable = normalize(item.dataset.search);
+                        const matchesKeyword = !keyword || searchable.includes(keyword);
+                        const matchesType = !type.value || item.dataset.group === type.value;
+                        const matchesFrom = !from.value || item.dataset.date >= from.value;
+                        const matchesTo = !to.value || item.dataset.date <= to.value;
+                        const visible = matchesKeyword && matchesType && matchesFrom && matchesTo;
+
+                        item.classList.toggle('d-none', !visible);
+
+                        if (visible) {
+                            count++;
+                        }
+                    });
+
+                    visibleCount.textContent = count;
+                    noResult.classList.toggle('d-none', count !== 0 || items.length === 0);
+                }
+
+                [search, type, from, to].forEach(element => {
+                    element.addEventListener(element === search ? 'input' : 'change', applyTimelineFilters);
+                });
+
+                reset.addEventListener('click', function () {
+                    search.value = '';
+                    type.value = '';
+                    from.value = '';
+                    to.value = '';
+                    applyTimelineFilters();
+                });
+            });
+        </script>
+
         <section class="detail-section">
             <div class="section-heading-row">
                 <div>

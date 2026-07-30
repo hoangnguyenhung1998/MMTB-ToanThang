@@ -76,6 +76,8 @@ Route::middleware('auth')->group(function () {
         ->name('machines.change-driver.form');
     Route::post('/machines/{machine}/change-driver', [App\Http\Controllers\MachineController::class, 'changeDriverSubmit'])
         ->name('machines.change-driver.submit');
+    Route::get('/machines/{machine}/timeline', [App\Http\Controllers\MachineTimelineController::class, 'index'])
+        ->name('machines.timeline');
 
     Route::post('/machines/{machine}/documents', [App\Http\Controllers\MachineDocumentController::class, 'store'])
         ->name('machine-documents.store');
