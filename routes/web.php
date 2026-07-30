@@ -173,6 +173,21 @@ Route::middleware('auth')->group(function () {
     Route::get('/activities', [App\Http\Controllers\ActivityController::class, 'index'])
     ->name('activities.index');
 
+    Route::get('/notifications', [App\Http\Controllers\NotificationController::class, 'index'])
+    ->name('notifications.index');
+
+    Route::post('/notifications/read-all', [App\Http\Controllers\NotificationController::class, 'readAll'])
+        ->name('notifications.read-all');
+
+    Route::post('/notifications/{notification}/read', [App\Http\Controllers\NotificationController::class, 'read'])
+        ->name('notifications.read');
+
+    Route::delete('/notifications/{notification}', [App\Http\Controllers\NotificationController::class, 'destroy'])
+        ->name('notifications.destroy');
+
+    Route::get('/notifications-unread-count', [App\Http\Controllers\NotificationController::class, 'unreadCount'])
+        ->name('notifications.unread-count');
+
 });
 
 require __DIR__.'/auth.php';
