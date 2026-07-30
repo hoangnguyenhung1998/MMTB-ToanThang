@@ -48,10 +48,28 @@ class ActivityObserver
         ]);
     }
 
+    public function deleting(Model $model): void
+    {
+        // Riêng Machine phải ghi log trước khi xóa để tránh lỗi Foreign Key
+        if ($model instanceof Machine) {
+            $this->write($model, 'deleted');
+        }
+    }
+
     public function deleted(Model $model): void
     {
+        // Machine đã được ghi log ở deleting()
+        if ($model instanceof Machine) {
+            return;
+        }
+
         $this->write($model, 'deleted');
     }
+
+    // public function deleted(Model $model): void
+    // {
+    //     $this->write($model, 'deleted');
+    // }
 
     private function write(Model $model, string $action, array $properties = []): void
     {
@@ -59,6 +77,13 @@ class ActivityObserver
         if ($model instanceof ActivityLog) {
             return;
         }
+
+        // Lưu thông tin nhận diện để log vẫn hiển thị được
+        // kể cả khi bản ghi gốc đã bị xóa.
+        $properties = array_merge(
+            $this->snapshotProperties($model),
+            $properties
+        );
 
         [$event, $description] = $this->resolveEvent($model, $action);
 
@@ -74,6 +99,27 @@ class ActivityObserver
             'user_agent' => request()?->userAgent(),
             'occurred_at' => now(),
         ]);
+    }
+
+    private function snapshotProperties(Model $model): array
+    {
+        if ($model instanceof Machine) {
+            return [
+                'asset_code' => $model->asset_code,
+            ];
+        }
+
+        if ($model instanceof MachineAssignment ||
+            $model instanceof MachineEvent ||
+            $model instanceof MachineDocument) {
+            $machine = Machine::query()->find($model->machine_id);
+
+            return [
+                'asset_code' => $machine?->asset_code,
+            ];
+        }
+
+        return [];
     }
 
     private function resolveMachineId(Model $model): ?int

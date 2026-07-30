@@ -11,6 +11,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\View\View;
+use App\Models\ActivityLog;
 
 class DashboardController extends Controller
 {
@@ -163,40 +164,112 @@ class DashboardController extends Controller
 
     private function recentActivities(): Collection
     {
-        if (!Schema::hasTable('machine_events')) {
-            return collect();
-        }
-
-        return DB::table('machine_events')
-            ->leftJoin('machines', 'machines.id', '=', 'machine_events.machine_id')
-            ->select([
-                'machine_events.id',
-                'machine_events.type',
-                'machine_events.occurred_at',
-                'machines.id as machine_id',
-                'machines.asset_code',
-            ])
-            ->orderByDesc('machine_events.occurred_at')
+        return ActivityLog::query()
+            ->with('machine:id,asset_code')
+            ->latest('occurred_at')
             ->limit(8)
             ->get()
-            ->map(function ($event) {
-                $meta = match ($event->type) {
-                    'HANDOVER' => ['label' => 'Bàn giao', 'tone' => 'primary', 'icon' => '↗'],
-                    'ACTIVATE' => ['label' => 'Kích hoạt', 'tone' => 'success', 'icon' => '✓'],
-                    'TRANSFER' => ['label' => 'Điều chuyển', 'tone' => 'warning', 'icon' => '⇄'],
-                    'RETURN' => ['label' => 'Trả máy', 'tone' => 'danger', 'icon' => '↙'],
-                    'ASSIGN_DRIVER' => ['label' => 'Gán tài xế', 'tone' => 'info', 'icon' => '⌁'],
-                    default => ['label' => $event->type, 'tone' => 'neutral', 'icon' => '•'],
+            ->map(function ($activity) {
+
+                $meta = match ($activity->event) {
+                    'machine.created' => [
+                        'label' => 'Tạo thiết bị',
+                        'tone' => 'success',
+                        'icon' => '+',
+                    ],
+
+                    'machine.updated' => [
+                        'label' => 'Cập nhật',
+                        'tone' => 'primary',
+                        'icon' => '✎',
+                    ],
+
+                    'machine.deleted' => [
+                        'label' => 'Xóa',
+                        'tone' => 'danger',
+                        'icon' => '🗑',
+                    ],
+
+                    'machine.handover' => [
+                        'label' => 'Bàn giao',
+                        'tone' => 'primary',
+                        'icon' => '↗',
+                    ],
+
+                    'machine.activate' => [
+                        'label' => 'Kích hoạt',
+                        'tone' => 'success',
+                        'icon' => '✓',
+                    ],
+
+                    'machine.transfer' => [
+                        'label' => 'Điều chuyển',
+                        'tone' => 'warning',
+                        'icon' => '⇄',
+                    ],
+
+                    'machine.return' => [
+                        'label' => 'Trả máy',
+                        'tone' => 'danger',
+                        'icon' => '↙',
+                    ],
+
+                    default => [
+                        'label' => $activity->description,
+                        'tone' => 'secondary',
+                        'icon' => '•',
+                    ],
                 };
 
                 return [
-                    'machine_id' => $event->machine_id,
-                    'asset_code' => $event->asset_code ?? '-',
-                    'occurred_at' => $event->occurred_at,
+                    'machine_id'  => $activity->machine_id,
+                    'asset_code'  => $activity->machine?->asset_code
+                                    ?? data_get($activity->properties, 'asset_code')
+                                    ?? '-',
+
+                    'occurred_at' => $activity->occurred_at,
+
                     ...$meta,
                 ];
             });
-    }
+}
+
+    // private function recentActivities(): Collection
+    // {
+    //     if (!Schema::hasTable('machine_events')) {
+    //         return collect();
+    //     }
+
+    //     return DB::table('machine_events')
+    //         ->leftJoin('machines', 'machines.id', '=', 'machine_events.machine_id')
+    //         ->select([
+    //             'machine_events.id',
+    //             'machine_events.type',
+    //             'machine_events.occurred_at',
+    //             'machines.id as machine_id',
+    //             'machines.asset_code',
+    //         ])
+    //         ->orderByDesc('machine_events.occurred_at')
+    //         ->limit(8)
+    //         ->get()
+    //         ->map(function ($event) {
+    //             $meta = match ($event->type) {
+    //                 'HANDOVER' => ['label' => 'Bàn giao', 'tone' => 'primary', 'icon' => '↗'],
+    //                 'ACTIVATE' => ['label' => 'Kích hoạt', 'tone' => 'success', 'icon' => '✓'],
+    //                 'TRANSFER' => ['label' => 'Điều chuyển', 'tone' => 'warning', 'icon' => '⇄'],
+    //                 'RETURN' => ['label' => 'Trả máy', 'tone' => 'danger', 'icon' => '↙'],
+    //                 'ASSIGN_DRIVER' => ['label' => 'Gán tài xế', 'tone' => 'info', 'icon' => '⌁'],
+    //                 default => ['label' => $event->type, 'tone' => 'neutral', 'icon' => '•'],
+    //             };
+
+    //             return [
+    //                 'machine_id' => $event->machine_id,
+    //                 'asset_code' => $event->asset_code ?? '-',
+    //                 'occurred_at' => $event->occurred_at,
+    //                 ...$meta,
+    //             ];
+    //         });
+    // }
 
     private function buildExpiryItems(Collection $machineItems, Collection $driverItems): Collection
     {
