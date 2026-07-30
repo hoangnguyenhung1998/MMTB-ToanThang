@@ -160,6 +160,9 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/expiries', [App\Http\Controllers\ExpiryController::class, 'index'])
         ->name('expiries.index');
+
+    Route::get('/operation-center', [App\Http\Controllers\OperationCenterController::class, 'index'])
+    ->name('operation-center.index');
 });
 
 require __DIR__.'/auth.php';

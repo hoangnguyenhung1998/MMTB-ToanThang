@@ -30,6 +30,12 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg></span>
                 <span>Dashboard</span>
             </a>
+
+            <a class="sidebar-link {{ request()->routeIs('operation-center.*') ? 'active' : '' }}" href="{{ route('operation-center.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm4 4h8M8 13h5M7 9h.01M7 13h.01M7 17h.01M8 17h8"/></svg></span>
+                <span>Trung tâm vận hành</span>
+            </a>
+
             <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>
