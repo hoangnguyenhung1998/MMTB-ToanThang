@@ -163,6 +163,13 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/operation-center', [App\Http\Controllers\OperationCenterController::class, 'index'])
     ->name('operation-center.index');
+
+    Route::get('/search', [App\Http\Controllers\GlobalSearchController::class, 'index'])
+    ->name('global-search.index');
+
+    Route::get('/search/quick', [App\Http\Controllers\GlobalSearchController::class, 'quick'])
+        ->name('global-search.quick');
+
 });
 
 require __DIR__.'/auth.php';
