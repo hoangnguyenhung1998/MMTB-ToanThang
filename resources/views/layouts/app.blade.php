@@ -34,6 +34,12 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm4 4h8M8 13h5M7 9h.01M7 13h.01M7 17h.01M8 17h8"/></svg></span>
                 <span>Trung tâm vận hành</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('activities.*') ? 'active' : '' }}" href="{{ route('activities.index') }}">
+                <span class="sidebar-icon">
+                    <svg viewBox="0 0 24 24"><path d="M12 8v5l3 2M4.93 4.93A10 10 0 1 1 2 12h3m-3-4v4h4"/></svg>
+                </span>
+                <span>Nhật ký hoạt động</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>

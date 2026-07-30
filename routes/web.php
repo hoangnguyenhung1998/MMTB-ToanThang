@@ -170,6 +170,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/search/quick', [App\Http\Controllers\GlobalSearchController::class, 'quick'])
         ->name('global-search.quick');
 
+    Route::get('/activities', [App\Http\Controllers\ActivityController::class, 'index'])
+    ->name('activities.index');
+
 });
 
 require __DIR__.'/auth.php';
