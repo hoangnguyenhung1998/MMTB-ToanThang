@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\ReconciliationPeriod;
 use App\Models\ReconciliationRow;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
 
 class ReconciliationRowController extends Controller
@@ -19,6 +20,8 @@ class ReconciliationRowController extends Controller
             $reconciliationRow->reconciliation_period_id === $reconciliationPeriod->id,
             404
         );
+
+        Gate::authorize('view', $reconciliationRow);
 
         $reconciliationRow->load([
             'period.creator:id,name',
