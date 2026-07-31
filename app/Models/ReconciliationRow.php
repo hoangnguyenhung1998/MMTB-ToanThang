@@ -13,12 +13,6 @@ class ReconciliationRow extends Model
         'work_date' => 'date',
         'reviewed_at' => 'datetime',
         'confirmed_at' => 'datetime',
-        'ocr_regular_hours' => 'decimal:2',
-        'ocr_overtime_afternoon' => 'decimal:2',
-        'ocr_overtime_evening' => 'decimal:2',
-        'confirmed_regular_hours' => 'decimal:2',
-        'confirmed_overtime_afternoon' => 'decimal:2',
-        'confirmed_overtime_evening' => 'decimal:2',
     ];
 
     public function period(): BelongsTo
@@ -26,14 +20,14 @@ class ReconciliationRow extends Model
         return $this->belongsTo(ReconciliationPeriod::class, 'reconciliation_period_id');
     }
 
-    public function dailyAssignment(): BelongsTo
-    {
-        return $this->belongsTo(MachineDailyAssignment::class, 'machine_daily_assignment_id');
-    }
-
     public function machine(): BelongsTo
     {
         return $this->belongsTo(Machine::class);
+    }
+
+    public function assignment(): BelongsTo
+    {
+        return $this->belongsTo(MachineAssignment::class, 'machine_assignment_id');
     }
 
     public function project(): BelongsTo
@@ -49,5 +43,15 @@ class ReconciliationRow extends Model
     public function driver(): BelongsTo
     {
         return $this->belongsTo(Driver::class);
+    }
+
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewed_by');
+    }
+
+    public function confirmer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'confirmed_by');
     }
 }
