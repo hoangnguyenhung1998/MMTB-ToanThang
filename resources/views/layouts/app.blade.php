@@ -44,6 +44,10 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('reconciliation-*') ? 'active' : '' }}" href="{{ route('reconciliation-periods.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v4H5V5Zm0 10h14v4H5v-4Zm2-8h4m-4 10h4m7-9 2 2 4-5m-6 12 2 2 4-5"/></svg></span>
+                <span>Đối chiếu</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('projects.*') ? 'active' : '' }}" href="{{ route('projects.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 20V8l8-4 8 4v12H4Zm4-8h8m-8 4h8"/></svg></span>
                 <span>Dự án</span>
