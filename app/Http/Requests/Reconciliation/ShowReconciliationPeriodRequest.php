@@ -19,6 +19,7 @@ class ShowReconciliationPeriodRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'q' => ['nullable', 'string', 'max:255'],
             'machine_id' => ['nullable', 'integer', 'exists:machines,id'],
             'project_id' => ['nullable', 'integer', 'exists:projects,id'],
             'command_center_id' => ['nullable', 'integer', 'exists:command_centers,id'],

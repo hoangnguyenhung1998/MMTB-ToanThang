@@ -2,22 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\ReconciliationRowsExport;
+use App\Http\Requests\Reconciliation\ConfirmReconciliationPeriodRequest;
+use App\Http\Requests\Reconciliation\DestroyReconciliationPeriodRequest;
+use App\Http\Requests\Reconciliation\ExportReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\GenerateReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\IndexReconciliationPeriodsRequest;
+use App\Http\Requests\Reconciliation\LockReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\ShowReconciliationPeriodRequest;
+use App\Http\Requests\Reconciliation\StartReviewReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\StoreReconciliationPeriodRequest;
 use App\Models\CommandCenter;
 use App\Models\Machine;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
-use App\Services\Reconciliation\ReconciliationGenerator;
+use App\Services\Reconciliation\ReconciliationCalculator;
+use App\Services\Reconciliation\ReconciliationPeriodService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
+use Maatwebsite\Excel\Facades\Excel;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Throwable;
 
 class ReconciliationPeriodController extends Controller
 {
+    public function __construct(private readonly ReconciliationPeriodService $periodService)
+    {
+    }
+
     public function index(IndexReconciliationPeriodsRequest $request): View
     {
         $filters = $request->validated();
@@ -44,13 +57,10 @@ class ReconciliationPeriodController extends Controller
 
     public function store(StoreReconciliationPeriodRequest $request): RedirectResponse
     {
-        $validated = $request->validated();
-
-        $period = ReconciliationPeriod::query()->create([
-            ...$validated,
-            'status' => 'DRAFT',
-            'created_by' => $request->user()?->id,
-        ]);
+        $period = $this->periodService->create(
+            $request->validated(),
+            $request->user()?->id
+        );
 
         return redirect()
             ->route('reconciliation-periods.show', $period)
@@ -89,6 +99,20 @@ class ReconciliationPeriodController extends Controller
             ->when(!empty($filters['work_date']), fn ($query) => $query->whereDate('work_date', $filters['work_date']))
             ->when(!empty($filters['row_status']), fn ($query) => $query->where('status', $filters['row_status']))
             ->when(!empty($filters['change_type']), fn ($query) => $query->where('change_type', $filters['change_type']))
+            ->when(!empty($filters['q']), function ($query) use ($filters) {
+                $keyword = '%'.$filters['q'].'%';
+
+                $query->where(function ($inner) use ($keyword) {
+                    $inner->where('work_location', 'like', $keyword)
+                        ->orWhere('work_content', 'like', $keyword)
+                        ->orWhere('explanation', 'like', $keyword)
+                        ->orWhere('notes', 'like', $keyword)
+                        ->orWhereHas('machine', fn ($machineQuery) => $machineQuery->where('asset_code', 'like', $keyword))
+                        ->orWhereHas('driver', fn ($driverQuery) => $driverQuery->where('name', 'like', $keyword))
+                        ->orWhereHas('project', fn ($projectQuery) => $projectQuery->where('name', 'like', $keyword))
+                        ->orWhereHas('commandCenter', fn ($centerQuery) => $centerQuery->where('name', 'like', $keyword));
+                });
+            })
             ->orderByDesc('work_date')
             ->orderBy('machine_id');
 
@@ -137,8 +161,16 @@ class ReconciliationPeriodController extends Controller
             ->pluck('change_type');
 
         $reviewedCount = $reconciliationPeriod->rows()->whereNotNull('reviewed_at')->count();
-        $confirmedCount = $reconciliationPeriod->rows()->whereNotNull('confirmed_at')->count();
+        $confirmedCount = $reconciliationPeriod->rows()->where('status', 'CONFIRMED')->count();
         $changedCount = $reconciliationPeriod->rows()->whereNotNull('change_type')->count();
+        $rejectedCount = $reconciliationPeriod->rows()->where('status', 'REJECTED')->count();
+        $draftCount = $reconciliationPeriod->rows()->where('status', 'DRAFT')->count();
+        $totalRowsForConfirmation = $reconciliationPeriod->rows()->count();
+        $exportable = in_array($reconciliationPeriod->status, ['CONFIRMED', 'EXPORTED'], true);
+        $canConfirmPeriod = $reconciliationPeriod->status === 'REVIEWING'
+            && $totalRowsForConfirmation > 0
+            && $confirmedCount === $totalRowsForConfirmation
+            && $rejectedCount === 0;
 
         return view('reconciliation.periods.show', compact(
             'reconciliationPeriod',
@@ -152,17 +184,20 @@ class ReconciliationPeriodController extends Controller
             'changeTypes',
             'reviewedCount',
             'confirmedCount',
-            'changedCount'
+            'changedCount',
+            'rejectedCount',
+            'draftCount',
+            'exportable',
+            'canConfirmPeriod'
         ));
     }
 
     public function generate(
         GenerateReconciliationPeriodRequest $request,
-        ReconciliationPeriod $reconciliationPeriod,
-        ReconciliationGenerator $generator
+        ReconciliationPeriod $reconciliationPeriod
     ): RedirectResponse {
         try {
-            $generated = $generator->generate($reconciliationPeriod);
+            $generated = $this->periodService->generate($reconciliationPeriod);
 
             return redirect()
                 ->route('reconciliation-periods.show', $generated)
@@ -172,5 +207,86 @@ class ReconciliationPeriodController extends Controller
 
             return back()->with('error', $exception->getMessage());
         }
+    }
+
+    public function startReview(
+        StartReviewReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod
+    ): RedirectResponse {
+        try {
+            $reviewing = $this->periodService->startReview($reconciliationPeriod);
+
+            return redirect()
+                ->route('reconciliation-periods.show', $reviewing)
+                ->with('success', 'Đã chuyển kỳ đối chiếu sang trạng thái kiểm tra.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function destroy(
+        DestroyReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod
+    ): RedirectResponse {
+        try {
+            $this->periodService->deleteDraft($reconciliationPeriod);
+
+            return redirect()
+                ->route('reconciliation-periods.index')
+                ->with('success', 'Đã xóa kỳ đối chiếu nháp.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function confirm(
+        ConfirmReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod
+    ): RedirectResponse {
+        try {
+            $confirmed = $this->periodService->confirm($reconciliationPeriod);
+
+            return redirect()
+                ->route('reconciliation-periods.show', $confirmed)
+                ->with('success', 'Đã xác nhận kỳ đối chiếu.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function lock(
+        LockReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod
+    ): RedirectResponse {
+        try {
+            $locked = $this->periodService->lock($reconciliationPeriod);
+
+            return redirect()
+                ->route('reconciliation-periods.show', $locked)
+                ->with('success', 'Đã khóa kỳ đối chiếu.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function export(
+        ExportReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod,
+        ReconciliationCalculator $calculator
+    ): BinaryFileResponse {
+        $filename = 'doi-chieu-'.$reconciliationPeriod->id.'-'.now()->format('YmdHis').'.xlsx';
+
+        return Excel::download(
+            new ReconciliationRowsExport($reconciliationPeriod, $calculator),
+            $filename
+        );
     }
 }

@@ -1,23 +1,251 @@
-# Phase 11 – Reconciliation, OCR and Excel Integration
+# Phase 11 - Reconciliation Module
 
-## Phase 11.1 foundation
+## Objective
 
-This branch introduces the database foundation for weekly and monthly reconciliation:
+Implement a complete reconciliation module for machine working hours.
 
-- `reconciliation_periods`: reconciliation periods and lifecycle status.
-- `machine_daily_assignments`: immutable daily snapshots derived from machine assignment history.
-- `reconciliation_rows`: editable OCR/GPS/review data used later for Excel export.
-- `ReconciliationGenerator`: rebuilds a period from overlapping `machine_assignments`.
+This phase must NOT change existing machine management workflow.
 
-## OCR storage decision
+The reconciliation module is an independent business layer.
 
-The user never has to provide an image path.
+---
 
-The OCR desktop application will manage a configured data root and send only batch metadata, stored filename, file hash and OCR result. Physical file location will be derived by convention from the data root, group date and batch code.
+# Business Goal
 
-## Next implementation step
+Compare:
 
-- Period creation UI and validation.
-- Historical driver resolution by work date.
-- Tests for new machine, transfer and return during a period.
-- OCR import batches and image metadata without absolute image paths.
+- GPS working hours
+- Driver logbook
+- Actual machine assignment
+
+Generate a reconciliation result for each working day.
+
+---
+
+# Source of Truth
+
+Database (MySQL)
+
+Excel is export only.
+
+Python OCR application is separated.
+
+Never move OCR logic into Laravel.
+
+---
+
+# Main Entities
+
+- reconciliation_periods
+- reconciliation_rows
+
+Related entities:
+
+- machines
+- machine_assignments
+- machine_events
+- machine_driver_histories
+- projects
+- command_centers
+- drivers
+- users
+
+---
+
+# Workflow
+
+Period
+
+Draft
+
+↓
+
+Generate rows
+
+↓
+
+Review
+
+↓
+
+Confirm
+
+↓
+
+Locked
+
+↓
+
+Export Excel
+
+---
+
+# Row Status
+
+draft
+
+↓
+
+reviewed
+
+↓
+
+confirmed
+
+↓
+
+locked
+
+---
+
+# Period Status
+
+draft
+
+↓
+
+generated
+
+↓
+
+reviewing
+
+↓
+
+confirmed
+
+↓
+
+locked
+
+---
+
+# Required Features
+
+## Period
+
+- create
+- regenerate
+- delete draft
+- view summary
+
+---
+
+## Row
+
+- compare GPS
+- compare logbook
+- calculate difference
+- note reason
+- mark reviewed
+- mark confirmed
+
+---
+
+## Review
+
+Reviewer can:
+
+- accept
+- reject
+- comment
+
+---
+
+## Confirm
+
+Manager confirms reviewed rows.
+
+Only reviewed rows may be confirmed.
+
+---
+
+## Lock
+
+Locked period:
+
+- read only
+- cannot regenerate
+- cannot edit
+- cannot delete
+
+---
+
+## Export
+
+Export Excel.
+
+Do NOT write back into database.
+
+---
+
+# UI
+
+Pages
+
+Period list
+
+↓
+
+Period detail
+
+↓
+
+Row detail
+
+↓
+
+Review
+
+↓
+
+Export
+
+---
+
+# Rules
+
+Never modify historical records.
+
+Never overwrite machine history.
+
+Keep all history.
+
+---
+
+# Non Goals
+
+Do NOT
+
+- change OCR
+- change Machine module
+- change Assignment workflow
+- change Driver history
+- save image paths
+- modify unrelated modules
+
+---
+
+# Coding
+
+Laravel 11
+
+Service Layer
+
+Form Request
+
+Policy
+
+Blade
+
+Route Model Binding
+
+Transactions where needed.
+
+---
+
+# Testing
+
+Ignore default Laravel Breeze authentication failures.
+
+Focus only on Phase 11.

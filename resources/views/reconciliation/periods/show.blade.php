@@ -39,6 +39,46 @@
                     </button>
                 </form>
             @endif
+
+            @if ($reconciliationPeriod->status === 'GENERATED')
+                <form method="POST"
+                      action="{{ route('reconciliation-periods.start-review', $reconciliationPeriod) }}"
+                      onsubmit="return confirm('Chuyển kỳ này sang trạng thái kiểm tra?')">
+                    @csrf
+                    <button class="btn btn-warning" type="submit">Bắt đầu kiểm tra</button>
+                </form>
+            @endif
+
+            @if ($canConfirmPeriod)
+                <form method="POST"
+                      action="{{ route('reconciliation-periods.confirm', $reconciliationPeriod) }}"
+                      onsubmit="return confirm('Xác nhận kỳ đối chiếu này?')">
+                    @csrf
+                    <button class="btn btn-success" type="submit">Xác nhận kỳ</button>
+                </form>
+            @endif
+
+            @if ($reconciliationPeriod->status === 'CONFIRMED')
+                <form method="POST"
+                      action="{{ route('reconciliation-periods.lock', $reconciliationPeriod) }}"
+                      onsubmit="return confirm('Khóa kỳ đối chiếu này?')">
+                    @csrf
+                    <button class="btn btn-dark" type="submit">Khóa kỳ</button>
+                </form>
+            @endif
+
+            @if ($exportable)
+                <a class="btn btn-outline-success" href="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">Xuất Excel</a>
+            @endif
+
+            @if ($reconciliationPeriod->status === 'DRAFT')
+                <form method="POST"
+                      action="{{ route('reconciliation-periods.delete', $reconciliationPeriod) }}"
+                      onsubmit="return confirm('Xóa kỳ đối chiếu nháp này?')">
+                    @csrf
+                    <button class="btn btn-outline-danger" type="submit">Xóa kỳ nháp</button>
+                </form>
+            @endif
         </div>
     </div>
 
@@ -195,6 +235,10 @@
 
         <div class="card-body border-bottom">
             <form method="GET" action="{{ route('reconciliation-periods.show', $reconciliationPeriod) }}">
+                <div class="mb-3">
+                    <label class="form-label small">Tìm kiếm</label>
+                    <input type="search" name="q" value="{{ request('q') }}" class="form-control" placeholder="Mã máy, lái xe, dự án, BCH, ghi chú...">
+                </div>
                 <div class="row g-2 align-items-end">
                     <div class="col-md-3 col-xl-2">
                         <label class="form-label small">Máy</label>
@@ -313,9 +357,9 @@
                                 @endif
                             </td>
                             <td class="text-end">
-                                <button type="button" class="btn btn-sm btn-outline-primary" disabled title="Màn hình chi tiết sẽ được bổ sung ở file tiếp theo">
+                                <a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">
                                     Chi tiết
-                                </button>
+                                </a>
                             </td>
                         </tr>
                     @empty

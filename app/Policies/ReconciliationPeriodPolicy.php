@@ -26,4 +26,29 @@ class ReconciliationPeriodPolicy
     {
         return in_array($period->status, ['DRAFT', 'GENERATED'], true);
     }
+
+    public function startReview(User $user, ReconciliationPeriod $period): bool
+    {
+        return $period->status === 'GENERATED';
+    }
+
+    public function delete(User $user, ReconciliationPeriod $period): bool
+    {
+        return $period->status === 'DRAFT';
+    }
+
+    public function confirm(User $user, ReconciliationPeriod $period): bool
+    {
+        return $period->status === 'REVIEWING';
+    }
+
+    public function lock(User $user, ReconciliationPeriod $period): bool
+    {
+        return $period->status === 'CONFIRMED';
+    }
+
+    public function export(User $user, ReconciliationPeriod $period): bool
+    {
+        return in_array($period->status, ['CONFIRMED', 'EXPORTED'], true);
+    }
 }
