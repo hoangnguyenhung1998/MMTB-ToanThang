@@ -3,7 +3,7 @@
 use App\Http\Controllers\ReconciliationPeriodController;
 use Illuminate\Support\Facades\Route;
 
-Route::middleware(['web', 'auth'])->group(function () {
+Route::middleware('auth')->group(function () {
     Route::get('/reconciliation-periods', [ReconciliationPeriodController::class, 'index'])
         ->name('reconciliation-periods.index');
     Route::get('/reconciliation-periods/create', [ReconciliationPeriodController::class, 'create'])
