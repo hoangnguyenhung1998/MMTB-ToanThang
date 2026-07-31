@@ -23,11 +23,6 @@ class ReconciliationPeriod extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    public function dailyAssignments(): HasMany
-    {
-        return $this->hasMany(MachineDailyAssignment::class);
-    }
-
     public function rows(): HasMany
     {
         return $this->hasMany(ReconciliationRow::class);
