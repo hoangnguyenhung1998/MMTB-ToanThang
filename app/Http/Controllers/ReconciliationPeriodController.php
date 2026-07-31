@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CommandCenter;
+use App\Models\Machine;
+use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Services\Reconciliation\ReconciliationGenerator;
 use Illuminate\Http\RedirectResponse;
@@ -52,7 +55,7 @@ class ReconciliationPeriodController extends Controller
             ->with('success', 'Đã tạo kỳ đối chiếu. Anh có thể kiểm tra thông tin rồi bấm “Sinh dữ liệu”.');
     }
 
-    public function show(ReconciliationPeriod $reconciliationPeriod): View
+    public function show(Request $request, ReconciliationPeriod $reconciliationPeriod): View
     {
         $reconciliationPeriod->loadCount('rows')->load('creator:id,name');
 
@@ -67,10 +70,85 @@ class ReconciliationPeriodController extends Controller
             ->groupBy('change_type')
             ->pluck('total', 'change_type');
 
+        $rowsQuery = $reconciliationPeriod->rows()
+            ->with([
+                'machine',
+                'project:id,name',
+                'commandCenter:id,name',
+                'driver',
+                'reviewer:id,name',
+                'confirmer:id,name',
+            ])
+            ->when($request->filled('machine_id'), fn ($query) => $query->where('machine_id', $request->integer('machine_id')))
+            ->when($request->filled('project_id'), fn ($query) => $query->where('project_id', $request->integer('project_id')))
+            ->when($request->filled('command_center_id'), fn ($query) => $query->where('command_center_id', $request->integer('command_center_id')))
+            ->when($request->filled('work_date'), fn ($query) => $query->whereDate('work_date', $request->date('work_date')))
+            ->when($request->filled('row_status'), fn ($query) => $query->where('status', $request->string('row_status')))
+            ->when($request->filled('change_type'), fn ($query) => $query->where('change_type', $request->string('change_type')))
+            ->orderByDesc('work_date')
+            ->orderBy('machine_id');
+
+        $rows = $rowsQuery->paginate(50)->withQueryString();
+
+        $machineIds = $reconciliationPeriod->rows()
+            ->whereNotNull('machine_id')
+            ->distinct()
+            ->pluck('machine_id');
+
+        $projectIds = $reconciliationPeriod->rows()
+            ->whereNotNull('project_id')
+            ->distinct()
+            ->pluck('project_id');
+
+        $commandCenterIds = $reconciliationPeriod->rows()
+            ->whereNotNull('command_center_id')
+            ->distinct()
+            ->pluck('command_center_id');
+
+        $machines = Machine::query()
+            ->whereIn('id', $machineIds)
+            ->orderBy('asset_code')
+            ->get();
+
+        $projects = Project::query()
+            ->whereIn('id', $projectIds)
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        $commandCenters = CommandCenter::query()
+            ->whereIn('id', $commandCenterIds)
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        $rowStatuses = $reconciliationPeriod->rows()
+            ->whereNotNull('status')
+            ->distinct()
+            ->orderBy('status')
+            ->pluck('status');
+
+        $changeTypes = $reconciliationPeriod->rows()
+            ->whereNotNull('change_type')
+            ->distinct()
+            ->orderBy('change_type')
+            ->pluck('change_type');
+
+        $reviewedCount = $reconciliationPeriod->rows()->whereNotNull('reviewed_at')->count();
+        $confirmedCount = $reconciliationPeriod->rows()->whereNotNull('confirmed_at')->count();
+        $changedCount = $reconciliationPeriod->rows()->whereNotNull('change_type')->count();
+
         return view('reconciliation.periods.show', compact(
             'reconciliationPeriod',
             'rowSummary',
-            'changeSummary'
+            'changeSummary',
+            'rows',
+            'machines',
+            'projects',
+            'commandCenters',
+            'rowStatuses',
+            'changeTypes',
+            'reviewedCount',
+            'confirmedCount',
+            'changedCount'
         ));
     }
 
