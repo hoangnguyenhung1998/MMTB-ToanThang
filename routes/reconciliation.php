@@ -31,6 +31,27 @@ Route::middleware('auth')->group(function () {
         ->name('reconciliation-rows.review');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/rows/{reconciliationRow}/confirm', [ReconciliationRowController::class, 'confirm'])
         ->name('reconciliation-rows.confirm');
-    Route::post('/reconciliation-periods/{reconciliationPeriod}/delete', [ReconciliationPeriodController::class, 'destroy'])
-        ->name('reconciliation-periods.delete');
+Route::post('/reconciliation-periods/{reconciliationPeriod}/delete', [ReconciliationPeriodController::class, 'destroy'])
+    ->name('reconciliation-periods.delete');
+
+Route::get('/reconciliation-periods/{reconciliationPeriod}/ocr-import', [\App\Http\Controllers\ReconciliationOcrImportController::class, 'create'])
+    ->name('reconciliation-periods.ocr-import.create');
+
+Route::post('/reconciliation-periods/{reconciliationPeriod}/ocr-import/preview', [\App\Http\Controllers\ReconciliationOcrImportController::class, 'preview'])
+    ->name('reconciliation-periods.ocr-import.preview');
+
+Route::post('/reconciliation-periods/{reconciliationPeriod}/ocr-import/confirm', [\App\Http\Controllers\ReconciliationOcrImportController::class, 'confirm'])
+    ->name('reconciliation-periods.ocr-import.confirm');
+
+Route::post('/reconciliation-periods/{reconciliationPeriod}/ocr-import/cancel', [\App\Http\Controllers\ReconciliationOcrImportController::class, 'cancel'])
+    ->name('reconciliation-periods.ocr-import.cancel');
+
+Route::get('/reconciliation-periods/{reconciliationPeriod}/machine-review', [\App\Http\Controllers\ReconciliationMachineReviewController::class, 'show'])
+    ->name('reconciliation-periods.machine-review');
+
+Route::post('/reconciliation-periods/{reconciliationPeriod}/machine-review/bulk-update', [\App\Http\Controllers\ReconciliationMachineReviewController::class, 'bulkUpdate'])
+    ->name('reconciliation-periods.machine-review.bulk-update');
+
+Route::post('/reconciliation-periods/{reconciliationPeriod}/machine-review/bulk-confirm', [\App\Http\Controllers\ReconciliationMachineReviewController::class, 'bulkConfirm'])
+    ->name('reconciliation-periods.machine-review.bulk-confirm');
 });

@@ -27,6 +27,16 @@ class ReconciliationPeriodPolicy
         return in_array($period->status, ['DRAFT', 'GENERATED'], true);
     }
 
+    public function importOcr(User $user, ReconciliationPeriod $period): bool
+    {
+        return in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true);
+    }
+
+    public function reviewMonthly(User $user, ReconciliationPeriod $period): bool
+    {
+        return in_array($period->status, ['GENERATED', 'REVIEWING', 'CONFIRMED', 'EXPORTED'], true);
+    }
+
     public function startReview(User $user, ReconciliationPeriod $period): bool
     {
         return $period->status === 'GENERATED';
