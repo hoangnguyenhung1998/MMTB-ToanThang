@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node src/index.js",
+    "groups": "node src/list-groups.js",
     "check": "node --check src/index.js && node --test"
   },
   "dependencies": {
