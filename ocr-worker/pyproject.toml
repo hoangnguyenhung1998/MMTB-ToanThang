@@ -10,7 +10,6 @@ requires-python = ">=3.12"
 dependencies = [
     "rapidocr>=3.4,<4",
     "onnxruntime>=1.20,<2",
-    "opencv-python-headless>=4.10,<5",
     "numpy>=1.26,<3",
     "Pillow>=10.4,<13",
     "requests>=2.32,<3",
