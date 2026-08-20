@@ -47,6 +47,10 @@ class ZaloIngestionTest extends TestCase
             'message_id' => 'message-1',
             'status' => 'STORED',
         ]);
+        $this->assertDatabaseHas('ocr_jobs', [
+            'zalo_attachment_id' => $attachment->id,
+            'status' => 'PENDING',
+        ]);
     }
 
     public function test_replaying_the_same_message_is_idempotent(): void
@@ -68,6 +72,7 @@ class ZaloIngestionTest extends TestCase
         $second->assertJsonPath('data.duplicate_of_attachment_id', $first->json('data.attachment_id'));
         $this->assertDatabaseCount('zalo_messages', 2);
         $this->assertDatabaseCount('zalo_attachments', 2);
+        $this->assertDatabaseCount('ocr_jobs', 1);
     }
 
     public function test_it_rejects_a_hash_mismatch(): void
@@ -76,7 +81,6 @@ class ZaloIngestionTest extends TestCase
         $payload['sha256'] = str_repeat('a', 64);
 
         $this->withToken('test-collector-token')
-            ->withHeader('Accept', 'application/json')
             ->post('/api/collector/v1/zalo/messages', $payload)
             ->assertUnprocessable()
             ->assertJsonValidationErrors('sha256');

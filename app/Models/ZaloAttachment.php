@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class ZaloAttachment extends Model
 {
@@ -17,5 +18,10 @@ class ZaloAttachment extends Model
     public function duplicateOf(): BelongsTo
     {
         return $this->belongsTo(self::class, 'duplicate_of_attachment_id');
+    }
+
+    public function ocrJob(): HasOne
+    {
+        return $this->hasOne(OcrJob::class);
     }
 }

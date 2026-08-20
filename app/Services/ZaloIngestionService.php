@@ -12,6 +12,10 @@ use Throwable;
 
 class ZaloIngestionService
 {
+    public function __construct(private readonly OcrJobService $ocrJobs)
+    {
+    }
+
     public function ingest(array $data, UploadedFile $file): ZaloIngestionResult
     {
         $actualHash = hash_file('sha256', $file->getRealPath());
@@ -81,6 +85,10 @@ class ZaloIngestionService
                     'status' => $status,
                     'duplicate_of_attachment_id' => $duplicate?->id,
                 ]);
+
+                if ($status === 'STORED') {
+                    $this->ocrJobs->enqueue($attachment->id);
+                }
 
                 $message->update(['status' => 'STORED']);
 
