@@ -1,12 +1,12 @@
 # MMTB Zalo Collector
 
-Node.js service that listens to image messages from explicitly allowed Zalo groups and forwards them to the Laravel collector API.
+Node.js service that listens to image messages from explicitly allowed Zalo groups, stores them in a durable local queue, and forwards them to the Laravel collector API.
 
 `zca-js` is an unofficial personal-account API that simulates Zalo Web. Use a dedicated secondary account. The account may be limited or locked by Zalo. Only one Zalo Web listener can run for the account at a time.
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22.13 or newer (uses the built-in SQLite module)
 - The Laravel API and its `COLLECTOR_API_TOKEN`
 - A secondary Zalo account already added to the required work groups
 
@@ -40,6 +40,41 @@ npm start
 ```
 
 On first run, scan `collector/data/qr.png` with the secondary Zalo account. Credentials are saved locally under `collector/data/` and never committed. Do not open Zalo Web with the same account while the collector is running.
+
+## Durable queue
+
+Every accepted Zalo image becomes a SQLite queue job under `collector/data/queue.sqlite`. The worker downloads the original image to `collector/data/queue-images/` before it depends on Laravel being online.
+
+Queue flow:
+
+```text
+QUEUED -> DOWNLOADED -> SENDING -> SENT
+                         |          |
+                         v          v
+                       RETRY    deleted after retention
+                         |
+                         v
+                       FAILED
+```
+
+- If Laravel is offline, downloaded images remain on disk and retry with exponential backoff up to 15 minutes.
+- Restarting Windows or the Collector resumes unfinished queue jobs.
+- New Zalo images are downloaded before old API retries, preventing an offline Laravel server from blocking new image capture.
+- A message ID and attachment index can only enter the queue once.
+- `SENT` images are retained for 7 days by default, then both queue record and unreferenced local file are removed.
+- Permanent validation failures and jobs exceeding the retry limit remain as `FAILED` for inspection; they are not silently deleted.
+
+Useful `.env` controls:
+
+```env
+COLLECTOR_RETRY_BASE_DELAY_MS=1000
+COLLECTOR_RETRY_MAX_DELAY_MS=900000
+COLLECTOR_QUEUE_POLL_MS=5000
+COLLECTOR_QUEUE_MAX_ATTEMPTS=100
+COLLECTOR_SENT_RETENTION_DAYS=7
+```
+
+The queue protects images already received from Zalo when Laravel or the office computer is offline. It cannot capture messages while the Collector computer itself is powered off or disconnected from Zalo.
 
 To discover a group ID during initial setup, temporarily inspect the listener log in development or use `api.getAllGroups()` from a local diagnostic script. Do not enable collection until the intended group IDs have been verified.
 

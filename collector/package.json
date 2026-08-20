@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node src/index.js",
     "groups": "node src/list-groups.js",
-    "check": "node --check src/index.js && node --test"
+    "check": "node --check src/index.js && node --test --test-concurrency=1"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

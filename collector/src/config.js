@@ -34,7 +34,10 @@ export function loadConfig() {
     allowedGroupIds,
     maxImageBytes: positiveInteger("COLLECTOR_MAX_IMAGE_BYTES", 25 * 1024 * 1024),
     requestTimeoutMs: positiveInteger("COLLECTOR_REQUEST_TIMEOUT_MS", 30_000),
-    retryAttempts: positiveInteger("COLLECTOR_RETRY_ATTEMPTS", 3),
     retryBaseDelayMs: positiveInteger("COLLECTOR_RETRY_BASE_DELAY_MS", 1_000),
+    retryMaxDelayMs: positiveInteger("COLLECTOR_RETRY_MAX_DELAY_MS", 15 * 60_000),
+    queuePollMs: positiveInteger("COLLECTOR_QUEUE_POLL_MS", 5_000),
+    queueMaxAttempts: positiveInteger("COLLECTOR_QUEUE_MAX_ATTEMPTS", 100),
+    sentRetentionDays: positiveInteger("COLLECTOR_SENT_RETENTION_DAYS", 7),
   });
 }
