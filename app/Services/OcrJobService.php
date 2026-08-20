@@ -106,19 +106,37 @@ class OcrJobService
             ]);
         }
 
+        $isUnknown = $data['document_type'] === 'UNKNOWN';
+
         $job->update([
             'document_type' => $data['document_type'],
             'classification_confidence' => $data['confidence'],
             'classified_by' => $data['worker_id'],
             'classified_at' => now(),
-            'status' => 'PENDING',
+            'status' => $isUnknown ? 'EXCEPTION' : 'PENDING',
             'claimed_by' => null,
             'claimed_at' => null,
             'lease_expires_at' => null,
             'error_message' => null,
+            'exceptions' => $isUnknown ? ['UNCLASSIFIED_DOCUMENT'] : null,
+            'processed_at' => $isUnknown ? now() : null,
         ]);
 
         return $job->fresh();
+    }
+
+    public function machineCatalog(): array
+    {
+        return Machine::query()
+            ->select(['id', 'asset_code', 'status'])
+            ->orderBy('asset_code')
+            ->get()
+            ->map(fn (Machine $machine): array => [
+                'id' => $machine->id,
+                'asset_code' => $machine->asset_code,
+                'status' => $machine->status,
+            ])
+            ->all();
     }
 
     public function completeJournal(OcrJob $job, array $data): OcrJob

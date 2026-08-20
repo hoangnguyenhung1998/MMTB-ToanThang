@@ -15,7 +15,7 @@ class ClassifyOcrJobRequest extends FormRequest
     {
         return [
             'worker_id' => ['required', 'string', 'max:100'],
-            'document_type' => ['required', 'string', 'in:DAILY_TIMEMARK,WEEKLY_JOURNAL'],
+            'document_type' => ['required', 'string', 'in:UNKNOWN,DAILY_TIMEMARK,WEEKLY_JOURNAL'],
             'confidence' => ['required', 'numeric', 'between:0,1'],
         ];
     }

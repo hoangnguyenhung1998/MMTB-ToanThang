@@ -43,6 +43,8 @@ class OcrJobTest extends TestCase
             ->assertJsonPath('job.id', $job->id)
             ->assertJsonPath('job.attempts', 1);
 
+        $this->assertStringStartsWith('/', $response->json('job.image_url'));
+
         $this->withToken('test-ocr-token')
             ->get($response->json('job.image_url'))
             ->assertOk()
@@ -184,6 +186,41 @@ class OcrJobTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('job.id', $job->id);
+    }
+
+    public function test_uncertain_document_classification_becomes_exception(): void
+    {
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/classify", [
+                'worker_id' => 'worker-1',
+                'document_type' => 'UNKNOWN',
+                'confidence' => 0.45,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'EXCEPTION')
+            ->assertJsonPath('job.document_type', 'UNKNOWN')
+            ->assertJsonPath('job.exceptions.0', 'UNCLASSIFIED_DOCUMENT');
+    }
+
+    public function test_worker_downloads_machine_catalog(): void
+    {
+        Machine::query()->create([
+            'asset_code' => 'VT-LU0216',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'TEST-CATALOG-1',
+            'status' => 'ACTIVE',
+        ]);
+
+        $this->getJson('/api/ocr/v1/machines')->assertUnauthorized();
+
+        $this->withToken('test-ocr-token')
+            ->getJson('/api/ocr/v1/machines')
+            ->assertOk()
+            ->assertJsonPath('machines.0.asset_code', 'VT-LU0216')
+            ->assertJsonPath('machines.0.status', 'ACTIVE');
     }
 
     public function test_weekly_journal_stores_multiple_rows_and_keeps_source_image_link(): void

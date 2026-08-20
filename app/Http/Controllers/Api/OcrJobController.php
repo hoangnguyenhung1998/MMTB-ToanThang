@@ -41,7 +41,7 @@ class OcrJobController extends Controller
                 'image_url' => route('api.ocr.jobs.image', [
                     'ocrJob' => $job,
                     'worker_id' => $request->validated('worker_id'),
-                ]),
+                ], false),
                 'message' => [
                     'group_id' => $job->attachment->message->group_id,
                     'message_id' => $job->attachment->message->message_id,
@@ -98,5 +98,12 @@ class OcrJobController extends Controller
     public function fail(FailOcrJobRequest $request, OcrJob $ocrJob): JsonResponse
     {
         return response()->json(['job' => $this->service->fail($ocrJob, $request->validated())]);
+    }
+
+    public function machines(): JsonResponse
+    {
+        return response()->json([
+            'machines' => $this->service->machineCatalog(),
+        ]);
     }
 }

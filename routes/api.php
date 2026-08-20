@@ -16,6 +16,8 @@ Route::prefix('collector/v1')
 Route::prefix('ocr/v1')
     ->middleware([AuthenticateOcrWorker::class, 'throttle:120,1'])
     ->group(function (): void {
+        Route::get('/machines', [OcrJobController::class, 'machines'])
+            ->name('api.ocr.machines.index');
         Route::post('/jobs/claim', [OcrJobController::class, 'claim'])
             ->name('api.ocr.jobs.claim');
         Route::get('/jobs/{ocrJob}/image', [OcrJobController::class, 'image'])

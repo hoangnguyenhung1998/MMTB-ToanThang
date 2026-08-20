@@ -14,6 +14,8 @@ OCR_MINIMUM_CONFIDENCE=0.80
 
 Send the token as `Authorization: Bearer ...` on every OCR request. Never commit it.
 
+`GET /api/ocr/v1/machines` returns the current Laravel machine catalog for OCR matching. The worker must not maintain a separate machine database.
+
 ## Flow
 
 1. A classifier claims `UNKNOWN` jobs, identifies the document type, then calls the classify endpoint.
@@ -46,6 +48,7 @@ The valid types are `UNKNOWN`, `DAILY_TIMEMARK`, and `WEEKLY_JOURNAL`. Omitting 
 ```
 
 Classification releases the job back to `PENDING` so the appropriate worker can claim it.
+If classification is uncertain, submit `UNKNOWN`; Laravel stores the job as `EXCEPTION` with `UNCLASSIFIED_DOCUMENT` instead of guessing.
 
 ## Complete a daily TimeMark image
 
@@ -101,5 +104,7 @@ One journal image creates one `journal_documents` record and one or more immutab
 ## Source-image traceability
 
 The original file is never overwritten. Both daily results and journal rows remain linked through `ocr_job -> zalo_attachment`, including storage disk, relative path, SHA-256, Zalo message, sender, and sent time. This supports later lookup by machine and work date and downloading selected originals.
+
+The claim response returns `image_url` as a relative URL. Workers resolve it against the configured Laravel/Tailscale origin, preventing a server-side `localhost` address from leaking into remote downloads.
 
 Expired `PROCESSING` jobs can be claimed again. A result is accepted only from the worker that currently owns the lease.
