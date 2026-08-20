@@ -20,8 +20,12 @@ Route::prefix('ocr/v1')
             ->name('api.ocr.jobs.claim');
         Route::get('/jobs/{ocrJob}/image', [OcrJobController::class, 'image'])
             ->name('api.ocr.jobs.image');
+        Route::post('/jobs/{ocrJob}/classify', [OcrJobController::class, 'classify'])
+            ->name('api.ocr.jobs.classify');
         Route::post('/jobs/{ocrJob}/complete', [OcrJobController::class, 'complete'])
             ->name('api.ocr.jobs.complete');
+        Route::post('/jobs/{ocrJob}/complete-journal', [OcrJobController::class, 'completeJournal'])
+            ->name('api.ocr.jobs.complete-journal');
         Route::post('/jobs/{ocrJob}/fail', [OcrJobController::class, 'fail'])
             ->name('api.ocr.jobs.fail');
     });

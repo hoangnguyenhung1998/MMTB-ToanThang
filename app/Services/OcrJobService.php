@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\JournalDocument;
 use App\Models\Machine;
 use App\Models\OcrJob;
 use Carbon\CarbonImmutable;
@@ -18,10 +19,14 @@ class OcrJobService
         );
     }
 
-    public function claim(string $workerId): ?OcrJob
+    public function claim(string $workerId, array $documentTypes = []): ?OcrJob
     {
-        return DB::transaction(function () use ($workerId): ?OcrJob {
+        return DB::transaction(function () use ($workerId, $documentTypes): ?OcrJob {
             $job = OcrJob::query()
+                ->when(
+                    $documentTypes !== [],
+                    fn ($query) => $query->whereIn('document_type', $documentTypes),
+                )
                 ->where(function ($query): void {
                     $query->whereIn('status', ['PENDING', 'RETRY'])
                         ->orWhere(function ($expired): void {
@@ -54,6 +59,12 @@ class OcrJobService
     {
         $this->ensureClaimOwner($job, $data['worker_id']);
 
+        if ($job->document_type === 'WEEKLY_JOURNAL') {
+            throw ValidationException::withMessages([
+                'document_type' => 'A weekly journal must use the journal completion endpoint.',
+            ]);
+        }
+
         $assetCode = isset($data['asset_code'])
             ? strtoupper(trim((string) $data['asset_code']))
             : null;
@@ -65,6 +76,7 @@ class OcrJobService
 
         $job->update([
             'machine_id' => $machine?->id,
+            'document_type' => 'DAILY_TIMEMARK',
             'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
             'extracted_date' => $data['date'] ?? null,
             'extracted_time' => $data['time'] ?? null,
@@ -82,6 +94,91 @@ class OcrJobService
         ]);
 
         return $job->fresh(['attachment.message', 'machine']);
+    }
+
+    public function classify(OcrJob $job, array $data): OcrJob
+    {
+        $this->ensureClaimOwner($job, $data['worker_id']);
+
+        if ($job->document_type !== 'UNKNOWN') {
+            throw ValidationException::withMessages([
+                'document_type' => 'This OCR job has already been classified.',
+            ]);
+        }
+
+        $job->update([
+            'document_type' => $data['document_type'],
+            'classification_confidence' => $data['confidence'],
+            'classified_by' => $data['worker_id'],
+            'classified_at' => now(),
+            'status' => 'PENDING',
+            'claimed_by' => null,
+            'claimed_at' => null,
+            'lease_expires_at' => null,
+            'error_message' => null,
+        ]);
+
+        return $job->fresh();
+    }
+
+    public function completeJournal(OcrJob $job, array $data): OcrJob
+    {
+        $this->ensureClaimOwner($job, $data['worker_id']);
+
+        if ($job->document_type !== 'WEEKLY_JOURNAL') {
+            throw ValidationException::withMessages([
+                'document_type' => 'This OCR job is not classified as a weekly journal.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($job, $data): OcrJob {
+            $assetCode = isset($data['asset_code'])
+                ? strtoupper(trim((string) $data['asset_code']))
+                : null;
+            $machine = $assetCode
+                ? Machine::query()->where('asset_code', $assetCode)->first()
+                : null;
+            $documentExceptions = $this->detectJournalDocumentExceptions($data, $assetCode, $machine);
+            $hasRowExceptions = false;
+
+            $document = JournalDocument::query()->create([
+                'ocr_job_id' => $job->id,
+                'machine_id' => $machine?->id,
+                'asset_code' => $assetCode,
+                'confidence' => $data['confidence'],
+                'raw_text' => $data['raw_text'] ?? null,
+                'exceptions' => $documentExceptions === [] ? null : $documentExceptions,
+            ]);
+
+            foreach ($data['rows'] as $rowData) {
+                $rowExceptions = $this->detectJournalRowExceptions($rowData);
+                $hasRowExceptions = $hasRowExceptions || $rowExceptions !== [];
+
+                $document->rows()->create([
+                    ...$rowData,
+                    'exceptions' => $rowExceptions === [] ? null : $rowExceptions,
+                ]);
+            }
+
+            $exceptions = $documentExceptions;
+            if ($hasRowExceptions) {
+                $exceptions[] = 'JOURNAL_ROW_EXCEPTION';
+            }
+
+            $job->update([
+                'machine_id' => $machine?->id,
+                'asset_code' => $assetCode,
+                'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
+                'confidence' => $data['confidence'],
+                'raw_text' => $data['raw_text'] ?? null,
+                'exceptions' => $exceptions === [] ? null : array_values(array_unique($exceptions)),
+                'error_message' => null,
+                'processed_at' => now(),
+                'lease_expires_at' => null,
+            ]);
+
+            return $job->fresh(['attachment.message', 'machine', 'journalDocument.rows']);
+        }, 3);
     }
 
     public function fail(OcrJob $job, array $data): OcrJob
@@ -162,5 +259,41 @@ class OcrJobService
             $minutes > 1050 => 'EVENING_OT',
             default => null,
         };
+    }
+
+    private function detectJournalDocumentExceptions(
+        array $data,
+        ?string $assetCode,
+        ?Machine $machine,
+    ): array {
+        $exceptions = [];
+
+        if ((float) $data['confidence'] < (float) config('ocr.minimum_confidence')) {
+            $exceptions[] = 'LOW_CONFIDENCE';
+        }
+        if ($assetCode === null || $assetCode === '') {
+            $exceptions[] = 'MISSING_ASSET_CODE';
+        } elseif (! $machine) {
+            $exceptions[] = 'UNKNOWN_ASSET_CODE';
+        }
+
+        return $exceptions;
+    }
+
+    private function detectJournalRowExceptions(array $row): array
+    {
+        $exceptions = [];
+
+        if ((float) $row['confidence'] < (float) config('ocr.minimum_confidence')) {
+            $exceptions[] = 'LOW_CONFIDENCE';
+        }
+        if (empty($row['work_date'])) {
+            $exceptions[] = 'MISSING_DATE';
+        }
+        if (empty($row['work_content'])) {
+            $exceptions[] = 'MISSING_WORK_CONTENT';
+        }
+
+        return $exceptions;
     }
 }

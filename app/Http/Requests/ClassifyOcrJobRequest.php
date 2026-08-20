@@ -4,7 +4,7 @@ namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class ClaimOcrJobRequest extends FormRequest
+class ClassifyOcrJobRequest extends FormRequest
 {
     public function authorize(): bool
     {
@@ -15,8 +15,8 @@ class ClaimOcrJobRequest extends FormRequest
     {
         return [
             'worker_id' => ['required', 'string', 'max:100'],
-            'document_types' => ['sometimes', 'array', 'min:1'],
-            'document_types.*' => ['required', 'string', 'in:UNKNOWN,DAILY_TIMEMARK,WEEKLY_JOURNAL'],
+            'document_type' => ['required', 'string', 'in:DAILY_TIMEMARK,WEEKLY_JOURNAL'],
+            'confidence' => ['required', 'numeric', 'between:0,1'],
         ];
     }
 }

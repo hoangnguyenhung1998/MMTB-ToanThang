@@ -133,6 +133,147 @@ class OcrJobTest extends TestCase
             ->assertJsonPath('job.attempts', 2);
     }
 
+    public function test_worker_claims_only_supported_document_types(): void
+    {
+        $unknownJob = $this->createJob();
+        $dailyJob = $this->createJob();
+        $dailyJob->update(['document_type' => 'DAILY_TIMEMARK']);
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', [
+                'worker_id' => 'rapid-ocr-1',
+                'document_types' => ['DAILY_TIMEMARK'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.id', $dailyJob->id)
+            ->assertJsonPath('job.document_type', 'DAILY_TIMEMARK');
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $unknownJob->id,
+            'status' => 'PENDING',
+            'document_type' => 'UNKNOWN',
+        ]);
+    }
+
+    public function test_classifier_routes_an_unknown_job_back_to_the_typed_queue(): void
+    {
+        $job = $this->createJob();
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', [
+                'worker_id' => 'classifier-1',
+                'document_types' => ['UNKNOWN'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.id', $job->id);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/classify", [
+                'worker_id' => 'classifier-1',
+                'document_type' => 'WEEKLY_JOURNAL',
+                'confidence' => 0.98,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'PENDING')
+            ->assertJsonPath('job.document_type', 'WEEKLY_JOURNAL');
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', [
+                'worker_id' => 'openclaw-1',
+                'document_types' => ['WEEKLY_JOURNAL'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.id', $job->id);
+    }
+
+    public function test_weekly_journal_stores_multiple_rows_and_keeps_source_image_link(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'T-XL0354',
+            'company' => 'VINCONS',
+            'chassis_no' => 'TEST-CHASSIS-JOURNAL',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $job->update(['document_type' => 'WEEKLY_JOURNAL']);
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete-journal", [
+                'worker_id' => 'worker-1',
+                'asset_code' => 't-xl0354',
+                'confidence' => 0.94,
+                'raw_text' => 'weekly journal OCR text',
+                'rows' => [
+                    [
+                        'row_number' => 1,
+                        'work_date' => '2026-08-17',
+                        'start_time' => '07:00:00',
+                        'end_time' => '11:00:00',
+                        'total_minutes' => 240,
+                        'work_content' => 'Thi cong dao dat',
+                        'work_location' => 'Ha Long Xanh',
+                        'confidence' => 0.93,
+                    ],
+                    [
+                        'row_number' => 2,
+                        'work_date' => '2026-08-18',
+                        'total_minutes' => 480,
+                        'work_content' => 'San gat mat bang',
+                        'work_location' => 'Ha Long Xanh',
+                        'confidence' => 0.91,
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonCount(2, 'job.journal_document.rows');
+
+        $this->assertDatabaseHas('journal_documents', [
+            'ocr_job_id' => $job->id,
+            'machine_id' => $machine->id,
+            'asset_code' => 'T-XL0354',
+        ]);
+        $this->assertDatabaseHas('journal_rows', [
+            'work_date' => '2026-08-18',
+            'work_content' => 'San gat mat bang',
+        ]);
+
+        $storedJob = OcrJob::query()
+            ->where('machine_id', $machine->id)
+            ->whereHas('journalDocument.rows', fn ($query) => $query->whereDate('work_date', '2026-08-18'))
+            ->with('attachment')
+            ->firstOrFail();
+
+        $this->assertSame($job->zalo_attachment_id, $storedJob->attachment->id);
+        Storage::disk($storedJob->attachment->storage_disk)
+            ->assertExists($storedJob->attachment->storage_path);
+    }
+
+    public function test_weekly_journal_with_uncertain_row_becomes_exception(): void
+    {
+        $job = $this->createJob();
+        $job->update(['document_type' => 'WEEKLY_JOURNAL']);
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete-journal", [
+                'worker_id' => 'worker-1',
+                'confidence' => 0.95,
+                'rows' => [[
+                    'row_number' => 1,
+                    'confidence' => 0.40,
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'EXCEPTION');
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id,
+            'status' => 'EXCEPTION',
+        ]);
+    }
+
     private function claim(OcrJob $job): void
     {
         $this->withToken('test-ocr-token')

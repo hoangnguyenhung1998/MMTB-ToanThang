@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\ClassifyOcrJobRequest;
 use App\Http\Requests\ClaimOcrJobRequest;
+use App\Http\Requests\CompleteJournalOcrJobRequest;
 use App\Http\Requests\CompleteOcrJobRequest;
 use App\Http\Requests\FailOcrJobRequest;
 use App\Models\OcrJob;
@@ -21,7 +23,10 @@ class OcrJobController extends Controller
 
     public function claim(ClaimOcrJobRequest $request): JsonResponse
     {
-        $job = $this->service->claim($request->validated('worker_id'));
+        $job = $this->service->claim(
+            $request->validated('worker_id'),
+            $request->validated('document_types', []),
+        );
 
         if (! $job) {
             return response()->json(null, 204);
@@ -30,6 +35,7 @@ class OcrJobController extends Controller
         return response()->json([
             'job' => [
                 'id' => $job->id,
+                'document_type' => $job->document_type,
                 'attempts' => $job->attempts,
                 'lease_expires_at' => $job->lease_expires_at?->toIso8601String(),
                 'image_url' => route('api.ocr.jobs.image', [
@@ -66,6 +72,25 @@ class OcrJobController extends Controller
     public function complete(CompleteOcrJobRequest $request, OcrJob $ocrJob): JsonResponse
     {
         $job = $this->service->complete($ocrJob->load('attachment.message'), $request->validated());
+
+        return response()->json(['job' => $job]);
+    }
+
+    public function classify(ClassifyOcrJobRequest $request, OcrJob $ocrJob): JsonResponse
+    {
+        return response()->json([
+            'job' => $this->service->classify($ocrJob, $request->validated()),
+        ]);
+    }
+
+    public function completeJournal(
+        CompleteJournalOcrJobRequest $request,
+        OcrJob $ocrJob,
+    ): JsonResponse {
+        $job = $this->service->completeJournal(
+            $ocrJob->load('attachment.message'),
+            $request->validated(),
+        );
 
         return response()->json(['job' => $job]);
     }

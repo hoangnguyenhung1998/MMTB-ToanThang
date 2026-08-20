@@ -16,19 +16,44 @@ Send the token as `Authorization: Bearer ...` on every OCR request. Never commit
 
 ## Flow
 
-1. `POST /api/ocr/v1/jobs/claim` with `{"worker_id":"ocr-home-1"}`.
-2. A `200` response contains one job and its authenticated `image_url`; `204` means the queue is empty.
-3. Download the image before the five-minute lease expires.
-4. Submit OCR data to `POST /api/ocr/v1/jobs/{id}/complete`.
-5. If processing fails, call `POST /api/ocr/v1/jobs/{id}/fail` with `retryable=true` to return it to the queue.
+1. A classifier claims `UNKNOWN` jobs, identifies the document type, then calls the classify endpoint.
+2. RapidOCR claims `DAILY_TIMEMARK`; OpenClaw claims `WEEKLY_JOURNAL`.
+3. Download the private source image before the five-minute lease expires.
+4. Submit one TimeMark result to `/complete` or multiple journal rows to `/complete-journal`.
+5. If processing fails, call `/fail` with `retryable=true` to return it to the queue.
 
-Expired `PROCESSING` jobs can be claimed again. A result is accepted only from the worker that currently owns the lease.
-
-## Complete payload
+Claim only the types supported by that worker:
 
 ```json
 {
-  "worker_id": "ocr-home-1",
+  "worker_id": "rapid-ocr-home-1",
+  "document_types": ["DAILY_TIMEMARK"]
+}
+```
+
+The valid types are `UNKNOWN`, `DAILY_TIMEMARK`, and `WEEKLY_JOURNAL`. Omitting `document_types` remains supported for backward compatibility.
+
+## Classify an unknown image
+
+`POST /api/ocr/v1/jobs/{id}/classify`
+
+```json
+{
+  "worker_id": "classifier-home-1",
+  "document_type": "WEEKLY_JOURNAL",
+  "confidence": 0.98
+}
+```
+
+Classification releases the job back to `PENDING` so the appropriate worker can claim it.
+
+## Complete a daily TimeMark image
+
+`POST /api/ocr/v1/jobs/{id}/complete`
+
+```json
+{
+  "worker_id": "rapid-ocr-home-1",
   "date": "2026-08-20",
   "time": "16:45:00",
   "asset_code": "T-XL0354",
@@ -40,4 +65,41 @@ Expired `PROCESSING` jobs can be claimed again. A result is accepted only from t
 }
 ```
 
-Laravel assigns one deterministic shift: `MORNING`, `MIDDAY`, `AFTERNOON`, `AFTERNOON_OT`, or `EVENING_OT`. Results requiring review are stored as `EXCEPTION` with codes such as `LOW_CONFIDENCE`, `MISSING_DATE`, `MISSING_TIME`, `UNCLASSIFIED_TIME`, `MISSING_ASSET_CODE`, `UNKNOWN_ASSET_CODE`, and `WRONG_DATE`.
+Laravel assigns one deterministic shift: `MORNING`, `MIDDAY`, `AFTERNOON`, `AFTERNOON_OT`, or `EVENING_OT`.
+
+## Complete a weekly journal
+
+`POST /api/ocr/v1/jobs/{id}/complete-journal`
+
+```json
+{
+  "worker_id": "openclaw-home-1",
+  "asset_code": "T-XL0354",
+  "confidence": 0.94,
+  "raw_text": "full journal OCR text",
+  "rows": [
+    {
+      "row_number": 1,
+      "work_date": "2026-08-17",
+      "start_time": "07:00:00",
+      "end_time": "11:00:00",
+      "total_minutes": 240,
+      "work_content": "Thi cong dao dat",
+      "quantity": 60,
+      "unit": "m3",
+      "work_location": "Ha Long Xanh",
+      "operator_name": "Nguyen Van Cuong",
+      "confidence": 0.91,
+      "raw_data": {}
+    }
+  ]
+}
+```
+
+One journal image creates one `journal_documents` record and one or more immutable `journal_rows`. Results requiring review are stored as `EXCEPTION`; uncertain rows are retained with their own exception list.
+
+## Source-image traceability
+
+The original file is never overwritten. Both daily results and journal rows remain linked through `ocr_job -> zalo_attachment`, including storage disk, relative path, SHA-256, Zalo message, sender, and sent time. This supports later lookup by machine and work date and downloading selected originals.
+
+Expired `PROCESSING` jobs can be claimed again. A result is accepted only from the worker that currently owns the lease.
