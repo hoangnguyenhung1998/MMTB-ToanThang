@@ -76,6 +76,30 @@ COLLECTOR_SENT_RETENTION_DAYS=7
 
 The queue protects images already received from Zalo when Laravel or the office computer is offline. It cannot capture messages while the Collector computer itself is powered off or disconnected from Zalo.
 
+## Windows auto-start
+
+After `.env` is configured, QR login succeeds, and the durable queue is tested, stop the foreground `npm start` process and install the scheduled task:
+
+```cmd
+npm run autostart:install
+```
+
+The task starts at Windows logon in a hidden PowerShell window. `run-forever.ps1` restarts the Node process 10 seconds after an unexpected exit. A process lock prevents a foreground Collector and the scheduled Collector from listening to the same Zalo account simultaneously.
+
+Check task state and the latest log lines:
+
+```cmd
+npm run autostart:status
+```
+
+The log is stored at `collector/data/collector.log` and rotates at 10 MB. Remove only the scheduled task with:
+
+```cmd
+npm run autostart:remove
+```
+
+Removing auto-start preserves `.env`, Zalo credentials, the SQLite queue, and all queued images.
+
 To discover a group ID during initial setup, temporarily inspect the listener log in development or use `api.getAllGroups()` from a local diagnostic script. Do not enable collection until the intended group IDs have been verified.
 
 ## Security

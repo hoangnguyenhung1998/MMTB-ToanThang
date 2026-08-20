@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { readCredentials, writeCredentials } from "./credentials.js";
 import { LaravelCollectorClient } from "./laravel-client.js";
 import { extractImageUrls, normalizeMessage } from "./message-parser.js";
+import { acquireProcessLock } from "./process-lock.js";
 import { QueueStore } from "./queue-store.js";
 import { QueueWorker } from "./queue-worker.js";
 
@@ -14,6 +15,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const credentialsPath = path.join(root, "data", "credentials.json");
 const qrPath = path.join(root, "data", "qr.png");
 const config = loadConfig();
+const releaseProcessLock = acquireProcessLock(path.join(root, "data", "collector.lock"));
 const queue = new QueueStore(path.join(root, "data"), config);
 
 if (config.allowedGroupIds.size === 0) {
@@ -71,6 +73,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     worker.stop();
     api.listener.stop();
     queue.close();
+    releaseProcessLock();
     process.exit(0);
   });
 }
