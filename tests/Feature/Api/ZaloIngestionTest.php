@@ -81,6 +81,7 @@ class ZaloIngestionTest extends TestCase
         $payload['sha256'] = str_repeat('a', 64);
 
         $this->withToken('test-collector-token')
+            ->withHeader('Accept', 'application/json')
             ->post('/api/collector/v1/zalo/messages', $payload)
             ->assertUnprocessable()
             ->assertJsonValidationErrors('sha256');
