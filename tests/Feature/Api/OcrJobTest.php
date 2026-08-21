@@ -90,6 +90,80 @@ class OcrJobTest extends TestCase
         ]);
     }
 
+    public function test_daily_image_submitted_one_day_late_is_accepted(): void
+    {
+        Machine::query()->create([
+            'asset_code' => 'VT-XL5024',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'TEST-CHASSIS-LATE-1',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+                'worker_id' => 'worker-1',
+                'date' => '2026-08-18',
+                'time' => '14:02:00',
+                'asset_code' => 'VT-XL5024',
+                'confidence' => 0.95,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonPath('job.exceptions', null);
+    }
+
+    public function test_daily_image_submitted_two_days_late_becomes_exception(): void
+    {
+        Machine::query()->create([
+            'asset_code' => 'VT-XL5024',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'TEST-CHASSIS-LATE-2',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $response = $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+                'worker_id' => 'worker-1',
+                'date' => '2026-08-17',
+                'time' => '14:02:00',
+                'asset_code' => 'VT-XL5024',
+                'confidence' => 0.95,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'EXCEPTION');
+
+        $this->assertSame(['WRONG_DATE'], $response->json('job.exceptions'));
+    }
+
+    public function test_daily_image_with_a_future_date_becomes_exception(): void
+    {
+        Machine::query()->create([
+            'asset_code' => 'VT-XL5024',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'TEST-CHASSIS-FUTURE',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $response = $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+                'worker_id' => 'worker-1',
+                'date' => '2026-08-20',
+                'time' => '14:02:00',
+                'asset_code' => 'VT-XL5024',
+                'confidence' => 0.95,
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'EXCEPTION');
+
+        $this->assertSame(['WRONG_DATE'], $response->json('job.exceptions'));
+    }
+
     public function test_uncertain_or_invalid_result_becomes_exception(): void
     {
         $job = $this->createJob();
@@ -98,7 +172,7 @@ class OcrJobTest extends TestCase
         $response = $this->withToken('test-ocr-token')
             ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
                 'worker_id' => 'worker-1',
-                'date' => '2026-08-18',
+                'date' => '2026-08-17',
                 'time' => '06:00:00',
                 'asset_code' => 'T-UNKNOWN',
                 'confidence' => 0.50,

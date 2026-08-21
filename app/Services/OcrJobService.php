@@ -11,6 +11,8 @@ use Illuminate\Validation\ValidationException;
 
 class OcrJobService
 {
+    private const DAILY_SUBMISSION_DELAY_DAYS = 1;
+
     public function enqueue(int $attachmentId): OcrJob
     {
         return OcrJob::query()->firstOrCreate(
@@ -255,9 +257,15 @@ class OcrJobService
         if (! empty($data['date'])) {
             $messageDate = CarbonImmutable::parse($job->attachment->message->sent_at)
                 ->setTimezone((string) config('app.timezone'))
-                ->toDateString();
+                ->startOfDay();
+            $imageDate = CarbonImmutable::createFromFormat(
+                'Y-m-d',
+                $data['date'],
+                (string) config('app.timezone'),
+            )->startOfDay();
+            $earliestAllowedDate = $messageDate->subDays(self::DAILY_SUBMISSION_DELAY_DAYS);
 
-            if ($data['date'] !== $messageDate) {
+            if ($imageDate->lt($earliestAllowedDate) || $imageDate->gt($messageDate)) {
                 $exceptions[] = 'WRONG_DATE';
             }
         }
