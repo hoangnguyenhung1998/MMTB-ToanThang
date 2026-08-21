@@ -40,6 +40,10 @@
                 </span>
                 <span>Nhật ký hoạt động</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('ocr-reviews.*') ? 'active' : '' }}" href="{{ route('ocr-reviews.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4V4Zm4 4h8M8 12h5m-5 4h8M3 9h2m14 0h2M3 15h2m14 0h2"/></svg></span>
+                <span>Hậu kiểm OCR</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>

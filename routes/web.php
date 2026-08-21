@@ -189,6 +189,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/activities', [App\Http\Controllers\ActivityController::class, 'index'])
     ->name('activities.index');
 
+    Route::get('/ocr-reviews', [App\Http\Controllers\OcrReviewController::class, 'index'])
+        ->name('ocr-reviews.index');
+    Route::get('/ocr-reviews/{ocrJob}', [App\Http\Controllers\OcrReviewController::class, 'show'])
+        ->name('ocr-reviews.show');
+    Route::get('/ocr-reviews/{ocrJob}/image', [App\Http\Controllers\OcrReviewController::class, 'image'])
+        ->name('ocr-reviews.image');
+
     Route::get('/notifications', [App\Http\Controllers\NotificationController::class, 'index'])
     ->name('notifications.index');
 
