@@ -18,6 +18,10 @@ class ModelsTest(unittest.TestCase):
         self.assertIsNone(row.work_date)
         self.assertIsNone(row.work_content)
 
+    def test_wraps_string_raw_data_for_laravel(self):
+        row = JournalRow(raw_data="18/7 | Sáng | Club House", confidence=0.8)
+        self.assertEqual({"text": "18/7 | Sáng | Club House"}, row.raw_data)
+
     def test_api_payload_renumbers_rows_and_normalizes_asset(self):
         extraction = JournalExtraction(
             asset_code=" vt-xl5024 ",

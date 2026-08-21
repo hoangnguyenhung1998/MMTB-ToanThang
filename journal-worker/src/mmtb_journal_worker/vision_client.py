@@ -87,6 +87,8 @@ class JournalVisionClient:
             "Nếu trường nào không đọc được hãy để null. total_minutes là số phút thực tế từ start_time đến end_time. "
             "work_content chỉ lấy từ cột NỘI DUNG CÔNG VIỆC; work_location chỉ lấy từ vị trí/địa điểm. "
             "confidence của từng dòng phản ánh độ chắc chắn 0..1. raw_text giữ gần nguyên văn để hậu kiểm. "
+            "raw_data của từng dòng bắt buộc là JSON object, ví dụ {\"text\": \"nội dung nguyên dòng\"}; "
+            "không được trả raw_data dưới dạng chuỗi. "
             "asset_code chỉ chọn chính xác từ danh mục sau nếu nhìn thấy khớp; nếu không chắc để null: "
             f"{catalog}. "
             "Trả duy nhất JSON hợp lệ, không markdown, theo schema: "

@@ -34,6 +34,13 @@ class JournalRow(BaseModel):
     confidence: float = Field(default=0.0, ge=0, le=1)
     raw_data: dict[str, Any] | None = None
 
+    @field_validator("raw_data", mode="before")
+    @classmethod
+    def normalize_raw_data(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"text": value}
+        return value
+
     @field_validator("start_time", "end_time", mode="before")
     @classmethod
     def validate_time(cls, value: object) -> str | None:
