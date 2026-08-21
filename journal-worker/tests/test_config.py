@@ -22,7 +22,7 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual("journal-test", settings.worker_id)
         self.assertEqual("vision-model", settings.vision_model)
-        self.assertEqual(Path(directory) / "data", settings.data_dir)
+        self.assertEqual((Path(directory) / "data").resolve(), settings.data_dir)
 
     def test_rejects_missing_secrets(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
