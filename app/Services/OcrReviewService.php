@@ -197,7 +197,7 @@ class OcrReviewService
                 }
 
                 $confidence = (float) ($rowData['confidence'] ?? 1);
-                if ($confidence < (float) config('ocr.minimum_confidence', 0.8)) {
+                if ($action !== 'approve' && $confidence < (float) config('ocr.minimum_confidence', 0.8)) {
                     $exceptions[] = 'LOW_CONFIDENCE';
                 }
 

@@ -100,6 +100,22 @@ class OcrReviewTest extends TestCase
             ->assertHeader('content-type', 'image/jpeg');
     }
 
+    public function test_daily_review_shows_editor_beside_rotatable_source_image(): void
+    {
+        $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        Storage::disk('local')->put($job->attachment->storage_path, 'fake-jpeg-content');
+
+        $this->actingAs(User::factory()->create())
+            ->get("/ocr-reviews/{$job->id}")
+            ->assertOk()
+            ->assertSee('daily-review-workspace', false)
+            ->assertSee('Chỉnh sửa ảnh hằng ngày')
+            ->assertSee('Ảnh gốc đối chiếu')
+            ->assertSee('data-image-action="left"', false)
+            ->assertSee('data-image-action="right"', false)
+            ->assertSee('id="reviewSourceImage"', false);
+    }
+
 
     public function test_user_can_approve_an_ocr_exception_and_audit_is_recorded(): void
     {
@@ -296,6 +312,47 @@ class OcrReviewTest extends TestCase
             'start_time' => '22:00',
             'end_time' => '02:00',
             'total_minutes' => 240,
+        ]);
+    }
+
+    public function test_reviewer_can_approve_complete_weekly_rows_with_low_ocr_confidence(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL5032', 'company' => 'VINALPHA',
+            'chassis_no' => 'JOURNAL-LOW-CONFIDENCE-CHASSIS', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
+        $document = JournalDocument::query()->create([
+            'ocr_job_id' => $job->id, 'confidence' => 0.70,
+            'exceptions' => ['JOURNAL_ROW_EXCEPTION'],
+        ]);
+        $row = $document->rows()->create([
+            'row_number' => 1, 'work_date' => '2026-07-18',
+            'start_time' => '07:00', 'end_time' => '11:00',
+            'total_minutes' => 240, 'work_content' => 'Cẩu quả ga',
+            'work_location' => 'Club House', 'confidence' => 0.70,
+            'exceptions' => ['LOW_CONFIDENCE'],
+        ]);
+
+        $this->actingAs(User::factory()->create())
+            ->put("/ocr-reviews/{$job->id}/journal", [
+                'action' => 'approve', 'machine_id' => $machine->id,
+                'rows' => [[
+                    'id' => $row->id, 'work_date' => '2026-07-18',
+                    'start_time' => '07:00', 'end_time' => '11:00',
+                    'work_content' => 'Cẩu quả ga',
+                    'work_location' => 'Club House', 'confidence' => 0.70,
+                ]],
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id, 'status' => 'COMPLETED',
+            'review_status' => 'APPROVED', 'exceptions' => null,
+        ]);
+        $this->assertDatabaseHas('journal_rows', [
+            'journal_document_id' => $document->id,
+            'confidence' => 0.70,
+            'exceptions' => null,
         ]);
     }
 
