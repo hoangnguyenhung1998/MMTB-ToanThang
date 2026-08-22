@@ -190,13 +190,10 @@ class OcrReviewService
 
                 $totalMinutes = null;
                 if (! empty($rowData['start_time']) && ! empty($rowData['end_time'])) {
-                    [$startHour, $startMinute] = array_map('intval', explode(':', $rowData['start_time']));
-                    [$endHour, $endMinute] = array_map('intval', explode(':', $rowData['end_time']));
-                    $totalMinutes = ($endHour * 60 + $endMinute) - ($startHour * 60 + $startMinute);
-                    if ($totalMinutes < 0) {
-                        $totalMinutes = null;
-                        $exceptions[] = 'INVALID_TIME_RANGE';
-                    }
+                    $totalMinutes = $this->calculateJournalDuration(
+                        $rowData['start_time'],
+                        $rowData['end_time'],
+                    );
                 }
 
                 $confidence = (float) ($rowData['confidence'] ?? 1);
@@ -255,6 +252,17 @@ class OcrReviewService
 
             return $job->fresh(['journalDocument.rows', 'machine']);
         });
+    }
+
+    private function calculateJournalDuration(string $startTime, string $endTime): int
+    {
+        [$startHour, $startMinute] = array_map('intval', explode(':', $startTime));
+        [$endHour, $endMinute] = array_map('intval', explode(':', $endTime));
+        $minutes = ($endHour * 60 + $endMinute) - ($startHour * 60 + $startMinute);
+
+        // A shift may continue after midnight. It still belongs to the work date
+        // recorded on this row; the next row's date starts the next work day.
+        return $minutes < 0 ? $minutes + 1440 : $minutes;
     }
 
     private function logJournalReview(OcrJob $job, User $user, string $action, array $before): void

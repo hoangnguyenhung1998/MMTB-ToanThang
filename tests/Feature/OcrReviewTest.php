@@ -269,6 +269,36 @@ class OcrReviewTest extends TestCase
         ]);
     }
 
+    public function test_weekly_overnight_shift_keeps_work_date_and_calculates_duration(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL5031', 'company' => 'VINALPHA',
+            'chassis_no' => 'JOURNAL-OVERNIGHT-CHASSIS', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
+        $document = JournalDocument::query()->create([
+            'ocr_job_id' => $job->id, 'confidence' => 0.95,
+        ]);
+
+        $this->actingAs(User::factory()->create())
+            ->put("/ocr-reviews/{$job->id}/journal", [
+                'action' => 'save', 'machine_id' => $machine->id,
+                'rows' => [[
+                    'work_date' => '2026-07-18', 'start_time' => '22:00',
+                    'end_time' => '02:00', 'work_content' => 'Làm ca đêm',
+                    'confidence' => 1,
+                ]],
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('journal_rows', [
+            'journal_document_id' => $document->id,
+            'work_date' => '2026-07-18',
+            'start_time' => '22:00:00',
+            'end_time' => '02:00:00',
+            'total_minutes' => 240,
+        ]);
+    }
+
     private function createJob(string $documentType, string $status, string $senderName = 'Nguyễn Văn A'): OcrJob
     {
         $message = ZaloMessage::query()->create([
