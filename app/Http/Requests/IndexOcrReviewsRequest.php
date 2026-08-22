@@ -11,6 +11,8 @@ class IndexOcrReviewsRequest extends FormRequest
     {
         return [
             'q' => ['nullable', 'string', 'max:100'],
+            'review_status' => ['nullable', Rule::in(['PENDING','AUTO_APPROVED','APPROVED','CORRECTED','REJECTED'])],
+            'overview_date' => ['nullable', 'date'],
             'status' => ['nullable', Rule::in(['PENDING', 'PROCESSING', 'RETRY', 'COMPLETED', 'EXCEPTION', 'FAILED'])],
             'document_type' => ['nullable', Rule::in(['UNKNOWN', 'DAILY_TIMEMARK', 'WEEKLY_JOURNAL'])],
             'machine_id' => ['nullable', 'integer', 'exists:machines,id'],
