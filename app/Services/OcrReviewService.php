@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class OcrReviewService
 {
@@ -140,6 +141,143 @@ class OcrReviewService
 
             return $job->fresh();
         });
+    }
+
+
+    public function updateJournal(OcrJob $job, array $data, User $user): OcrJob
+    {
+        if ($job->document_type !== 'WEEKLY_JOURNAL' || ! $job->journalDocument) {
+            throw ValidationException::withMessages(['document_type' => 'Job này không phải nhật trình tuần.']);
+        }
+
+        return DB::transaction(function () use ($job, $data, $user): OcrJob {
+            $document = $job->journalDocument()->with('rows')->firstOrFail();
+            $before = [
+                'job' => $job->only(['status', 'review_status', 'machine_id', 'asset_code', 'exceptions']),
+                'document' => $document->only(['machine_id', 'asset_code', 'exceptions']),
+                'rows' => $document->rows->map->toArray()->all(),
+            ];
+            $action = $data['action'];
+            $machine = Machine::query()->findOrFail($data['machine_id']);
+
+            if ($action === 'reject') {
+                $job->update([
+                    'review_status' => 'REJECTED',
+                    'reviewed_by' => $user->id,
+                    'reviewed_at' => now(),
+                    'review_notes' => $data['review_notes'] ?? null,
+                ]);
+                $this->logJournalReview($job, $user, $action, $before);
+
+                return $job->fresh(['journalDocument.rows']);
+            }
+
+            $existingRows = $document->rows->keyBy('id');
+            $preparedRows = [];
+            foreach ($data['rows'] ?? [] as $rowData) {
+                if (! empty($rowData['delete'])) {
+                    continue;
+                }
+
+                if (! empty($rowData['id']) && ! $existingRows->has((int) $rowData['id'])) {
+                    throw ValidationException::withMessages(['rows' => 'Dòng nhật trình không thuộc tài liệu này.']);
+                }
+
+                $exceptions = [];
+                if (empty($rowData['work_date'])) $exceptions[] = 'MISSING_DATE';
+                if (empty($rowData['start_time']) || empty($rowData['end_time'])) $exceptions[] = 'MISSING_TIME';
+                if (blank($rowData['work_content'] ?? null)) $exceptions[] = 'MISSING_WORK_CONTENT';
+
+                $totalMinutes = null;
+                if (! empty($rowData['start_time']) && ! empty($rowData['end_time'])) {
+                    [$startHour, $startMinute] = array_map('intval', explode(':', $rowData['start_time']));
+                    [$endHour, $endMinute] = array_map('intval', explode(':', $rowData['end_time']));
+                    $totalMinutes = ($endHour * 60 + $endMinute) - ($startHour * 60 + $startMinute);
+                    if ($totalMinutes < 0) {
+                        $totalMinutes = null;
+                        $exceptions[] = 'INVALID_TIME_RANGE';
+                    }
+                }
+
+                $confidence = (float) ($rowData['confidence'] ?? 1);
+                if ($confidence < (float) config('ocr.minimum_confidence', 0.8)) {
+                    $exceptions[] = 'LOW_CONFIDENCE';
+                }
+
+                $oldRow = ! empty($rowData['id']) ? $existingRows->get((int) $rowData['id']) : null;
+                $preparedRows[] = [
+                    'work_date' => $rowData['work_date'] ?? null,
+                    'start_time' => $rowData['start_time'] ?? null,
+                    'end_time' => $rowData['end_time'] ?? null,
+                    'total_minutes' => $totalMinutes,
+                    'work_content' => $rowData['work_content'] ?? null,
+                    'quantity' => $rowData['quantity'] ?? null,
+                    'unit' => $rowData['unit'] ?? null,
+                    'work_location' => $rowData['work_location'] ?? null,
+                    'operator_name' => $rowData['operator_name'] ?? null,
+                    'confidence' => $confidence,
+                    'raw_data' => $oldRow?->raw_data,
+                    'exceptions' => $exceptions === [] ? null : array_values(array_unique($exceptions)),
+                ];
+            }
+
+            if ($preparedRows === []) {
+                throw ValidationException::withMessages(['rows' => 'Nhật trình phải còn ít nhất một dòng.']);
+            }
+
+            $hasExceptions = collect($preparedRows)->contains(fn (array $row) => ! empty($row['exceptions']));
+            if ($action === 'approve' && $hasExceptions) {
+                throw ValidationException::withMessages(['rows' => 'Không thể duyệt khi vẫn còn dòng thiếu hoặc sai dữ liệu.']);
+            }
+
+            $document->rows()->delete();
+            foreach ($preparedRows as $index => $row) {
+                $document->rows()->create(['row_number' => $index + 1, ...$row]);
+            }
+
+            $document->update([
+                'machine_id' => $machine->id,
+                'asset_code' => $machine->asset_code,
+                'exceptions' => $hasExceptions ? ['JOURNAL_ROW_EXCEPTION'] : null,
+            ]);
+            $job->update([
+                'machine_id' => $machine->id,
+                'asset_code' => $machine->asset_code,
+                'status' => $hasExceptions ? 'EXCEPTION' : 'COMPLETED',
+                'exceptions' => $hasExceptions ? ['JOURNAL_ROW_EXCEPTION'] : null,
+                'review_status' => $action === 'approve' ? 'APPROVED' : 'PENDING',
+                'reviewed_by' => $user->id,
+                'reviewed_at' => now(),
+                'review_notes' => $data['review_notes'] ?? null,
+            ]);
+
+            $this->logJournalReview($job, $user, $action, $before);
+
+            return $job->fresh(['journalDocument.rows', 'machine']);
+        });
+    }
+
+    private function logJournalReview(OcrJob $job, User $user, string $action, array $before): void
+    {
+        $fresh = $job->fresh(['journalDocument.rows']);
+        ActivityLog::query()->create([
+            'user_id' => $user->id,
+            'machine_id' => $fresh->machine_id,
+            'event' => 'ocr.journal_updated',
+            'description' => "Chỉnh sửa nhật trình OCR job #{$fresh->id}: {$action}",
+            'subject_type' => OcrJob::class,
+            'subject_id' => $fresh->id,
+            'properties' => [
+                'action' => $action,
+                'before' => $before,
+                'after' => [
+                    'job' => $fresh->only(['status', 'review_status', 'machine_id', 'asset_code', 'exceptions']),
+                    'document' => $fresh->journalDocument?->only(['machine_id', 'asset_code', 'exceptions']),
+                    'rows' => $fresh->journalDocument?->rows->map->toArray()->all(),
+                ],
+            ],
+            'occurred_at' => now(),
+        ]);
     }
 
     public function bulkReview(array $data, User $user): int
