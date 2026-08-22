@@ -36,7 +36,14 @@
                 <tbody id="journalRows">
                 @foreach ($document->rows as $index => $row)
                     <tr class="{{ !empty($row->exceptions) ? 'journal-row-alert' : '' }}">
-                        <td class="row-number">{{ $loop->iteration }}<input type="hidden" name="rows[{{ $index }}][id]" value="{{ $row->id }}"><input type="hidden" name="rows[{{ $index }}][confidence]" value="{{ $row->confidence }}"></td>
+                        <td class="row-number">
+                            {{ $loop->iteration }}
+                            <input type="hidden" name="rows[{{ $index }}][id]" value="{{ $row->id }}">
+                            <input type="hidden" name="rows[{{ $index }}][confidence]" value="{{ $row->confidence }}">
+                            @foreach ($row->exceptions ?? [] as $exception)
+                                <span class="journal-row-exception">{{ $labelException($exception) }}</span>
+                            @endforeach
+                        </td>
                         <td><input type="date" name="rows[{{ $index }}][work_date]" value="{{ old("rows.$index.work_date", $row->work_date?->format('Y-m-d')) }}"></td>
                         <td><input class="row-start" type="time" name="rows[{{ $index }}][start_time]" value="{{ old("rows.$index.start_time", $row->start_time ? substr($row->start_time, 0, 5) : '') }}"></td>
                         <td><input class="row-end" type="time" name="rows[{{ $index }}][end_time]" value="{{ old("rows.$index.end_time", $row->end_time ? substr($row->end_time, 0, 5) : '') }}"></td>
@@ -78,7 +85,7 @@
 </template>
 
 <style>
-.journal-editor-card{margin-top:16px;overflow:hidden}.journal-document-fields{display:grid;grid-template-columns:minmax(220px,.45fr) 1fr;gap:12px;padding:14px}.journal-document-fields label span{display:block;margin-bottom:6px;color:#475569;font-size:11px;font-weight:800}.journal-document-fields select,.journal-document-fields input{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px}.journal-edit-table{min-width:1700px}.journal-edit-table input,.journal-edit-table textarea{width:100%;min-width:105px;padding:7px;border:1px solid #cbd5e1;border-radius:7px}.journal-edit-table textarea{min-width:220px}.journal-edit-table input[name$="[unit]"]{min-width:70px}.journal-row-alert{background:#fffaf0}.delete-row{color:#b42332;font-size:11px;font-weight:700;white-space:nowrap}.journal-review-actions{display:flex;justify-content:flex-end;gap:9px;padding:14px;border-top:1px solid var(--border)}@media(max-width:700px){.journal-document-fields{grid-template-columns:1fr}}
+.journal-editor-card{margin-top:16px;overflow:hidden}.journal-document-fields{display:grid;grid-template-columns:minmax(220px,.45fr) 1fr;gap:12px;padding:14px}.journal-document-fields label span{display:block;margin-bottom:6px;color:#475569;font-size:11px;font-weight:800}.journal-document-fields select,.journal-document-fields input{width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px}.journal-edit-table{min-width:1700px}.journal-edit-table input,.journal-edit-table textarea{width:100%;min-width:105px;padding:7px;border:1px solid #cbd5e1;border-radius:7px}.journal-edit-table textarea{min-width:220px}.journal-edit-table input[name$="[unit]"]{min-width:70px}.journal-row-alert{background:#fffaf0}.journal-row-exception{display:block;margin-top:4px;color:#a05200;font-size:9px;font-weight:800;white-space:normal}.delete-row{color:#b42332;font-size:11px;font-weight:700;white-space:nowrap}.journal-review-actions{display:flex;justify-content:flex-end;gap:9px;padding:14px;border-top:1px solid var(--border)}@media(max-width:700px){.journal-document-fields{grid-template-columns:1fr}}
 </style>
 
 <script>
