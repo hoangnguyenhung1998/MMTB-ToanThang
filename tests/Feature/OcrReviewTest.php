@@ -129,6 +129,36 @@ class OcrReviewTest extends TestCase
         $this->assertSame(2, OcrJob::query()->where('review_status', 'APPROVED')->count());
     }
 
+
+    public function test_dashboard_filters_review_status_and_groups_daily_jobs_by_machine(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL5024',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'DASHBOARD-CHASSIS',
+            'status' => 'ACTIVE',
+        ]);
+        $pending = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $pending->update([
+            'machine_id' => $machine->id,
+            'asset_code' => $machine->asset_code,
+            'extracted_date' => '2026-08-22',
+            'extracted_time' => '07:00:00',
+            'review_status' => 'PENDING',
+        ]);
+        $automatic = $this->createJob('DAILY_TIMEMARK', 'COMPLETED');
+        OcrJob::query()->whereKey($automatic->id)->update(['review_status' => 'AUTO_APPROVED']);
+
+        $this->actingAs(User::factory()->create())
+            ->get('/ocr-reviews?review_status=PENDING&overview_date=2026-08-22')
+            ->assertOk()
+            ->assertSee("#{$pending->id}")
+            ->assertDontSee("#{$automatic->id}")
+            ->assertSee('VT-XL5024')
+            ->assertSee('Tổng quan ảnh hằng ngày theo máy')
+            ->assertSee('Áp dụng hàng loạt');
+    }
+
     private function createJob(string $documentType, string $status, string $senderName = 'Nguyễn Văn A'): OcrJob
     {
         $message = ZaloMessage::query()->create([
