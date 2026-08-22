@@ -300,6 +300,8 @@ class OcrReviewService
             'LOW_CONFIDENCE' => 'Độ tin cậy thấp',
             'MISSING_DATE' => 'Thiếu ngày',
             'MISSING_TIME' => 'Thiếu giờ',
+            'MISSING_WORK_CONTENT' => 'Thiếu nội dung công việc',
+            'INVALID_TIME_RANGE' => 'Giờ kết thúc phải sau giờ bắt đầu',
             'UNKNOWN_ASSET_CODE' => 'Mã máy không tồn tại',
             'WRONG_DATE' => 'Sai ngày gửi',
             'JOURNAL_ROW_EXCEPTION' => 'Có dòng nhật trình cần kiểm tra',
