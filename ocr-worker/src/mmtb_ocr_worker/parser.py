@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import re
 import unicodedata
 from datetime import date, time
@@ -110,6 +109,15 @@ def parse_location(text: str) -> str | None:
 
 
 class AssetMatcher:
+    CONFUSION_PAIRS = {
+        frozenset(("I", "1")),
+        frozenset(("L", "1")),
+        frozenset(("O", "0")),
+        frozenset(("S", "5")),
+        frozenset(("B", "8")),
+        frozenset(("Z", "2")),
+    }
+
     def __init__(self, asset_codes: list[str]):
         normalized = [normalize_asset(code) for code in asset_codes]
         self.asset_codes = sorted({code for code in normalized if code}, key=len, reverse=True)
@@ -119,12 +127,42 @@ class AssetMatcher:
     def _compact(value: object) -> str:
         return re.sub(r"[^A-Z0-9]", "", normalize_text(value))
 
+    @classmethod
+    def _confusion_count(cls, observed: str, canonical: str) -> int | None:
+        if len(observed) != len(canonical):
+            return None
+
+        substitutions = 0
+        for observed_char, canonical_char in zip(observed, canonical):
+            if observed_char == canonical_char:
+                continue
+            if frozenset((observed_char, canonical_char)) not in cls.CONFUSION_PAIRS:
+                return None
+            substitutions += 1
+
+        return substitutions
+
     @staticmethod
-    def _confusion_variants(text: str) -> set[str]:
-        base = re.sub(r"[^A-Z0-9]", "", normalize_text(text))
-        forward = str.maketrans({"I": "1", "L": "1", "O": "0", "S": "5", "B": "8", "Z": "2"})
-        reverse = str.maketrans({"1": "I", "0": "O", "5": "S", "8": "B", "2": "Z"})
-        return {value for value in {base, base.translate(forward), base.translate(reverse)} if len(value) >= 5}
+    def _candidates(text: str) -> list[str]:
+        candidates = [match.group(0) for match in GENERIC_ASSET_PATTERN.finditer(normalize_text(text))]
+        candidates.extend(text.splitlines())
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for raw in candidates:
+            normalized = normalize_asset(raw)
+            compact = re.sub(r"[^A-Z0-9]", "", normalized)
+            if (
+                normalized not in seen
+                and "-" in normalized
+                and 6 <= len(compact) <= 16
+                and any(char.isalpha() for char in compact)
+                and any(char.isdigit() for char in compact)
+            ):
+                seen.add(normalized)
+                unique.append(raw)
+
+        return unique
 
     def match(self, text: str) -> tuple[str | None, float, str]:
         whole = self._compact(text)
@@ -132,23 +170,31 @@ class AssetMatcher:
             if compact and compact in whole:
                 return canonical, 1.0, canonical
 
-        candidates = [match.group(0) for match in GENERIC_ASSET_PATTERN.finditer(normalize_text(text))]
-        for raw_line in text.splitlines():
-            line = normalize_text(raw_line)
-            compact = self._compact(line)
-            if 6 <= len(compact) <= 16 and any(char.isalpha() for char in compact) and any(char.isdigit() for char in compact):
-                candidates.append(line)
+        candidates = self._candidates(text)
+        observed_code = normalize_asset(candidates[0]) if candidates else None
+        observed_raw = candidates[0].strip() if candidates else ""
 
-        best_code, best_ratio, best_raw = None, 0.0, ""
+        safe_matches: list[tuple[int, str, str]] = []
         for raw in candidates:
-            for variant in self._confusion_variants(raw):
-                for compact, canonical in self.compact_codes.items():
-                    if abs(len(variant) - len(compact)) > 2:
-                        continue
-                    ratio = difflib.SequenceMatcher(None, variant, compact).ratio()
-                    if ratio > best_ratio:
-                        best_code, best_ratio, best_raw = canonical, ratio, raw.strip()
+            observed = self._compact(raw)
+            for compact, canonical in self.compact_codes.items():
+                substitutions = self._confusion_count(observed, compact)
+                if substitutions is not None:
+                    safe_matches.append((substitutions, canonical, raw.strip()))
 
-        if best_ratio >= 0.84:
-            return best_code, best_ratio, best_raw
-        return None, best_ratio, best_raw
+        if safe_matches:
+            minimum = min(match[0] for match in safe_matches)
+            best = [match for match in safe_matches if match[0] == minimum]
+            canonical_codes = {match[1] for match in best}
+            if len(canonical_codes) == 1:
+                substitutions, canonical, raw = best[0]
+                confidence = max(0.85, 1.0 - substitutions * 0.05)
+                return canonical, confidence, raw
+
+        # Preserve an OCR-observed code that is not in the Laravel catalog.
+        # Laravel will store it without a machine_id and mark UNKNOWN_ASSET_CODE.
+        if observed_code:
+            return observed_code, 0.5, observed_raw
+
+        return None, 0.0, ""
+

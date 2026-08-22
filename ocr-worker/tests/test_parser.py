@@ -46,6 +46,13 @@ class ParserTest(unittest.TestCase):
         self.assertEqual("VT-LU0216", code)
         self.assertGreaterEqual(confidence, 0.84)
 
+    def test_does_not_replace_unknown_numeric_code_with_nearest_catalog_code(self):
+        matcher = AssetMatcher(["VT-LU5020"])
+        code, confidence, raw = matcher.match("VT-LU5021")
+        self.assertEqual("VT-LU5021", code)
+        self.assertLess(confidence, 0.84)
+        self.assertEqual("VT-LU5021", raw)
+
 
 if __name__ == "__main__":
     unittest.main()
