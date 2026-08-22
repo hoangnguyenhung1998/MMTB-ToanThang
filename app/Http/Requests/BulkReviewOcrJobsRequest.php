@@ -1,0 +1,3 @@
+<?php
+namespace App\Http\Requests;use Illuminate\Foundation\Http\FormRequest;use Illuminate\Validation\Rule;
+class BulkReviewOcrJobsRequest extends FormRequest{public function rules():array{return['job_ids'=>['required','array','min:1','max:100'],'job_ids.*'=>['integer','distinct','exists:ocr_jobs,id'],'action'=>['required',Rule::in(['approve','reject'])],'review_notes'=>['nullable','string','max:2000']];}}
