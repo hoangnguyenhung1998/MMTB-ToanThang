@@ -1,0 +1,3 @@
+<?php
+namespace App\Http\Requests;use Illuminate\Foundation\Http\FormRequest;use Illuminate\Validation\Rule;
+class UpdateOcrReviewRequest extends FormRequest{public function rules():array{return['action'=>['required',Rule::in(['approve','correct','reject'])],'machine_id'=>['nullable','required_if:action,correct','exists:machines,id'],'extracted_date'=>['nullable','date'],'extracted_time'=>['nullable','date_format:H:i'],'operator_name'=>['nullable','string','max:255'],'phone'=>['nullable','string','max:30'],'work_location'=>['nullable','string'],'review_notes'=>['nullable','string','max:2000']];}}
