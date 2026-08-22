@@ -153,7 +153,8 @@ class OcrReviewTest extends TestCase
             ->get('/ocr-reviews?review_status=PENDING&overview_date=2026-08-22')
             ->assertOk()
             ->assertSee("#{$pending->id}")
-            ->assertDontSee("#{$automatic->id}")
+            ->assertViewHas('jobs', fn ($jobs) => $jobs->contains('id', $pending->id)
+                && ! $jobs->contains('id', $automatic->id))
             ->assertSee('VT-XL5024')
             ->assertSee('Tổng quan ảnh hằng ngày theo máy')
             ->assertSee('Áp dụng hàng loạt');
