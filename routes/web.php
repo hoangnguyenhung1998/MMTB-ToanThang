@@ -191,8 +191,12 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/ocr-reviews', [App\Http\Controllers\OcrReviewController::class, 'index'])
         ->name('ocr-reviews.index');
+    Route::post('/ocr-reviews/bulk', [App\Http\Controllers\OcrReviewController::class, 'bulk'])
+        ->name('ocr-reviews.bulk');
     Route::get('/ocr-reviews/{ocrJob}', [App\Http\Controllers\OcrReviewController::class, 'show'])
         ->name('ocr-reviews.show');
+    Route::put('/ocr-reviews/{ocrJob}', [App\Http\Controllers\OcrReviewController::class, 'update'])
+        ->name('ocr-reviews.update');
     Route::get('/ocr-reviews/{ocrJob}/image', [App\Http\Controllers\OcrReviewController::class, 'image'])
         ->name('ocr-reviews.image');
 
