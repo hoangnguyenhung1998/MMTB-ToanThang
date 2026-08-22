@@ -22,6 +22,7 @@
     </header>
 
     @if (session('success'))<div class="alert alert-success">{{ session('success') }}</div>@endif
+    @if ($job->document_type !== 'WEEKLY_JOURNAL')
     <section class="app-card" style="padding:16px;margin-bottom:16px">
         <strong>Hậu kiểm: {{ $job->review_status }}</strong>
         <form method="POST" action="{{ route('ocr-reviews.update', $job) }}" style="display:grid;gap:10px;margin-top:12px">
@@ -42,6 +43,7 @@
             </div>
         </form>
     </section>
+    @endif
 
     <div class="ocr-detail-grid">
         <section class="app-card ocr-image-card">
@@ -93,31 +95,7 @@
             </div>
         </section>
     @elseif ($document)
-        <section class="app-card ocr-result-card">
-            <div class="ocr-card-head"><strong>Dòng nhật trình</strong><span>{{ $document->rows->count() }} dòng</span></div>
-            <div class="table-scroll">
-                <table class="table table-modern journal-table">
-                    <thead><tr><th>STT</th><th>Ngày</th><th>Bắt đầu</th><th>Kết thúc</th><th>Phút</th><th>Nội dung công việc</th><th>Khối lượng</th><th>Vị trí</th><th>Người vận hành</th><th>Tin cậy</th><th>Ngoại lệ</th></tr></thead>
-                    <tbody>
-                    @foreach ($document->rows as $row)
-                        <tr class="{{ !empty($row->exceptions) ? 'journal-row-alert' : '' }}">
-                            <td>{{ $row->row_number }}</td>
-                            <td>{{ $row->work_date?->format('d/m/Y') ?: '—' }}</td>
-                            <td>{{ $row->start_time ? substr($row->start_time, 0, 5) : '—' }}</td>
-                            <td>{{ $row->end_time ? substr($row->end_time, 0, 5) : '—' }}</td>
-                            <td>{{ $row->total_minutes ?? '—' }}</td>
-                            <td class="journal-content">{{ $row->work_content ?: '—' }}</td>
-                            <td>{{ $row->quantity !== null ? rtrim(rtrim(number_format((float) $row->quantity, 2, '.', ''), '0'), '.') : '—' }} {{ $row->unit }}</td>
-                            <td>{{ $row->work_location ?: '—' }}</td>
-                            <td>{{ $row->operator_name ?: '—' }}</td>
-                            <td>{{ number_format((float) $row->confidence * 100, 0) }}%</td>
-                            <td>@foreach ($row->exceptions ?? [] as $exception)<span class="row-exception">{{ $labelException($exception) }}</span>@endforeach</td>
-                        </tr>
-                    @endforeach
-                    </tbody>
-                </table>
-            </div>
-        </section>
+        @include('ocr-reviews._journal-editor', ['document' => $document])
     @endif
 
     @if ($job->raw_text)
