@@ -293,8 +293,8 @@ class OcrReviewTest extends TestCase
         $this->assertDatabaseHas('journal_rows', [
             'journal_document_id' => $document->id,
             'work_date' => '2026-07-18',
-            'start_time' => '22:00:00',
-            'end_time' => '02:00:00',
+            'start_time' => '22:00',
+            'end_time' => '02:00',
             'total_minutes' => 240,
         ]);
     }
