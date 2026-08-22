@@ -160,6 +160,115 @@ class OcrReviewTest extends TestCase
             ->assertSee('Áp dụng hàng loạt');
     }
 
+
+    public function test_user_can_edit_add_and_delete_weekly_rows_with_audit(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL1186', 'company' => 'VINALPHA',
+            'chassis_no' => 'JOURNAL-EDIT-CHASSIS', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
+        $document = JournalDocument::query()->create([
+            'ocr_job_id' => $job->id, 'confidence' => 0.85,
+        ]);
+        $first = $document->rows()->create([
+            'row_number' => 1, 'work_date' => '2026-07-14',
+            'start_time' => '07:00:00', 'end_time' => '11:00:00',
+            'total_minutes' => 240, 'work_content' => 'Công việc cũ',
+            'confidence' => 0.90,
+        ]);
+        $second = $document->rows()->create([
+            'row_number' => 2, 'work_date' => '2026-07-14',
+            'start_time' => '13:30:00', 'end_time' => '17:30:00',
+            'total_minutes' => 240, 'work_content' => 'Dòng cần xóa',
+            'confidence' => 0.90,
+        ]);
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->put("/ocr-reviews/{$job->id}/journal", [
+            'action' => 'save',
+            'machine_id' => $machine->id,
+            'review_notes' => 'Đã sửa theo ảnh gốc',
+            'rows' => [
+                [
+                    'id' => $first->id, 'work_date' => '2026-07-14',
+                    'start_time' => '07:00', 'end_time' => '11:30',
+                    'work_content' => 'Lắp gen điện', 'work_location' => 'T9',
+                    'operator_name' => 'Thủy', 'confidence' => 0.90,
+                ],
+                ['id' => $second->id, 'delete' => 1],
+                [
+                    'work_date' => '2026-07-15', 'start_time' => '13:30',
+                    'end_time' => '17:30', 'work_content' => 'Đào và lấp gen',
+                    'quantity' => 80, 'unit' => 'm', 'work_location' => 'T9',
+                    'operator_name' => 'Thủy', 'confidence' => 1,
+                ],
+            ],
+        ])->assertRedirect();
+
+        $this->assertDatabaseCount('journal_rows', 2);
+        $this->assertDatabaseHas('journal_rows', [
+            'journal_document_id' => $document->id,
+            'row_number' => 1, 'work_content' => 'Lắp gen điện',
+            'total_minutes' => 270,
+        ]);
+        $this->assertDatabaseHas('journal_rows', [
+            'journal_document_id' => $document->id,
+            'row_number' => 2, 'work_content' => 'Đào và lấp gen',
+            'total_minutes' => 240,
+        ]);
+        $this->assertDatabaseMissing('journal_rows', ['id' => $second->id]);
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id, 'machine_id' => $machine->id,
+            'review_status' => 'PENDING',
+        ]);
+        $this->assertDatabaseHas('activity_logs', [
+            'event' => 'ocr.journal_updated',
+            'subject_type' => OcrJob::class,
+            'subject_id' => $job->id,
+        ]);
+    }
+
+    public function test_weekly_journal_requires_clean_rows_before_approval(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL5030', 'company' => 'VINALPHA',
+            'chassis_no' => 'JOURNAL-APPROVE-CHASSIS', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
+        JournalDocument::query()->create([
+            'ocr_job_id' => $job->id, 'confidence' => 0.90,
+        ]);
+
+        $this->actingAs(User::factory()->create())
+            ->from("/ocr-reviews/{$job->id}")
+            ->put("/ocr-reviews/{$job->id}/journal", [
+                'action' => 'approve', 'machine_id' => $machine->id,
+                'rows' => [[
+                    'work_date' => '2026-07-15', 'start_time' => '07:00',
+                    'end_time' => '11:00', 'work_content' => '',
+                    'confidence' => 1,
+                ]],
+            ])
+            ->assertRedirect("/ocr-reviews/{$job->id}")
+            ->assertSessionHasErrors('rows');
+
+        $this->actingAs(User::factory()->create())
+            ->put("/ocr-reviews/{$job->id}/journal", [
+                'action' => 'approve', 'machine_id' => $machine->id,
+                'rows' => [[
+                    'work_date' => '2026-07-15', 'start_time' => '07:00',
+                    'end_time' => '11:00', 'work_content' => 'Đào và lấp gen',
+                    'work_location' => 'T9', 'confidence' => 1,
+                ]],
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id, 'status' => 'COMPLETED',
+            'review_status' => 'APPROVED', 'exceptions' => null,
+        ]);
+    }
+
     private function createJob(string $documentType, string $status, string $senderName = 'Nguyễn Văn A'): OcrJob
     {
         $message = ZaloMessage::query()->create([
