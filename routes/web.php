@@ -197,6 +197,8 @@ Route::middleware('auth')->group(function () {
         ->name('ocr-reviews.show');
     Route::put('/ocr-reviews/{ocrJob}', [App\Http\Controllers\OcrReviewController::class, 'update'])
         ->name('ocr-reviews.update');
+    Route::put('/ocr-reviews/{ocrJob}/journal', [App\Http\Controllers\OcrReviewController::class, 'updateJournal'])
+        ->name('ocr-reviews.journal.update');
     Route::get('/ocr-reviews/{ocrJob}/image', [App\Http\Controllers\OcrReviewController::class, 'image'])
         ->name('ocr-reviews.image');
 
