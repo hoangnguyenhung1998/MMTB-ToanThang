@@ -79,6 +79,7 @@ class ActivityLog extends Model
             'command_center.created' => 'Tạo ban chỉ huy',
             'command_center.updated' => 'Cập nhật ban chỉ huy',
             'command_center.deleted' => 'Xóa ban chỉ huy',
+            'ocr.journal_updated' => 'Chỉnh sửa nhật trình OCR',
             default => $this->event,
         };
     }
