@@ -21,6 +21,28 @@
         </div>
     </header>
 
+    @if (session('success'))<div class="alert alert-success">{{ session('success') }}</div>@endif
+    <section class="app-card" style="padding:16px;margin-bottom:16px">
+        <strong>Hậu kiểm: {{ $job->review_status }}</strong>
+        <form method="POST" action="{{ route('ocr-reviews.update', $job) }}" style="display:grid;gap:10px;margin-top:12px">
+            @csrf @method('PUT')
+            @if ($job->document_type === 'DAILY_TIMEMARK')
+                <select name="machine_id">@foreach($machines as $machine)<option value="{{ $machine->id }}" @selected($job->machine_id === $machine->id)>{{ $machine->asset_code }}</option>@endforeach</select>
+                <input type="date" name="extracted_date" value="{{ $job->extracted_date?->format('Y-m-d') }}">
+                <input type="time" name="extracted_time" value="{{ $job->extracted_time ? substr($job->extracted_time,0,5) : '' }}">
+                <input name="operator_name" value="{{ $job->operator_name }}" placeholder="Người vận hành">
+                <input name="phone" value="{{ $job->phone }}" placeholder="Số điện thoại">
+                <textarea name="work_location" placeholder="Vị trí">{{ $job->work_location }}</textarea>
+            @endif
+            <textarea name="review_notes" placeholder="Ghi chú hậu kiểm">{{ $job->review_notes }}</textarea>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-success" name="action" value="approve">Duyệt đúng</button>
+                @if ($job->document_type === 'DAILY_TIMEMARK')<button class="btn btn-primary" name="action" value="correct">Lưu chỉnh sửa</button>@endif
+                <button class="btn btn-danger" name="action" value="reject">Từ chối</button>
+            </div>
+        </form>
+    </section>
+
     <div class="ocr-detail-grid">
         <section class="app-card ocr-image-card">
             <div class="ocr-card-head"><strong>Ảnh gốc</strong><span>{{ $job->attachment?->original_name }}</span></div>
