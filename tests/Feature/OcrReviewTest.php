@@ -100,6 +100,35 @@ class OcrReviewTest extends TestCase
             ->assertHeader('content-type', 'image/jpeg');
     }
 
+
+    public function test_user_can_approve_an_ocr_exception_and_audit_is_recorded(): void
+    {
+        $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->put("/ocr-reviews/{$job->id}", [
+            'action' => 'approve',
+            'review_notes' => 'Đã đối chiếu ảnh gốc',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('ocr_jobs', ['id' => $job->id, 'review_status' => 'APPROVED', 'reviewed_by' => $user->id]);
+        $this->assertDatabaseHas('activity_logs', ['subject_type' => OcrJob::class, 'subject_id' => $job->id, 'event' => 'ocr.reviewed']);
+    }
+
+    public function test_user_can_bulk_approve_pending_jobs(): void
+    {
+        $first = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $second = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
+
+        $this->actingAs(User::factory()->create())->post('/ocr-reviews/bulk', [
+            'job_ids' => [$first->id, $second->id],
+            'action' => 'approve',
+        ])->assertRedirect();
+
+        $this->assertDatabaseCount('ocr_jobs', 2);
+        $this->assertSame(2, OcrJob::query()->where('review_status', 'APPROVED')->count());
+    }
+
     private function createJob(string $documentType, string $status, string $senderName = 'Nguyễn Văn A'): OcrJob
     {
         $message = ZaloMessage::query()->create([
