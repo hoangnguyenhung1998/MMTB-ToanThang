@@ -75,6 +75,40 @@ class ZaloIngestionTest extends TestCase
         $this->assertDatabaseCount('ocr_jobs', 1);
     }
 
+    public function test_it_stores_a_new_zalo_image_on_configured_r2_disk(): void
+    {
+        config(['collector.disk' => 'r2']);
+        Storage::fake('r2');
+
+        $this->postImage('message-r2', 'r2-image-bytes')
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'STORED');
+
+        $attachment = ZaloAttachment::query()->sole();
+
+        $this->assertSame('r2', $attachment->storage_disk);
+        Storage::disk('r2')->assertExists($attachment->storage_path);
+    }
+
+    public function test_duplicate_keeps_original_storage_disk_during_r2_transition(): void
+    {
+        $this->postImage('message-local', 'transition-bytes')->assertCreated();
+        $original = ZaloAttachment::query()->sole();
+
+        config(['collector.disk' => 'r2']);
+        Storage::fake('r2');
+
+        $this->postImage('message-r2', 'transition-bytes')
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'DUPLICATE');
+
+        $duplicate = ZaloAttachment::query()->latest('id')->firstOrFail();
+
+        $this->assertSame('local', $duplicate->storage_disk);
+        $this->assertSame($original->storage_path, $duplicate->storage_path);
+        Storage::disk('r2')->assertMissing($duplicate->storage_path);
+    }
+
     public function test_it_rejects_a_hash_mismatch(): void
     {
         $payload = $this->payload('message-1', 'actual-bytes');

@@ -74,10 +74,12 @@ class ZaloIngestionService
                     $status = 'STORED';
                 }
 
+                $storageDisk = $duplicate?->storage_disk ?? $disk;
+
                 $attachment = $message->attachments()->create([
                     'attachment_index' => $data['attachment_index'],
                     'original_name' => $file->getClientOriginalName(),
-                    'storage_disk' => $disk,
+                    'storage_disk' => $storageDisk,
                     'storage_path' => $storagePath,
                     'sha256' => $actualHash,
                     'mime_type' => $file->getMimeType() ?: 'application/octet-stream',
