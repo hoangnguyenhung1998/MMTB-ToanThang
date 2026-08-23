@@ -40,8 +40,12 @@ class RuleReconciliationService
         $journalRows = $this->journalRows($job);
         $result = $this->evaluate($job, $dailyJobs, $journalRows);
 
-        // Missing evidence needs contextual analysis by OpenClaw in Phase 14.3.
+        // Do not spend AI calls when one whole evidence source has not arrived yet.
         if ($result['outcome'] === 'INSUFFICIENT') {
+            if (in_array($result['reason'], ['JOURNAL_ROW_MISSING', 'DAILY_IMAGE_MISSING'], true)) {
+                $this->markWaitingForEvidence($job, $result);
+            }
+
             return null;
         }
 
@@ -205,6 +209,7 @@ class RuleReconciliationService
         if ($hasMissingBoundary) {
             return [
                 'outcome' => 'INSUFFICIENT',
+                'reason' => 'SHIFT_BOUNDARY_AMBIGUOUS',
                 'summary' => 'Thiếu ảnh đầu hoặc cuối ca; cần OpenClaw phân tích thêm.',
                 'confidence' => null,
                 'findings' => $findings,
@@ -227,6 +232,19 @@ class RuleReconciliationService
             'findings' => $findings,
             'matches' => $matches,
         ];
+    }
+
+    private function markWaitingForEvidence(AiReconciliationJob $job, array $result): void
+    {
+        $job->update([
+            'status' => 'WAITING_EVIDENCE',
+            'claimed_by' => null,
+            'claimed_at' => null,
+            'lease_expires_at' => null,
+            'completed_at' => null,
+            'failed_at' => null,
+            'error_message' => $result['reason'],
+        ]);
     }
 
     private function dailyJobs(AiReconciliationJob $job): Collection
@@ -290,7 +308,8 @@ class RuleReconciliationService
     {
         return [
             'outcome' => 'INSUFFICIENT',
-            'summary' => $title.'; cần OpenClaw phân tích thêm.',
+            'reason' => $code,
+            'summary' => $title.'; chờ bổ sung đủ bằng chứng.',
             'confidence' => null,
             'findings' => [$this->finding($code, 'WARNING', $title, $evidence)],
             'matches' => [],

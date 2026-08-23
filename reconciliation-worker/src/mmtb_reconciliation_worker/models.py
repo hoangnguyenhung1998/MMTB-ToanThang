@@ -30,4 +30,7 @@ class ReconciliationResult(BaseModel):
         return findings
 
     def api_payload(self) -> dict:
-        return self.model_dump(exclude_none=True)
+        payload = self.model_dump(exclude_none=True)
+        if self.outcome == "UNRESOLVED" and payload.get("confidence", 0) > 0.5:
+            payload["confidence"] = 0.5
+        return payload

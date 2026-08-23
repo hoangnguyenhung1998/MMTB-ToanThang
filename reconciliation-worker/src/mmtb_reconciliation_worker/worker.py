@@ -21,7 +21,7 @@ class ReconciliationWorker:
         self.settings = settings
         self.laravel = LaravelReconciliationClient(
             settings.laravel_api_url, settings.laravel_api_token, settings.worker_id,
-            settings.request_timeout_seconds, settings.data_dir / "tmp",
+            settings.request_timeout_seconds, settings.openclaw_workspace_dir / "evidence",
         )
         self.openclaw = OpenClawClient(
             settings.openclaw_command, settings.openclaw_session_key,

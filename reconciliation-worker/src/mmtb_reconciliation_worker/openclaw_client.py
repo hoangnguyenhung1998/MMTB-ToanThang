@@ -110,7 +110,8 @@ class OpenClawClient:
         return (
             "Bạn là AI hậu kiểm thiết bị MMTB. Hãy đối chiếu ảnh chấm công hằng ngày, "
             "nhật trình tuần và thông tin điều động. Chỉ kết luận từ bằng chứng được cung cấp; "
-            "không đoán mã máy hoặc dữ liệu bị thiếu. Đọc các ảnh tại local_image_path. "
+            "không đoán mã máy hoặc dữ liệu bị thiếu. Ưu tiên dữ liệu có cấu trúc; chỉ đọc "
+            "ảnh tại local_image_path khi cần giải quyết mâu thuẫn hoặc dữ liệu OCR mơ hồ. "
             "Trả về DUY NHẤT một JSON object, không Markdown, theo schema: "
             '{"outcome":"MATCHED|WARNING|EXCEPTION|UNRESOLVED","summary":"...",'
             '"confidence":0.0,"findings":[{"code":"...","severity":"INFO|WARNING|CRITICAL",'

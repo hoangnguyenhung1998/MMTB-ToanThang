@@ -15,3 +15,9 @@ class ModelsTest(unittest.TestCase):
     def test_warning_requires_finding(self):
         with self.assertRaises(ValidationError):
             ReconciliationResult.model_validate({"outcome": "WARNING", "findings": []})
+
+    def test_caps_unresolved_confidence(self):
+        result = ReconciliationResult.model_validate({
+            "outcome": "UNRESOLVED", "confidence": 0.98, "findings": []
+        })
+        self.assertEqual(0.5, result.api_payload()["confidence"])

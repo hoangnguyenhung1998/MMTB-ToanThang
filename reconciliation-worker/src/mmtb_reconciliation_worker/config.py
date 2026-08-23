@@ -39,6 +39,7 @@ class Settings:
     poll_seconds: int
     request_timeout_seconds: int
     data_dir: Path
+    openclaw_workspace_dir: Path
 
     @classmethod
     def from_environment(cls, root: Path | None = None) -> "Settings":
@@ -49,6 +50,10 @@ class Settings:
         worker_id = os.environ.get("RECONCILIATION_WORKER_ID", "openclaw-reconciliation-home-1").strip()
         if not api_url or not token or not worker_id:
             raise ValueError("Missing required configuration: Laravel URL, token, or worker ID.")
+
+        workspace_value = os.environ.get("OPENCLAW_WORKSPACE_DIR", "").strip()
+        workspace_dir = (Path(workspace_value).expanduser() if workspace_value else
+                         Path.home() / ".openclaw" / "workspace" / "mmtb-reconciliation")
 
         return cls(
             laravel_api_url=api_url,
@@ -65,4 +70,5 @@ class Settings:
             poll_seconds=_positive_int("RECONCILIATION_POLL_SECONDS", 30),
             request_timeout_seconds=_positive_int("RECONCILIATION_REQUEST_TIMEOUT_SECONDS", 60),
             data_dir=root / "data",
+            openclaw_workspace_dir=workspace_dir.resolve(),
         )
