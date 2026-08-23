@@ -364,8 +364,8 @@ class AiReconciliationTest extends TestCase
         $job->update([
             'status' => 'COMPLETED',
             'asset_code' => $machine->asset_code,
-            'review_status' => 'APPROVED',
         ]);
+        $job->update(['review_status' => 'APPROVED']);
         $document = JournalDocument::query()->create([
             'ocr_job_id' => $job->id,
             'machine_id' => $machine->id,
