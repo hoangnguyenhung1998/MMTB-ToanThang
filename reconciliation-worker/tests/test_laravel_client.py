@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from mmtb_reconciliation_worker.laravel_client import LaravelReconciliationClient
+from mmtb_reconciliation_worker.laravel_client import LaravelReconciliationClient, WorkerApiError
 
 
 class LaravelClientTest(unittest.TestCase):
@@ -30,3 +30,14 @@ class LaravelClientTest(unittest.TestCase):
         self.assertEqual(
             "https://example.test/subdir/api/openclaw/v1/reconciliation/jobs/1/images/2", url
         )
+
+    def test_reads_retry_after_from_rate_limit_response(self):
+        response = Mock(ok=False, status_code=429, text="Too Many Attempts")
+        response.headers = {"Retry-After": "31"}
+        session = Mock(headers={})
+        session.request.return_value = response
+
+        with self.assertRaises(WorkerApiError) as raised:
+            self.client(session).claim("2026-08-23", 5)
+
+        self.assertEqual(31.0, raised.exception.retry_after_seconds)

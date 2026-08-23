@@ -9,14 +9,14 @@ use App\Http\Middleware\AuthenticateOcrWorker;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('collector/v1')
-    ->middleware([AuthenticateCollector::class, 'throttle:120,1'])
+    ->middleware([AuthenticateCollector::class, 'throttle:collector-api'])
     ->group(function (): void {
         Route::post('/zalo/messages', [ZaloMessageController::class, 'store'])
             ->name('api.collector.zalo-messages.store');
     });
 
 Route::prefix('openclaw/v1')
-    ->middleware([AuthenticateOpenClaw::class, 'throttle:120,1'])
+    ->middleware([AuthenticateOpenClaw::class, 'throttle:openclaw-api'])
     ->group(function (): void {
         Route::post('/reconciliation/jobs/claim', [AiReconciliationController::class, 'claim'])
             ->name('api.openclaw.reconciliation-jobs.claim');
@@ -29,7 +29,7 @@ Route::prefix('openclaw/v1')
     });
 
 Route::prefix('ocr/v1')
-    ->middleware([AuthenticateOcrWorker::class, 'throttle:120,1'])
+    ->middleware([AuthenticateOcrWorker::class, 'throttle:ocr-worker-api'])
     ->group(function (): void {
         Route::get('/machines', [OcrJobController::class, 'machines'])
             ->name('api.ocr.machines.index');

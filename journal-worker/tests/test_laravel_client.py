@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from mmtb_journal_worker.laravel_client import LaravelJournalClient
+from mmtb_journal_worker.laravel_client import LaravelJournalClient, WorkerApiError
 
 
 class LaravelClientTest(unittest.TestCase):
@@ -47,6 +47,15 @@ class LaravelClientTest(unittest.TestCase):
         _method, _url = self.client.session.request.call_args.args
         payload = self.client.session.request.call_args.kwargs["json"]
         self.assertEqual(["WEEKLY_JOURNAL"], payload["document_types"])
+
+    def test_reads_retry_after_from_rate_limit_response(self):
+        response = Mock(ok=False, status_code=429, text="Too Many Attempts")
+        response.headers = {"Retry-After": "23"}
+
+        with self.assertRaises(WorkerApiError) as raised:
+            self.client._ensure_success(response)
+
+        self.assertEqual(23.0, raised.exception.retry_after_seconds)
 
 
 if __name__ == "__main__":

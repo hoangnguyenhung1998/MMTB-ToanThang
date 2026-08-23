@@ -8,9 +8,10 @@ import requests
 
 
 class WorkerApiError(RuntimeError):
-    def __init__(self, message: str, retryable: bool):
+    def __init__(self, message: str, retryable: bool, retry_after_seconds: float | None = None):
         super().__init__(message)
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 class LaravelReconciliationClient:
@@ -78,8 +79,18 @@ class LaravelReconciliationClient:
             raise WorkerApiError(
                 f"Laravel OpenClaw API returned {response.status_code}: {response.text[:1000]}",
                 retryable=retryable,
+                retry_after_seconds=self._retry_after_seconds(response),
             )
         return response
+
+    @staticmethod
+    def _retry_after_seconds(response: requests.Response) -> float | None:
+        if response.status_code != 429:
+            return None
+        try:
+            return max(1.0, min(float(response.headers.get("Retry-After", "60")), 300.0))
+        except (TypeError, ValueError):
+            return 60.0
 
     def _resolve_image_url(self, image_url: str) -> str:
         if urlsplit(image_url).scheme:
