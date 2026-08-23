@@ -20,10 +20,11 @@ class OpenClawClientTest(unittest.TestCase):
         result = client.reconcile({"id": 1}, {8: Path("image.jpg")})
         self.assertEqual("WARNING", result.outcome)
         command = run.call_args.args[0]
-        self.assertIn("--session-key", command)
-        self.assertIn("mmtb-reconciliation-job-1", command)
-        self.assertIn("--message-file", command)
-        self.assertNotIn("--deliver", command)
+        command_text = " ".join(command)
+        self.assertIn("--session-key", command_text)
+        self.assertIn("mmtb-reconciliation-job-1", command_text)
+        self.assertIn("--message-file", command_text)
+        self.assertNotIn("--deliver", command_text)
 
     def test_reads_gateway_result_shape_and_markdown_fence(self):
         text = "```json\n{\"outcome\":\"UNRESOLVED\",\"findings\":[]}\n```"
