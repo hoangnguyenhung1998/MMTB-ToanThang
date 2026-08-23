@@ -219,24 +219,7 @@ class AiReconciliationTest extends TestCase
             ->assertOk();
 
         $machine = $job->machine;
-        $journalJob = $this->createOcrJob($machine, 'WEEKLY_JOURNAL');
-        $journalJob->update(['status' => 'COMPLETED', 'asset_code' => $machine->asset_code]);
-        $journalJob->update(['review_status' => 'APPROVED']);
-        $document = JournalDocument::query()->create([
-            'ocr_job_id' => $journalJob->id,
-            'machine_id' => $machine->id,
-            'asset_code' => $machine->asset_code,
-            'confidence' => 0.94,
-        ]);
-        $document->rows()->create([
-            'row_number' => 1,
-            'work_date' => '2026-08-22',
-            'start_time' => '07:00:00',
-            'end_time' => '11:00:00',
-            'total_minutes' => 240,
-            'work_content' => 'Thi công mặt bằng',
-            'confidence' => 0.93,
-        ]);
+        $this->createReviewedDaily($machine, '2026-08-22', '08:00:00');
 
         $this->withToken('test-openclaw-token')
             ->postJson('/api/openclaw/v1/reconciliation/jobs/claim', [
