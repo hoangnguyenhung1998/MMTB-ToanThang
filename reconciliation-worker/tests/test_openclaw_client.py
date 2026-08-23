@@ -37,9 +37,9 @@ class OpenClawClientTest(unittest.TestCase):
         client = OpenClawClient("openclaw", "mmtb-reconciliation", 600)
         command = client._build_command(["agent", "--json"])
         self.assertEqual("/c", command[3])
-        self.assertEqual(5, len(command))
-        self.assertIn('"C:\\Users\\HUNG EJA\\AppData\\Roaming\\npm\\openclaw.cmd"', command[4])
-        self.assertIn("agent --json", command[4])
+        self.assertEqual("call", command[4])
+        self.assertEqual(r"C:\Users\HUNG EJA\AppData\Roaming\npm\openclaw.cmd", command[5])
+        self.assertEqual(["agent", "--json"], command[6:])
 
     @staticmethod
     def _text(envelope):

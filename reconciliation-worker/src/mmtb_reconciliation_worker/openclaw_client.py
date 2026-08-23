@@ -78,8 +78,10 @@ class OpenClawClient:
     def _build_command(self, arguments: list[str]) -> list[str]:
         resolved = shutil.which(self.command) or self.command
         if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
-            command_line = subprocess.list2cmdline([resolved, *arguments])
-            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command_line]
+            return [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d", "/s", "/c", "call", resolved, *arguments,
+            ]
         return [resolved, *arguments]
 
     @staticmethod
