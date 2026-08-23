@@ -109,6 +109,40 @@ class AiReconciliationTest extends TestCase
         $this->assertDatabaseCount('ai_reconciliation_jobs', 0);
     }
 
+    public function test_missing_journal_waits_for_evidence_without_calling_openclaw(): void
+    {
+        $machine = $this->createMachine('VT-XL1239');
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseHas('ai_reconciliation_jobs', [
+            'machine_id' => $machine->id,
+            'work_date' => '2026-08-22',
+            'status' => 'WAITING_EVIDENCE',
+            'attempts' => 0,
+            'error_message' => 'JOURNAL_ROW_MISSING',
+        ]);
+        $this->assertDatabaseCount('ai_reconciliation_submissions', 0);
+    }
+
+    public function test_new_journal_reopens_waiting_job_for_rule_or_openclaw_processing(): void
+    {
+        $machine = $this->createMachine('VT-XL1240');
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')
+            ->assertOk()
+            ->assertJsonPath('jobs.0.machine.asset_code', 'VT-XL1240');
+        $this->assertDatabaseHas('ai_reconciliation_jobs', [
+            'machine_id' => $machine->id,
+            'status' => 'PROCESSING',
+        ]);
+    }
+
     public function test_agent_result_is_immutable_and_idempotent(): void
     {
         $job = $this->claimDailyJob();
@@ -185,24 +219,12 @@ class AiReconciliationTest extends TestCase
             ->assertOk();
 
         $machine = $job->machine;
-        $journalJob = $this->createOcrJob($machine, 'WEEKLY_JOURNAL');
-        $journalJob->update(['status' => 'COMPLETED', 'asset_code' => $machine->asset_code]);
-        $journalJob->update(['review_status' => 'APPROVED']);
-        $document = JournalDocument::query()->create([
-            'ocr_job_id' => $journalJob->id,
-            'machine_id' => $machine->id,
-            'asset_code' => $machine->asset_code,
-            'confidence' => 0.94,
-        ]);
-        $document->rows()->create([
-            'row_number' => 1,
-            'work_date' => '2026-08-22',
-            'start_time' => '07:00:00',
-            'end_time' => '11:00:00',
-            'total_minutes' => 240,
-            'work_content' => 'Thi công mặt bằng',
-            'confidence' => 0.93,
-        ]);
+        OcrJob::query()
+            ->where('machine_id', $machine->id)
+            ->where('document_type', 'DAILY_TIMEMARK')
+            ->whereDate('extracted_date', '2026-08-22')
+            ->firstOrFail()
+            ->update(['operator_name' => 'Nguyễn Văn A']);
 
         $this->withToken('test-openclaw-token')
             ->postJson('/api/openclaw/v1/reconciliation/jobs/claim', [
@@ -317,6 +339,7 @@ class AiReconciliationTest extends TestCase
             'confidence' => 0.95,
         ]);
         $ocrJob->update(['review_status' => 'APPROVED']);
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
 
         $response = $this->withToken('test-openclaw-token')
             ->postJson('/api/openclaw/v1/reconciliation/jobs/claim', [
