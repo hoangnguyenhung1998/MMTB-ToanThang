@@ -10,7 +10,11 @@ return new class extends Migration
     {
         Schema::create('ai_reconciliation_findings', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('ai_reconciliation_submission_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('ai_reconciliation_submission_id');
+            $table->foreign('ai_reconciliation_submission_id', 'ai_rec_findings_submission_fk')
+                ->references('id')
+                ->on('ai_reconciliation_submissions')
+                ->cascadeOnDelete();
             $table->string('code', 100)->index();
             $table->string('severity', 20)->index();
             $table->string('title', 255);
