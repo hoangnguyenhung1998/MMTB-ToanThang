@@ -83,7 +83,7 @@ class AiReconciliationTest extends TestCase
             ->assertJsonPath('jobs.0.journal_rows.0.total_minutes', 240);
 
         $imageUrl = $response->json('jobs.0.daily_images.0.image_url');
-        $this->get($imageUrl)->assertUnauthorized();
+        $this->withHeader('Authorization', '')->get($imageUrl)->assertUnauthorized();
         $this->withToken('test-openclaw-token')->get($imageUrl)
             ->assertOk()
             ->assertHeader('content-type', 'image/jpeg');
