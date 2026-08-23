@@ -17,6 +17,11 @@ from .timemark import TimeMarkRecognizer
 LOGGER = logging.getLogger("mmtb_ocr_worker")
 
 
+def retry_delay(error: WorkerApiError, poll_seconds: int, failure_streak: int) -> float:
+    exponential = min(float(poll_seconds) * (2 ** min(failure_streak - 1, 4)), 300.0)
+    return max(error.retry_after_seconds or 0.0, exponential)
+
+
 class OcrWorker:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -124,15 +129,19 @@ def run() -> None:
 
     with ProcessLock(settings.data_dir / "worker.lock"):
         worker = OcrWorker(settings)
+        failure_streak = 0
         LOGGER.info("MMTB RapidOCR worker started as %s", settings.worker_id)
         while True:
             try:
                 processed = worker.step()
+                failure_streak = 0
                 if not processed:
                     time.sleep(settings.poll_seconds)
             except WorkerApiError as exc:
-                LOGGER.warning("%s", exc)
-                time.sleep(settings.poll_seconds)
+                failure_streak += 1
+                delay = retry_delay(exc, settings.poll_seconds, failure_streak)
+                LOGGER.warning("%s Retrying in %.0f second(s).", exc, delay)
+                time.sleep(delay)
             except KeyboardInterrupt:
                 LOGGER.info("MMTB RapidOCR worker stopped")
                 return

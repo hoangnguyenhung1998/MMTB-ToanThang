@@ -1,6 +1,8 @@
 import unittest
 
-from mmtb_ocr_worker.api_client import LaravelOcrClient
+from unittest.mock import Mock
+
+from mmtb_ocr_worker.api_client import LaravelOcrClient, WorkerApiError
 
 
 class ApiClientTest(unittest.TestCase):
@@ -36,6 +38,15 @@ class ApiClientTest(unittest.TestCase):
 
     def test_defaults_unknown_image_type_to_jpeg(self):
         self.assertEqual(".jpg", self.client._image_suffix("application/octet-stream"))
+
+    def test_reads_retry_after_from_rate_limit_response(self):
+        response = Mock(ok=False, status_code=429, text="Too Many Attempts")
+        response.headers = {"Retry-After": "17"}
+
+        with self.assertRaises(WorkerApiError) as raised:
+            self.client._ensure_success(response)
+
+        self.assertEqual(17.0, raised.exception.retry_after_seconds)
 
 
 if __name__ == "__main__":

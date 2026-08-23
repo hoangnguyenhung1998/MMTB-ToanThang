@@ -16,6 +16,11 @@ from .process_lock import ProcessLock
 LOGGER = logging.getLogger("mmtb_reconciliation_worker")
 
 
+def retry_delay(error: WorkerApiError, poll_seconds: int, failure_streak: int) -> float:
+    exponential = min(float(poll_seconds) * (2 ** min(failure_streak - 1, 4)), 300.0)
+    return max(error.retry_after_seconds or 0.0, exponential)
+
+
 class ReconciliationWorker:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -38,6 +43,8 @@ class ReconciliationWorker:
             for job in jobs:
                 processed = True
                 self._process(job)
+            if days_ago > 0:
+                time.sleep(1.0)
         return processed
 
     def _process(self, job: dict) -> None:
@@ -58,7 +65,9 @@ class ReconciliationWorker:
             })
             LOGGER.info("Completed reconciliation job %s: outcome=%s findings=%d",
                         job["id"], submission["outcome"], len(submission.get("findings", [])))
-        except (WorkerApiError, OpenClawError) as exc:
+        except WorkerApiError:
+            raise
+        except OpenClawError as exc:
             LOGGER.warning("Reconciliation job %s failed: %s", job.get("id"), exc)
             self._report_failure(job, str(exc), exc.retryable)
         except Exception as exc:
@@ -93,14 +102,19 @@ def run() -> None:
     configure_logging(settings.data_dir)
     with ProcessLock(settings.data_dir / "worker.lock"):
         worker = ReconciliationWorker(settings)
+        failure_streak = 0
         LOGGER.info("MMTB OpenClaw reconciliation worker started as %s", settings.worker_id)
         while True:
             try:
-                if not worker.step():
+                processed = worker.step()
+                failure_streak = 0
+                if not processed:
                     time.sleep(settings.poll_seconds)
             except WorkerApiError as exc:
-                LOGGER.warning("%s", exc)
-                time.sleep(settings.poll_seconds)
+                failure_streak += 1
+                delay = retry_delay(exc, settings.poll_seconds, failure_streak)
+                LOGGER.warning("%s Retrying in %.0f second(s).", exc, delay)
+                time.sleep(delay)
             except KeyboardInterrupt:
                 LOGGER.info("MMTB OpenClaw reconciliation worker stopped")
                 return
