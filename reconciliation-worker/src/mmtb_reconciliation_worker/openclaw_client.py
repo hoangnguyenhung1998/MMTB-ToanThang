@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -38,7 +40,7 @@ class OpenClawClient:
             ) as prompt_file:
                 prompt_file.write(prompt)
                 prompt_path = Path(prompt_file.name)
-            command = [self.command, "agent", "--session-key", job_session_key,
+            command = [*self._command_prefix(), "agent", "--session-key", job_session_key,
                        "--message-file", str(prompt_path), "--thinking", self.thinking,
                        "--timeout", str(self.timeout_seconds), "--json"]
             if self.agent_id:
@@ -71,6 +73,12 @@ class OpenClawClient:
             return ReconciliationResult.model_validate_json(self._strip_fence(text))
         except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
             raise OpenClawError(f"OpenClaw returned invalid reconciliation JSON: {exc}", retryable=True) from exc
+
+    def _command_prefix(self) -> list[str]:
+        resolved = shutil.which(self.command) or self.command
+        if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", resolved]
+        return [resolved]
 
     @staticmethod
     def _response_text(envelope: dict) -> str:

@@ -29,6 +29,15 @@ class OpenClawClientTest(unittest.TestCase):
         text = "```json\n{\"outcome\":\"UNRESOLVED\",\"findings\":[]}\n```"
         self.assertEqual(text, self._text({"result": {"payloads": [{"text": text}]}}))
 
+    @patch("mmtb_reconciliation_worker.openclaw_client.os.name", "nt")
+    @patch("mmtb_reconciliation_worker.openclaw_client.shutil.which")
+    def test_runs_npm_cmd_shim_through_windows_command_processor(self, which):
+        which.return_value = r"C:\Users\Admin\AppData\Roaming\npm\openclaw.cmd"
+        client = OpenClawClient("openclaw", "mmtb-reconciliation", 600)
+        prefix = client._command_prefix()
+        self.assertEqual("/c", prefix[3])
+        self.assertTrue(prefix[4].endswith("openclaw.cmd"))
+
     @staticmethod
     def _text(envelope):
         return OpenClawClient._response_text(envelope)
