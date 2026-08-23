@@ -32,11 +32,13 @@ class OpenClawClientTest(unittest.TestCase):
     @patch("mmtb_reconciliation_worker.openclaw_client.os.name", "nt")
     @patch("mmtb_reconciliation_worker.openclaw_client.shutil.which")
     def test_runs_npm_cmd_shim_through_windows_command_processor(self, which):
-        which.return_value = r"C:\Users\Admin\AppData\Roaming\npm\openclaw.cmd"
+        which.return_value = r"C:\Users\HUNG EJA\AppData\Roaming\npm\openclaw.cmd"
         client = OpenClawClient("openclaw", "mmtb-reconciliation", 600)
-        prefix = client._command_prefix()
-        self.assertEqual("/c", prefix[3])
-        self.assertTrue(prefix[4].endswith("openclaw.cmd"))
+        command = client._build_command(["agent", "--json"])
+        self.assertEqual("/c", command[3])
+        self.assertEqual(5, len(command))
+        self.assertIn('"C:\\Users\\HUNG EJA\\AppData\\Roaming\\npm\\openclaw.cmd"', command[4])
+        self.assertIn("agent --json", command[4])
 
     @staticmethod
     def _text(envelope):

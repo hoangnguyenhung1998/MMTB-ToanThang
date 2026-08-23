@@ -40,13 +40,14 @@ class OpenClawClient:
             ) as prompt_file:
                 prompt_file.write(prompt)
                 prompt_path = Path(prompt_file.name)
-            command = [*self._command_prefix(), "agent", "--session-key", job_session_key,
-                       "--message-file", str(prompt_path), "--thinking", self.thinking,
-                       "--timeout", str(self.timeout_seconds), "--json"]
+            agent_args = ["agent", "--session-key", job_session_key,
+                          "--message-file", str(prompt_path), "--thinking", self.thinking,
+                          "--timeout", str(self.timeout_seconds), "--json"]
             if self.agent_id:
-                command[2:2] = ["--agent", self.agent_id]
+                agent_args[1:1] = ["--agent", self.agent_id]
             if self.model:
-                command[2:2] = ["--model", self.model]
+                agent_args[1:1] = ["--model", self.model]
+            command = self._build_command(agent_args)
             process = subprocess.run(
                 command,
                 capture_output=True,
@@ -74,11 +75,12 @@ class OpenClawClient:
         except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
             raise OpenClawError(f"OpenClaw returned invalid reconciliation JSON: {exc}", retryable=True) from exc
 
-    def _command_prefix(self) -> list[str]:
+    def _build_command(self, arguments: list[str]) -> list[str]:
         resolved = shutil.which(self.command) or self.command
         if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
-            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", resolved]
-        return [resolved]
+            command_line = subprocess.list2cmdline([resolved, *arguments])
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command_line]
+        return [resolved, *arguments]
 
     @staticmethod
     def _response_text(envelope: dict) -> str:
