@@ -7,6 +7,7 @@ use App\Models\AiReconciliationSubmission;
 use App\Models\JournalRow;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -17,9 +18,14 @@ class AiReconciliationService
 
     private const JOURNAL_REVIEW_STATUSES = ['APPROVED', 'CORRECTED'];
 
+    public function __construct(private readonly RuleReconciliationService $rules)
+    {
+    }
+
     public function claim(string $workerId, string $workDate, int $limit = 5): Collection
     {
         $this->enqueueCandidates($workDate);
+        $this->rules->reconcilePending($workDate);
 
         return DB::transaction(function () use ($workerId, $workDate, $limit): Collection {
             $jobs = AiReconciliationJob::query()
@@ -86,6 +92,7 @@ class AiReconciliationService
                 'sent_at' => $ocrJob->attachment->message->sent_at?->toIso8601String(),
                 'sender_id' => $ocrJob->attachment->message->sender_id,
                 'sender_name' => $ocrJob->attachment->message->sender_name,
+                'date' => $ocrJob->extracted_date?->format('Y-m-d'),
                 'time' => $ocrJob->extracted_time,
                 'operator_name' => $ocrJob->operator_name,
                 'phone' => $ocrJob->phone,
@@ -198,7 +205,18 @@ class AiReconciliationService
             ->whereIn('review_status', self::DAILY_REVIEW_STATUSES)
             ->whereNotNull('machine_id')
             ->get([
-                'id', 'machine_id', 'review_status', 'extracted_date', 'extracted_time',
+                'id', 'machine_id', 'review_status', 'extracted_date', 'extracted_time', 'asset_code',
+                'operator_name', 'phone', 'work_location', 'confidence', 'updated_at',
+            ])
+            ->groupBy('machine_id');
+
+        $nextDayDailyEvidence = OcrJob::query()
+            ->where('document_type', 'DAILY_TIMEMARK')
+            ->whereDate('extracted_date', CarbonImmutable::parse($workDate)->addDay())
+            ->whereIn('review_status', self::DAILY_REVIEW_STATUSES)
+            ->whereNotNull('machine_id')
+            ->get([
+                'id', 'machine_id', 'review_status', 'extracted_date', 'extracted_time', 'asset_code',
                 'operator_name', 'phone', 'work_location', 'confidence', 'updated_at',
             ])
             ->groupBy('machine_id');
@@ -218,19 +236,29 @@ class AiReconciliationService
             ->filter();
 
         foreach ($machineIds as $machineId) {
-            $signatureParts = collect($dailyEvidence->get($machineId, []))
+            $machineJournalRows = collect($journalEvidence->get($machineId, []));
+            $hasOvernightRow = $machineJournalRows->contains(
+                fn (JournalRow $row) => $row->end_time <= $row->start_time,
+            );
+            $machineDailyJobs = collect($dailyEvidence->get($machineId, []));
+            if ($hasOvernightRow) {
+                $machineDailyJobs = $machineDailyJobs->merge($nextDayDailyEvidence->get($machineId, []));
+            }
+
+            $signatureParts = $machineDailyJobs
                 ->map(fn (OcrJob $job): string => 'daily:'.json_encode([
                     $job->id,
                     $job->review_status,
                     $job->extracted_date?->format('Y-m-d'),
                     $job->extracted_time,
+                    $job->asset_code,
                     $job->operator_name,
                     $job->phone,
                     $job->work_location,
                     $job->confidence,
                     $job->updated_at?->format('Y-m-d H:i:s.u'),
                 ]))
-                ->merge(collect($journalEvidence->get($machineId, []))
+                ->merge($machineJournalRows
                     ->map(fn (JournalRow $row): string => 'journal:'.json_encode([
                         $row->id,
                         $row->work_date?->format('Y-m-d'),
@@ -266,12 +294,22 @@ class AiReconciliationService
 
     private function dailyJobs(AiReconciliationJob $job): Collection
     {
+        $hasOvernightRow = $this->journalRows($job)->contains(
+            fn (JournalRow $row) => $row->end_time <= $row->start_time,
+        );
+
         return OcrJob::query()
             ->with('attachment.message')
             ->where('document_type', 'DAILY_TIMEMARK')
             ->where('machine_id', $job->machine_id)
-            ->whereDate('extracted_date', $job->work_date)
             ->whereIn('review_status', self::DAILY_REVIEW_STATUSES)
+            ->where(function ($query) use ($job, $hasOvernightRow): void {
+                $query->whereDate('extracted_date', $job->work_date);
+                if ($hasOvernightRow) {
+                    $query->orWhereDate('extracted_date', $job->work_date->copy()->addDay());
+                }
+            })
+            ->orderBy('extracted_date')
             ->orderBy('extracted_time')
             ->get();
     }

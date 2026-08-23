@@ -217,6 +217,94 @@ class AiReconciliationTest extends TestCase
         $this->assertDatabaseCount('ai_reconciliation_submissions', 1);
     }
 
+    public function test_rules_engine_completes_a_matching_machine_day_without_openclaw(): void
+    {
+        $machine = $this->createMachine('VT-XL4101');
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $this->createReviewedDaily($machine, '2026-08-22', '11:00:00');
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseHas('ai_reconciliation_jobs', ['status' => 'COMPLETED']);
+        $this->assertDatabaseHas('ai_reconciliation_submissions', [
+            'outcome' => 'MATCHED',
+            'agent_name' => 'mmtb-rules-engine',
+        ]);
+        $this->assertDatabaseCount('ai_reconciliation_findings', 0);
+    }
+
+    public function test_rules_engine_classifies_time_warning_and_critical_thresholds(): void
+    {
+        $matchedMachine = $this->createMachine('VT-XL4107');
+        $this->createReviewedDaily($matchedMachine, '2026-08-22', '07:30:00');
+        $this->createReviewedDaily($matchedMachine, '2026-08-22', '11:30:00');
+        $this->createApprovedJournalRow($matchedMachine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $warningMachine = $this->createMachine('VT-XL4102');
+        $this->createReviewedDaily($warningMachine, '2026-08-22', '08:00:00');
+        $this->createReviewedDaily($warningMachine, '2026-08-22', '12:00:00');
+        $this->createApprovedJournalRow($warningMachine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $criticalMachine = $this->createMachine('VT-XL4103');
+        $this->createReviewedDaily($criticalMachine, '2026-08-22', '08:01:00');
+        $this->createReviewedDaily($criticalMachine, '2026-08-22', '12:01:00');
+        $this->createApprovedJournalRow($criticalMachine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseHas('ai_reconciliation_submissions', ['outcome' => 'MATCHED']);
+        $this->assertDatabaseHas('ai_reconciliation_submissions', ['outcome' => 'WARNING']);
+        $this->assertDatabaseHas('ai_reconciliation_submissions', ['outcome' => 'EXCEPTION']);
+        $this->assertDatabaseHas('ai_reconciliation_findings', [
+            'code' => 'TIME_DIFFERENCE',
+            'severity' => 'WARNING',
+        ]);
+        $this->assertDatabaseHas('ai_reconciliation_findings', [
+            'code' => 'TIME_DIFFERENCE',
+            'severity' => 'CRITICAL',
+        ]);
+    }
+
+    public function test_missing_end_image_remains_available_for_openclaw(): void
+    {
+        $machine = $this->createMachine('VT-XL4104');
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')
+            ->assertOk()
+            ->assertJsonPath('jobs.0.machine.asset_code', 'VT-XL4104');
+
+        $this->assertDatabaseCount('ai_reconciliation_submissions', 0);
+    }
+
+    public function test_rules_engine_matches_an_overnight_shift_to_the_previous_work_date(): void
+    {
+        $machine = $this->createMachine('VT-XL4105');
+        $this->createReviewedDaily($machine, '2026-08-22', '22:00:00');
+        $this->createReviewedDaily($machine, '2026-08-23', '02:00:00');
+        $this->createApprovedJournalRow($machine, '2026-08-22', '22:00:00', '02:00:00', 240);
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseHas('ai_reconciliation_submissions', ['outcome' => 'MATCHED']);
+    }
+
+    public function test_rules_engine_is_idempotent_for_the_same_evidence_signature(): void
+    {
+        $machine = $this->createMachine('VT-XL4106');
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $this->createReviewedDaily($machine, '2026-08-22', '11:00:00');
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseCount('ai_reconciliation_jobs', 1);
+        $this->assertDatabaseCount('ai_reconciliation_submissions', 1);
+    }
+
     private function claimDailyJob(): AiReconciliationJob
     {
         $machine = $this->createMachine('VT-XL'.fake()->unique()->numberBetween(2000, 9999));
@@ -238,6 +326,61 @@ class AiReconciliationTest extends TestCase
             ->assertOk();
 
         return AiReconciliationJob::query()->findOrFail($response->json('jobs.0.id'));
+    }
+
+    private function claimForDate(string $workDate)
+    {
+        return $this->withToken('test-openclaw-token')
+            ->postJson('/api/openclaw/v1/reconciliation/jobs/claim', [
+                'worker_id' => 'openclaw-home-1',
+                'work_date' => $workDate,
+                'limit' => 20,
+            ]);
+    }
+
+    private function createReviewedDaily(Machine $machine, string $date, string $time): OcrJob
+    {
+        $job = $this->createOcrJob($machine, 'DAILY_TIMEMARK');
+        $job->update([
+            'status' => 'COMPLETED',
+            'extracted_date' => $date,
+            'extracted_time' => $time,
+            'asset_code' => $machine->asset_code,
+            'confidence' => 0.96,
+        ]);
+        $job->update(['review_status' => 'APPROVED']);
+
+        return $job;
+    }
+
+    private function createApprovedJournalRow(
+        Machine $machine,
+        string $date,
+        string $startTime,
+        string $endTime,
+        int $totalMinutes,
+    ): void {
+        $job = $this->createOcrJob($machine, 'WEEKLY_JOURNAL');
+        $job->update([
+            'status' => 'COMPLETED',
+            'asset_code' => $machine->asset_code,
+            'review_status' => 'APPROVED',
+        ]);
+        $document = JournalDocument::query()->create([
+            'ocr_job_id' => $job->id,
+            'machine_id' => $machine->id,
+            'asset_code' => $machine->asset_code,
+            'confidence' => 0.95,
+        ]);
+        $document->rows()->create([
+            'row_number' => 1,
+            'work_date' => $date,
+            'start_time' => $startTime,
+            'end_time' => $endTime,
+            'total_minutes' => $totalMinutes,
+            'work_content' => 'Thi công mặt bằng',
+            'confidence' => 0.95,
+        ]);
     }
 
     private function createMachine(string $assetCode): Machine

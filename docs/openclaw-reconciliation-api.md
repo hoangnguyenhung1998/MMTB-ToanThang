@@ -84,3 +84,26 @@ Allowed finding severities: `INFO`, `WARNING`, `CRITICAL`.
 ```
 
 Retryable failures return to `RETRY`. Non-retryable failures become `FAILED`. Expired leases can be claimed by another worker.
+# Deterministic reconciliation (rules-v1)
+
+Before a claim is returned to OpenClaw, Laravel evaluates reviewed daily images
+against approved or corrected journal rows for the same machine and work date.
+
+- A complete match is stored as `MATCHED` by `mmtb-rules-engine`.
+- Differences above 30 minutes are `WARNING`; above 60 minutes are `EXCEPTION`.
+- Duplicate images and exact asset-code mismatches are `EXCEPTION`.
+- Missing daily or journal evidence, including a missing shift boundary, remains
+  pending for OpenClaw instead of being automatically concluded.
+- Overnight rows (`end_time <= start_time`) may use an end image from the next
+  calendar date while retaining the journal work date.
+- The evidence signature and rules version make automatic submissions
+  idempotent and preserve prior history when reviewed evidence changes.
+
+The thresholds can be configured with:
+
+```dotenv
+OPENCLAW_RULES_VERSION=rules-v1
+OPENCLAW_MATCH_WINDOW_MINUTES=180
+OPENCLAW_TIME_WARNING_MINUTES=30
+OPENCLAW_TIME_CRITICAL_MINUTES=60
+```
