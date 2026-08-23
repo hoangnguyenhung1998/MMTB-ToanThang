@@ -1,0 +1,32 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock
+
+from mmtb_reconciliation_worker.laravel_client import LaravelReconciliationClient
+
+
+class LaravelClientTest(unittest.TestCase):
+    def client(self, session):
+        return LaravelReconciliationClient(
+            "https://example.test/subdir/api/openclaw/v1", "secret", "worker-1", 30,
+            Path(tempfile.gettempdir()), session,
+        )
+
+    def test_claims_work_date(self):
+        response = Mock(ok=True, status_code=200)
+        response.json.return_value = {"jobs": [{"id": 9}]}
+        session = Mock()
+        session.headers = {}
+        session.request.return_value = response
+        jobs = self.client(session).claim("2026-08-23", 5)
+        self.assertEqual(9, jobs[0]["id"])
+        self.assertEqual("2026-08-23", session.request.call_args.kwargs["json"]["work_date"])
+
+    def test_resolves_relative_image_url_with_deployment_prefix(self):
+        url = self.client(Mock(headers={}))._resolve_image_url(
+            "/api/openclaw/v1/reconciliation/jobs/1/images/2"
+        )
+        self.assertEqual(
+            "https://example.test/subdir/api/openclaw/v1/reconciliation/jobs/1/images/2", url
+        )
