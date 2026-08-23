@@ -9,9 +9,12 @@ from mmtb_reconciliation_worker.config import Settings
 
 class ConfigTest(unittest.TestCase):
     def test_loads_required_settings_and_defaults(self):
+        home_directory = Path.home()
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "LARAVEL_OPENCLAW_API_URL": "https://example.test/api/openclaw/v1/",
             "OPENCLAW_AGENT_API_TOKEN": "secret",
+            "HOME": str(home_directory),
+            "USERPROFILE": str(home_directory),
         }, clear=True):
             settings = Settings.from_environment(Path(directory))
         self.assertEqual("https://example.test/api/openclaw/v1", settings.laravel_api_url)
@@ -19,7 +22,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual("mmtb-reconciliation", settings.openclaw_session_key)
         self.assertEqual((Path(directory) / "data").resolve(), settings.data_dir.resolve())
         self.assertEqual(
-            (Path.home() / ".openclaw" / "workspace" / "mmtb-reconciliation").resolve(),
+            (home_directory / ".openclaw" / "workspace" / "mmtb-reconciliation").resolve(),
             settings.openclaw_workspace_dir,
         )
 
