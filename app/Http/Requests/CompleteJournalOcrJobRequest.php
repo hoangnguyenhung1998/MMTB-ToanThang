@@ -25,6 +25,7 @@ class CompleteJournalOcrJobRequest extends FormRequest
             'rows.*.end_time' => ['nullable', 'date_format:H:i:s'],
             'rows.*.total_minutes' => ['nullable', 'integer', 'min:0', 'max:1440'],
             'rows.*.work_content' => ['nullable', 'string', 'max:5000'],
+            'rows.*.error_explanation' => ['nullable', 'string', 'max:5000'],
             'rows.*.quantity' => ['nullable', 'numeric', 'min:0'],
             'rows.*.unit' => ['nullable', 'string', 'max:50'],
             'rows.*.work_location' => ['nullable', 'string', 'max:2000'],
