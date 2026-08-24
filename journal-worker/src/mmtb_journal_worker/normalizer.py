@@ -5,6 +5,8 @@ import unicodedata
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from .catalog_v1_1 import JOB_ALIASES, STATUS_ALIASES
+
 if TYPE_CHECKING:
     from .models import JournalExtraction, JournalRow
 
