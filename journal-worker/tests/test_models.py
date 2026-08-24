@@ -2,10 +2,14 @@ import unittest
 
 from pydantic import ValidationError
 
+from mmtb_journal_worker.catalog_v1_1 import JOB_ALIASES
 from mmtb_journal_worker.models import JournalExtraction, JournalRow, normalize_time
 
 
 class ModelsTest(unittest.TestCase):
+    def test_loads_complete_sop_v1_1_catalog(self):
+        self.assertGreaterEqual(len(JOB_ALIASES), 118)
+
     def test_normalizes_short_time(self):
         self.assertEqual("07:30:00", normalize_time("7h30"))
 
