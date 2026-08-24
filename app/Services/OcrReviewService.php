@@ -185,7 +185,12 @@ class OcrReviewService
 
                 $exceptions = [];
                 if (empty($rowData['work_date'])) $exceptions[] = 'MISSING_DATE';
-                if (empty($rowData['start_time']) || empty($rowData['end_time'])) $exceptions[] = 'MISSING_TIME';
+                $isStatusOnly = filled($rowData['error_explanation'] ?? null)
+                    && empty($rowData['start_time'])
+                    && empty($rowData['end_time']);
+                if (! $isStatusOnly && (empty($rowData['start_time']) || empty($rowData['end_time']))) {
+                    $exceptions[] = 'MISSING_TIME';
+                }
                 if (blank($rowData['work_content'] ?? null)) $exceptions[] = 'MISSING_WORK_CONTENT';
 
                 $totalMinutes = null;
@@ -208,6 +213,7 @@ class OcrReviewService
                     'end_time' => $rowData['end_time'] ?? null,
                     'total_minutes' => $totalMinutes,
                     'work_content' => $rowData['work_content'] ?? null,
+                    'error_explanation' => $rowData['error_explanation'] ?? null,
                     'quantity' => $rowData['quantity'] ?? null,
                     'unit' => $rowData['unit'] ?? null,
                     'work_location' => $rowData['work_location'] ?? null,
@@ -313,6 +319,7 @@ class OcrReviewService
             'UNKNOWN_ASSET_CODE' => 'Mã máy không tồn tại',
             'WRONG_DATE' => 'Sai ngày gửi',
             'JOURNAL_ROW_EXCEPTION' => 'Có dòng nhật trình cần kiểm tra',
+            'NEW_JOB' => 'Nội dung công việc mới cần xác nhận',
         ];
     }
 }
