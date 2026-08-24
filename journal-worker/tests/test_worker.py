@@ -19,6 +19,7 @@ class FakeLaravelClient:
             "document_type": "WEEKLY_JOURNAL",
             "image_url": "/api/ocr/v1/jobs/5/image?worker_id=journal-test",
             "attempts": 1,
+            "message": {"sent_at": "2026-08-24T11:21:00+07:00"},
         }
 
     def download_image(self, _image_url, _job_id):
@@ -77,6 +78,7 @@ class WorkerTest(unittest.TestCase):
             self.assertFalse(image.exists())
             self.assertEqual(5, laravel.completed[0])
             self.assertEqual(240, laravel.completed[1]["rows"][0]["total_minutes"])
+            self.assertEqual("2026-08-20", laravel.completed[1]["rows"][0]["work_date"])
 
 
 if __name__ == "__main__":
