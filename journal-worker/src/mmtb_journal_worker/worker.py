@@ -48,6 +48,9 @@ class JournalWorker:
         try:
             image_path = self.laravel.download_image(job["image_url"], int(job["id"]))
             extraction = self.vision.extract(image_path, self.machine_codes)
+            sent_at = job.get("message", {}).get("sent_at")
+            reference_year = datetime.fromisoformat(sent_at.replace("Z", "+00:00")).year if sent_at else None
+            extraction.normalize(reference_year=reference_year)
             saved = self.laravel.complete_journal(job["id"], extraction.api_payload())
             LOGGER.info(
                 "Completed journal OCR job %s: machine=%s rows=%d confidence=%.2f status=%s",
