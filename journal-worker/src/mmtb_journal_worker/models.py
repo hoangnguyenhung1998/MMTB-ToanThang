@@ -252,7 +252,7 @@ class JournalExtraction(BaseModel):
     def enforce_machine_catalog(self, machine_codes: list[str]) -> "JournalExtraction":
         if self.asset_code is None:
             return self
-        catalog = {re.sub(r"\\s+", "", str(code).upper()) for code in machine_codes}
+        catalog = {re.sub(r"\s+", "", str(code).upper()) for code in machine_codes}
         if self.asset_code in catalog:
             return self
 
