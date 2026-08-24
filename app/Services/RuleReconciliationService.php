@@ -285,6 +285,9 @@ class RuleReconciliationService
         $maximum = (int) config('openclaw.rules.match_window_minutes');
 
         return $images
+            ->filter(fn (OcrJob $job): bool => $job->extracted_date !== null
+                && is_string($job->extracted_time)
+                && trim($job->extracted_time) !== '')
             ->map(fn (OcrJob $job): array => [
                 'job' => $job,
                 'difference' => (int) round(abs($target->diffInMinutes($this->imageDateTime($job), false))),
