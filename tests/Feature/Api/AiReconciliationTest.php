@@ -301,6 +301,39 @@ class AiReconciliationTest extends TestCase
         $this->assertDatabaseCount('ai_reconciliation_submissions', 0);
     }
 
+    public function test_reviewed_daily_image_without_time_remains_available_for_openclaw(): void
+    {
+        $machine = $this->createMachine('VT-XL4108');
+        $dailyJob = $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $dailyJob->update(['extracted_time' => null]);
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')
+            ->assertOk()
+            ->assertJsonPath('jobs.0.machine.asset_code', 'VT-XL4108')
+            ->assertJsonPath('jobs.0.daily_images.0.time', null);
+
+        $this->assertDatabaseCount('ai_reconciliation_submissions', 0);
+        $this->assertDatabaseHas('ai_reconciliation_jobs', ['status' => 'PROCESSING']);
+    }
+
+    public function test_rules_engine_ignores_missing_time_when_valid_boundary_images_exist(): void
+    {
+        $machine = $this->createMachine('VT-XL4109');
+        $invalidDailyJob = $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $invalidDailyJob->update(['extracted_time' => null]);
+        $this->createReviewedDaily($machine, '2026-08-22', '07:00:00');
+        $this->createReviewedDaily($machine, '2026-08-22', '11:00:00');
+        $this->createApprovedJournalRow($machine, '2026-08-22', '07:00:00', '11:00:00', 240);
+
+        $this->claimForDate('2026-08-22')->assertNoContent();
+
+        $this->assertDatabaseHas('ai_reconciliation_submissions', [
+            'outcome' => 'MATCHED',
+            'agent_name' => 'mmtb-rules-engine',
+        ]);
+    }
+
     public function test_rules_engine_matches_an_overnight_shift_to_the_previous_work_date(): void
     {
         $machine = $this->createMachine('VT-XL4105');
