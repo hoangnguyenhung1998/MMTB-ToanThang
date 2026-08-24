@@ -72,7 +72,8 @@ class OcrReviewTest extends TestCase
             'start_time' => '07:00:00',
             'end_time' => '11:00:00',
             'total_minutes' => 240,
-            'work_content' => 'Lắp gen điện',
+            'work_content' => 'Lắp gen điện; Chờ dầu',
+            'error_explanation' => 'Chờ dầu',
             'work_location' => 'T9',
             'operator_name' => 'Thủy',
             'confidence' => 0.72,
@@ -84,7 +85,10 @@ class OcrReviewTest extends TestCase
             ->get("/ocr-reviews/{$job->id}")
             ->assertOk()
             ->assertSee('VT-XL1186')
-            ->assertSee('Lắp gen điện')
+            ->assertSee('Lắp gen điện; Chờ dầu')
+            ->assertSee('Lỗi giải trình')
+            ->assertSee('Chờ dầu')
+            ->assertSee('14/07/2026')
             ->assertSee('Có dòng nhật trình cần kiểm tra')
             ->assertSee('Độ tin cậy thấp');
     }
