@@ -47,6 +47,18 @@ def classify_text(text: str, table_score: float = 0.0, minimum_confidence: float
             journal_score += 2
     journal_score += table_score * 3
 
+    # A journal photographed with the TimeMark camera still remains a journal.
+    # Strong form/table evidence therefore takes precedence over the watermark.
+    strong_journal = journal_score >= 5 or (
+        table_score >= 0.45
+        and any(keyword in normalized for keyword in (
+            "NOI DUNG CONG VIEC", "THOI GIAN LAM VIEC", "NHAT TRINH HOAT DONG THIET BI"
+        ))
+    )
+    if strong_journal:
+        confidence = min(0.99, 0.68 + journal_score * 0.035)
+        return Classification("WEEKLY_JOURNAL", confidence, text)
+
     top_score = max(daily_score, journal_score)
     margin = abs(daily_score - journal_score)
     confidence = min(0.99, 0.45 + top_score * 0.07 + margin * 0.04)
@@ -66,7 +78,7 @@ class DocumentClassifier:
         best_text = ""
         best_score = 0.0
         best_quality = (0, 0.0)
-        for angle in (0, 180):
+        for angle in (0, 90, 180, 270):
             candidate = rotate(image, angle)
             texts, scores = flatten_ocr_result(self.engine(enhance_for_ocr(candidate)))
             score = sum(scores) / len(scores) if scores else 0.0
