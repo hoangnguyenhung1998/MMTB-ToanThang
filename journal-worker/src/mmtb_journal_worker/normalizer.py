@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from .catalog_v1_1 import JOB_ALIASES, STATUS_ALIASES
 
 if TYPE_CHECKING:
-    from .models import JournalExtraction, JournalRow
+    from .models import JournalExtraction
 
 DICTIONARY_VERSION = "SOP_OCR_Anh_NhatTrinh_MMTB_V1.1"
 
@@ -24,7 +24,7 @@ EXPLANATION_STATUSES = {
     "Nghỉ bảo dưỡng",
 }
 
-DATE_PATTERN = re.compile(r"^\s*(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\s*$")
+DATE_PATTERN = re.compile(r"(\d{1,2})\s*[./-]\s*(\d{1,2})(?:\s*[./-]\s*(\d{2,4}))?")
 
 
 def _key(value: str) -> str:
@@ -42,9 +42,9 @@ def normalize_date(value: str | None, reference_year: int | None) -> tuple[str |
         return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d"), False
     except ValueError:
         pass
-    match = DATE_PATTERN.match(text)
+    match = DATE_PATTERN.search(text)
     if not match:
-        return None, True
+        return None, False
     day, month, year_text = match.groups()
     inferred = year_text is None
     if year_text is None:
@@ -54,11 +54,11 @@ def normalize_date(value: str | None, reference_year: int | None) -> tuple[str |
         if year < 100:
             year += 2000
     if year is None:
-        return None, True
+        return None, inferred
     try:
         return datetime(year, int(month), int(day)).strftime("%Y-%m-%d"), inferred
     except ValueError:
-        return None, True
+        return None, inferred
 
 
 def _status_matches(text: str) -> list[str]:
@@ -67,7 +67,6 @@ def _status_matches(text: str) -> list[str]:
     for canonical, aliases in STATUS_ALIASES.items():
         if any(_key(alias) in key for alias in aliases):
             found.append(canonical)
-    # Specific rain status supersedes the generic waiting status.
     if "Mưa nghỉ / Không thi công do mưa" in found and "Chờ việc" in found:
         found.remove("Chờ việc")
     return found
@@ -97,14 +96,20 @@ def normalize_extraction(extraction: "JournalExtraction", reference_year: int | 
 
     for row in extraction.rows:
         raw_content = (row.work_content or "").strip()
+        raw_date = (row.work_date or "").strip()
         explicit_date, inferred_year = normalize_date(row.work_date, reference_year)
-        flags: list[str] = []
+        raw_data = row.raw_data or {}
+        existing_flags = raw_data.get("normalization_flags")
+        flags: list[str] = list(existing_flags) if isinstance(existing_flags, list) else []
 
         if explicit_date:
             current_date = explicit_date
             row.work_date = explicit_date
             if inferred_year:
                 flags.append("INFERRED_YEAR")
+        elif raw_date:
+            row.work_date = None
+            flags.append("INVALID_DATE")
         elif current_date:
             row.work_date = current_date
             flags.append("INHERITED_DATE")
@@ -139,24 +144,47 @@ def normalize_extraction(extraction: "JournalExtraction", reference_year: int | 
                 flags.append("DUPLICATE_JOB_SAME_DAY")
 
         normalized_content = deduped + [status for status in statuses if status not in deduped]
-        # Never erase OCR evidence merely because a duplicate was detected.
-        if normalized_content:
-            row.work_content = "; ".join(normalized_content)
-        elif raw_content:
-            row.work_content = raw_content
+        row.work_content = "; ".join(normalized_content) or None
+        if row.work_content is None:
+            flags.append("MISSING_WORK_CONTENT")
 
+        vision_explanation = (row.error_explanation or "").strip()
         explanations = [status for status in statuses if status in EXPLANATION_STATUSES]
+        if vision_explanation and vision_explanation not in explanations:
+            explanations.append(vision_explanation)
         row.error_explanation = "; ".join(explanations) or None
+
+        unique_flags = sorted(set(flags))
         row.raw_data = {
-            **(row.raw_data or {}),
+            **raw_data,
             "raw_content": raw_content,
+            "raw_date": raw_date,
             "jobs": deduped,
             "statuses": statuses,
             "mapping": mappings,
-            "normalization_flags": sorted(set(flags)),
+            "normalization_flags": unique_flags,
             "dictionary_version": DICTIONARY_VERSION,
         }
-        if any(flag in flags for flag in ("MISSING_DATE", "NEW_JOB")):
+
+        severe_flags = {
+            "INVALID_DATE",
+            "MISSING_DATE",
+            "INVALID_QUANTITY",
+            "INVALID_START_TIME",
+            "INVALID_END_TIME",
+            "MISSING_WORK_CONTENT",
+            "INVALID_ROW_SHAPE",
+        }
+        review_flags = {
+            "NEW_JOB",
+            "COERCED_QUANTITY",
+            "COERCED_DURATION",
+            "INVALID_DURATION",
+            "RECALCULATED_DURATION",
+        }
+        if severe_flags.intersection(unique_flags):
+            row.confidence = min(row.confidence, 0.49)
+        elif review_flags.intersection(unique_flags):
             row.confidence = min(row.confidence, 0.79)
 
     return extraction
