@@ -249,6 +249,24 @@ class JournalExtraction(BaseModel):
             return None
         return re.sub(r"\s+", "", text.upper())
 
+    def enforce_machine_catalog(self, machine_codes: list[str]) -> "JournalExtraction":
+        if self.asset_code is None:
+            return self
+        catalog = {re.sub(r"\\s+", "", str(code).upper()) for code in machine_codes}
+        if self.asset_code in catalog:
+            return self
+
+        unmatched = self.asset_code
+        self.asset_code = None
+        self.confidence = min(self.confidence, 0.79)
+        for row in self.rows:
+            raw = row.raw_data or {}
+            raw["vision_asset_code"] = unmatched
+            _append_flag(raw, "UNMATCHED_ASSET_CODE")
+            row.raw_data = raw
+            row.confidence = min(row.confidence, 0.49)
+        return self
+
     def normalize(self, reference_year: int | None = None) -> "JournalExtraction":
         from .normalizer import normalize_extraction
         return normalize_extraction(self, reference_year)
