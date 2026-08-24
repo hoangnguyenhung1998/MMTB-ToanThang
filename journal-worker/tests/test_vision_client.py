@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from mmtb_journal_worker.vision_client import JournalVisionClient
+from mmtb_journal_worker.vision_client import JournalVisionClient, VisionError
 
 
 class VisionClientTest(unittest.TestCase):
@@ -41,6 +41,44 @@ class VisionClientTest(unittest.TestCase):
 
         self.assertEqual("VT-XL5024", extraction.asset_code)
         self.assertEqual(240, extraction.rows[0].total_minutes)
+
+    def test_tolerates_job_23_quantity_suffixes(self):
+        result = {
+            "asset_code": None,
+            "confidence": "58%",
+            "raw_text": "journal",
+            "rows": [
+                {"work_date": "24/08", "work_content": "Đào đất", "quantity": "4c", "confidence": "80%"},
+                {"work_content": "Lấp đất", "quantity": "4c", "confidence": 0.8},
+                {"work_content": "Lu nền", "quantity": "3c", "confidence": 0.8},
+            ],
+        }
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "journal.jpg"
+            image.write_bytes(b"image")
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            extraction = JournalVisionClient("http://vision/v1", "key", "model", 30, client).extract(image, [])
+
+        self.assertEqual([4.0, 4.0, 3.0], [row.quantity for row in extraction.rows])
+        self.assertEqual(0.58, extraction.confidence)
+
+    def test_schema_failure_is_not_retried_at_vision_layer(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"rows":[]}'}}]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "journal.jpg"
+            image.write_bytes(b"image")
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            vision = JournalVisionClient("http://vision/v1", "key", "model", 30, client)
+            with self.assertRaises(VisionError) as raised:
+                vision.extract(image, [])
+
+        self.assertFalse(raised.exception.retryable)
 
     @staticmethod
     def _catalog_from_prompt(body: dict) -> list[str]:

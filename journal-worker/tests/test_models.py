@@ -83,6 +83,90 @@ class ModelsTest(unittest.TestCase):
         self.assertIn("NEW_JOB", row.raw_data["normalization_flags"])
         self.assertLess(row.confidence, 0.8)
 
+    def test_coerces_quantity_with_ocr_suffix_without_failing_document(self):
+        extraction = JournalExtraction.model_validate({
+            "confidence": "83%",
+            "rows": [{
+                "work_date": "24/08",
+                "start_time": "0630",
+                "end_time": "10h30",
+                "work_content": "Đào đất",
+                "quantity": "4c",
+                "unit": "chuyến",
+                "confidence": "85%",
+                "raw_data": "24/08 | 4c | Đào đất",
+            }],
+        }).normalize(reference_year=2026)
+        row = extraction.rows[0]
+        self.assertEqual(4.0, row.quantity)
+        self.assertEqual("06:30:00", row.start_time)
+        self.assertEqual("10:30:00", row.end_time)
+        self.assertEqual(240, row.total_minutes)
+        self.assertIn("COERCED_QUANTITY", row.raw_data["normalization_flags"])
+        self.assertEqual(0.83, extraction.confidence)
+
+    def test_invalid_optional_cells_become_null_and_review_flags(self):
+        extraction = JournalExtraction.model_validate({
+            "confidence": 0.9,
+            "rows": [{
+                "work_date": "không rõ",
+                "start_time": "sáu giờ",
+                "end_time": "99:99",
+                "work_content": "Đào đất",
+                "quantity": "không rõ",
+                "confidence": 0.95,
+            }],
+        }).normalize(reference_year=2026)
+        row = extraction.rows[0]
+        self.assertIsNone(row.work_date)
+        self.assertIsNone(row.start_time)
+        self.assertIsNone(row.end_time)
+        self.assertIsNone(row.quantity)
+        self.assertLess(row.confidence, 0.5)
+        self.assertIn("INVALID_DATE", row.raw_data["normalization_flags"])
+        self.assertIn("INVALID_QUANTITY", row.raw_data["normalization_flags"])
+
+    def test_does_not_inherit_over_an_explicit_invalid_date(self):
+        extraction = JournalExtraction(
+            confidence=0.9,
+            rows=[
+                JournalRow(work_date="24/08/2026", work_content="Đào đất", confidence=0.9),
+                JournalRow(work_date="32/08/2026", work_content="Lấp đất", confidence=0.9),
+                JournalRow(work_content="Lu nền", confidence=0.9),
+            ],
+        ).normalize(reference_year=2026)
+        self.assertEqual("2026-08-24", extraction.rows[0].work_date)
+        self.assertIsNone(extraction.rows[1].work_date)
+        self.assertEqual("2026-08-24", extraction.rows[2].work_date)
+        self.assertIn("INVALID_DATE", extraction.rows[1].raw_data["normalization_flags"])
+
+    def test_normalizes_superscript_and_overnight_times(self):
+        row = JournalRow(start_time="18³⁰", end_time="6h", total_minutes="4h")
+        self.assertEqual("18:30:00", row.start_time)
+        self.assertEqual("06:00:00", row.end_time)
+        self.assertEqual(690, row.total_minutes)
+        self.assertIn("RECALCULATED_DURATION", row.raw_data["normalization_flags"])
+
+    def test_invalid_row_shape_does_not_crash_whole_document(self):
+        extraction = JournalExtraction.model_validate({
+            "confidence": 0.5,
+            "rows": ["dòng OCR không đúng schema"],
+        }).normalize(reference_year=2026)
+        self.assertEqual(1, len(extraction.rows))
+        self.assertIn("INVALID_ROW_SHAPE", extraction.rows[0].raw_data["normalization_flags"])
+        self.assertLess(extraction.rows[0].confidence, 0.5)
+
+    def test_rejects_nearby_machine_code_instead_of_auto_matching(self):
+        extraction = JournalExtraction(
+            asset_code="VT-LU5021",
+            confidence=0.95,
+            rows=[JournalRow(work_date="24/08/2026", work_content="Đào đất", confidence=0.9)],
+        ).enforce_machine_catalog(["VT-LU5020"])
+        self.assertIsNone(extraction.asset_code)
+        self.assertEqual("VT-LU5021", extraction.rows[0].raw_data["vision_asset_code"])
+        self.assertIn("UNMATCHED_ASSET_CODE", extraction.rows[0].raw_data["normalization_flags"])
+        self.assertLess(extraction.rows[0].confidence, 0.5)
+
     def test_rejects_empty_document(self):
         with self.assertRaises(ValidationError):
             JournalExtraction(confidence=0.2, rows=[])

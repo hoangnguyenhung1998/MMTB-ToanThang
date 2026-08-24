@@ -65,8 +65,10 @@ class JournalVisionClient:
             ) from exc
         except (httpx.HTTPError, OSError) as exc:
             raise VisionError(f"Vision API request failed: {exc}", retryable=True) from exc
-        except (KeyError, ValueError, TypeError, ValidationError, json.JSONDecodeError) as exc:
-            raise VisionError(f"Vision response is not valid journal JSON: {exc}", retryable=True) from exc
+        except ValidationError as exc:
+            raise VisionError(f"Vision response failed journal schema validation: {exc}", retryable=False) from exc
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise VisionError(f"Vision response is not valid journal JSON: {exc}", retryable=False) from exc
 
     def _build_payload(self, image_path: Path, machine_codes: list[str]) -> dict[str, Any]:
         mime_type = {
@@ -92,6 +94,8 @@ class JournalVisionClient:
             "đưa vào work_content; đồng thời trả vào error_explanation. "
             "Nếu trường nào không đọc được hãy để null. work_content chỉ lấy từ cột NỘI DUNG CÔNG VIỆC; "
             "work_location chỉ lấy từ vị trí/địa điểm. "
+            "quantity bắt buộc là số thuần, không kèm đơn vị; unit để riêng. "
+            "total_minutes là số phút nguyên; nếu không chắc để null để hệ thống tính từ giờ bắt đầu/kết thúc. "
             "confidence của từng dòng phản ánh độ chắc chắn 0..1. raw_text giữ gần nguyên văn để hậu kiểm. "
             "raw_data của từng dòng bắt buộc là JSON object, ví dụ {\"text\": \"nội dung nguyên dòng\"}; "
             "không được trả raw_data dưới dạng chuỗi. "
