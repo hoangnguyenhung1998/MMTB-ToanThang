@@ -36,6 +36,11 @@ class ReconciliationWorker:
 
     def step(self) -> bool:
         processed = False
+        commands = self.laravel.claim_commands(min(self.settings.claim_limit, 3))
+        for command in commands:
+            processed = True
+            self._process_command(command)
+
         today = date.today()
         for days_ago in range(self.settings.lookback_days - 1, -1, -1):
             work_date = (today - timedelta(days=days_ago)).isoformat()
@@ -46,6 +51,38 @@ class ReconciliationWorker:
             if days_ago > 0:
                 time.sleep(1.0)
         return processed
+
+    def _process_command(self, command: dict) -> None:
+        image_paths: dict[int, Path] = {}
+        job = command.get("reconciliation_job", {})
+        try:
+            for image in job.get("source_images", []):
+                ocr_job_id = int(image["ocr_job_id"])
+                image_paths[ocr_job_id] = self.laravel.download_image(
+                    image["image_url"], int(job["id"]), ocr_job_id,
+                )
+            result = self.openclaw.execute_command(command, image_paths)
+            self.laravel.complete_command(int(command["id"]), result.api_payload())
+            LOGGER.info("Completed OpenClaw command %s: action=%s",
+                        command["id"], command.get("action"))
+        except WorkerApiError:
+            raise
+        except OpenClawError as exc:
+            LOGGER.warning("OpenClaw command %s failed: %s", command.get("id"), exc)
+            self._report_command_failure(command, str(exc), exc.retryable)
+        except Exception as exc:
+            LOGGER.exception("OpenClaw command %s failed locally", command.get("id"))
+            self._report_command_failure(command, str(exc), int(command.get("attempts", 1)) < 3)
+        finally:
+            for path in image_paths.values():
+                path.unlink(missing_ok=True)
+
+    def _report_command_failure(self, command: dict, error: str, retryable: bool) -> None:
+        should_retry = retryable and int(command.get("attempts", 1)) < 3
+        try:
+            self.laravel.fail_command(int(command["id"]), error, should_retry)
+        except WorkerApiError as exc:
+            LOGGER.error("Could not report failure for OpenClaw command %s: %s", command.get("id"), exc)
 
     def _process(self, job: dict) -> None:
         image_paths: dict[int, Path] = {}

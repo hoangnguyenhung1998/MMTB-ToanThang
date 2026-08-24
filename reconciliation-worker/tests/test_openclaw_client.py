@@ -30,6 +30,27 @@ class OpenClawClientTest(unittest.TestCase):
         text = "```json\n{\"outcome\":\"UNRESOLVED\",\"findings\":[]}\n```"
         self.assertEqual(text, self._text({"result": {"payloads": [{"text": text}]}}))
 
+    @patch("mmtb_reconciliation_worker.openclaw_client.subprocess.run")
+    def test_executes_command_with_separate_session(self, run):
+        command_result = {
+            "summary": "Bằng chứng đầy đủ.",
+            "details": {"daily_images": 2},
+            "suggested_actions": [],
+        }
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps({"payloads": [{"text": json.dumps(command_result)}]})
+        run.return_value.stderr = ""
+        client = OpenClawClient("openclaw", "mmtb-reconciliation", 600)
+
+        result = client.execute_command({
+            "id": 7,
+            "instruction": "Kiểm tra bằng chứng",
+            "reconciliation_job": {"source_images": []},
+        }, {})
+
+        self.assertEqual("Bằng chứng đầy đủ.", result.summary)
+        self.assertIn("mmtb-reconciliation-command-7", " ".join(run.call_args.args[0]))
+
     @patch("mmtb_reconciliation_worker.openclaw_client.os.name", "nt")
     @patch("mmtb_reconciliation_worker.openclaw_client.shutil.which")
     def test_runs_npm_cmd_shim_through_windows_command_processor(self, which):

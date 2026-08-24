@@ -202,6 +202,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/ocr-reviews/{ocrJob}/image', [App\Http\Controllers\OcrReviewController::class, 'image'])
         ->name('ocr-reviews.image');
 
+    Route::get('/ai-reconciliation', [App\Http\Controllers\AiReconciliationDashboardController::class, 'index'])
+        ->name('ai-reconciliation.index');
+    Route::get('/ai-reconciliation/{aiReconciliationJob}', [App\Http\Controllers\AiReconciliationDashboardController::class, 'show'])
+        ->name('ai-reconciliation.show');
+    Route::post('/ai-reconciliation/{aiReconciliationJob}/commands', [App\Http\Controllers\AiReconciliationDashboardController::class, 'storeCommand'])
+        ->name('ai-reconciliation.commands.store');
+
     Route::get('/notifications', [App\Http\Controllers\NotificationController::class, 'index'])
     ->name('notifications.index');
 
