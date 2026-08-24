@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 DICTIONARY_VERSION = "SOP_OCR_Anh_NhatTrinh_MMTB_V1.1"
 
-SHIFT_WORDS = re.compile(r"^(?:ca\\s*)?(?:sáng|sang|chiều|chieu|tối|toi|đêm|dem)\\b[\\s:.-]*", re.IGNORECASE)
+SHIFT_WORDS = re.compile(r"^(?:ca\s*)?(?:sáng|sang|chiều|chieu|tối|toi|đêm|dem)\b[\s:.-]*", re.IGNORECASE)
 
 STATUS_ALIASES: dict[str, tuple[str, ...]] = {
     "Máy nghỉ": ("máy nghỉ", "xe nghỉ", "nghỉ off"),
