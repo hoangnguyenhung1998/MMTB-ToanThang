@@ -86,7 +86,7 @@ document.addEventListener('DOMContentLoaded', function () {
     };
     const syncDate = input => {
         input.value = input.value.replace(/[^0-9/]/g, '').slice(0, 10);
-        const match = input.value.match(/^(\\d{2})\/(\\d{2})\/(\\d{4})$/);
+        const match = input.value.match(/^(d{2})\/(d{2})\/(d{4})$/);
         const hidden = input.closest('label')?.querySelector('.journal-date-iso');
         if (hidden) hidden.value = match ? `${match[3]}-${match[2]}-${match[1]}` : '';
     };
