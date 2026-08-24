@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class AiReconciliationJob extends Model
 {
@@ -29,5 +30,15 @@ class AiReconciliationJob extends Model
     public function submissions(): HasMany
     {
         return $this->hasMany(AiReconciliationSubmission::class);
+    }
+
+    public function latestSubmission(): HasOne
+    {
+        return $this->hasOne(AiReconciliationSubmission::class)->latestOfMany('submitted_at');
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(OpenClawCommand::class);
     }
 }

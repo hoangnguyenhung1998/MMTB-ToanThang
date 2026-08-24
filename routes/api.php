@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AiReconciliationController;
 use App\Http\Controllers\Api\OcrJobController;
+use App\Http\Controllers\Api\OpenClawCommandController;
 use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Middleware\AuthenticateCollector;
 use App\Http\Middleware\AuthenticateOpenClaw;
@@ -26,6 +27,12 @@ Route::prefix('openclaw/v1')
             ->name('api.openclaw.reconciliation-jobs.complete');
         Route::post('/reconciliation/jobs/{aiReconciliationJob}/fail', [AiReconciliationController::class, 'fail'])
             ->name('api.openclaw.reconciliation-jobs.fail');
+        Route::post('/commands/claim', [OpenClawCommandController::class, 'claim'])
+            ->name('api.openclaw.commands.claim');
+        Route::post('/commands/{openClawCommand}/complete', [OpenClawCommandController::class, 'complete'])
+            ->name('api.openclaw.commands.complete');
+        Route::post('/commands/{openClawCommand}/fail', [OpenClawCommandController::class, 'fail'])
+            ->name('api.openclaw.commands.fail');
     });
 
 Route::prefix('ocr/v1')

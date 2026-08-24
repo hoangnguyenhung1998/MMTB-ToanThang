@@ -68,6 +68,28 @@ class LaravelReconciliationClient:
         })
         return response.json()["job"]
 
+    def claim_commands(self, limit: int = 3) -> list[dict]:
+        response = self._request("POST", "/commands/claim", json={
+            "worker_id": self.worker_id,
+            "limit": limit,
+        })
+        return list(response.json().get("commands", []))
+
+    def complete_command(self, command_id: int, payload: dict) -> dict:
+        response = self._request("POST", f"/commands/{command_id}/complete", json={
+            "worker_id": self.worker_id,
+            **payload,
+        })
+        return response.json()["command"]
+
+    def fail_command(self, command_id: int, error: str, retryable: bool) -> dict:
+        response = self._request("POST", f"/commands/{command_id}/fail", json={
+            "worker_id": self.worker_id,
+            "error": error[:5000],
+            "retryable": retryable,
+        })
+        return response.json()["command"]
+
     def _request(self, method: str, path: str, absolute: bool = False, **kwargs) -> requests.Response:
         url = path if absolute else f"{self.api_url}{path}"
         try:

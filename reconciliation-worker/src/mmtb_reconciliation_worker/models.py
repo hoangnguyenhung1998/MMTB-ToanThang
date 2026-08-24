@@ -34,3 +34,18 @@ class ReconciliationResult(BaseModel):
         if self.outcome == "UNRESOLVED" and payload.get("confidence", 0) > 0.5:
             payload["confidence"] = 0.5
         return payload
+
+
+class CommandResult(BaseModel):
+    summary: str = Field(min_length=1, max_length=10000)
+    details: dict[str, Any] = Field(default_factory=dict)
+    suggested_actions: list[str] = Field(default_factory=list, max_length=50)
+
+    def api_payload(self) -> dict:
+        return {
+            "summary": self.summary,
+            "result": {
+                "details": self.details,
+                "suggested_actions": self.suggested_actions,
+            },
+        }

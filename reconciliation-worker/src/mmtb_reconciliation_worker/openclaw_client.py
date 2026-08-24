@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .models import ReconciliationResult
+from .models import CommandResult, ReconciliationResult
 
 
 class OpenClawError(RuntimeError):
@@ -75,6 +75,51 @@ class OpenClawClient:
         except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
             raise OpenClawError(f"OpenClaw returned invalid reconciliation JSON: {exc}", retryable=True) from exc
 
+    def execute_command(self, command_payload: dict, image_paths: dict[int, Path]) -> CommandResult:
+        prompt = self._command_prompt(command_payload, image_paths)
+        return self._run_command_prompt(
+            prompt,
+            f"{self.session_key}-command-{int(command_payload['id'])}",
+            f"mmtb-command-{command_payload['id']}-",
+        )
+
+    def _run_command_prompt(self, prompt: str, session_key: str, prefix: str) -> CommandResult:
+        prompt_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", prefix=prefix, encoding="utf-8", delete=False,
+            ) as prompt_file:
+                prompt_file.write(prompt)
+                prompt_path = Path(prompt_file.name)
+            agent_args = ["agent", "--session-key", session_key,
+                          "--message-file", str(prompt_path), "--thinking", self.thinking,
+                          "--timeout", str(self.timeout_seconds), "--json"]
+            if self.agent_id:
+                agent_args[1:1] = ["--agent", self.agent_id]
+            if self.model:
+                agent_args[1:1] = ["--model", self.model]
+            process = subprocess.run(
+                self._build_command(agent_args), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=self.timeout_seconds + 30,
+                check=False, shell=False,
+            )
+        except FileNotFoundError as exc:
+            raise OpenClawError(f"OpenClaw command was not found: {self.command}", retryable=False) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise OpenClawError("OpenClaw command timed out.", retryable=True) from exc
+        finally:
+            if prompt_path is not None:
+                prompt_path.unlink(missing_ok=True)
+        if process.returncode != 0:
+            detail = process.stderr.strip()[-2000:] or "unknown CLI error"
+            raise OpenClawError(f"OpenClaw exited with code {process.returncode}: {detail}")
+        try:
+            envelope = json.loads(process.stdout)
+            text = self._response_text(envelope)
+            return CommandResult.model_validate_json(self._strip_fence(text))
+        except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+            raise OpenClawError(f"OpenClaw returned invalid command JSON: {exc}", retryable=True) from exc
+
     def _build_command(self, arguments: list[str]) -> list[str]:
         resolved = shutil.which(self.command) or self.command
         if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
@@ -119,4 +164,21 @@ class OpenClawClient:
             '"confidence":0.0}]}. '
             "Dùng UNRESOLVED nếu bằng chứng không đủ; không tự sửa dữ liệu Laravel.\n\n"
             f"DỮ LIỆU JOB:\n{json.dumps(payload, ensure_ascii=False, default=str)}"
+        )
+
+    @staticmethod
+    def _command_prompt(command_payload: dict, image_paths: dict[int, Path]) -> str:
+        payload = json.loads(json.dumps(command_payload, ensure_ascii=False, default=str))
+        payload["reconciliation_job"]["source_images"] = [
+            {"ocr_job_id": ocr_id, "local_image_path": str(path.resolve())}
+            for ocr_id, path in sorted(image_paths.items())
+        ]
+        return (
+            "Bạn là OpenClaw Command Center của hệ thống MMTB. Thực hiện yêu cầu của người dùng "
+            "chỉ trong phạm vi dữ liệu job được cung cấp. Được phép đọc và phân tích bằng chứng, "
+            "giải thích kết quả và đề xuất bước xử lý. Không sửa dữ liệu, không duyệt thay người dùng, "
+            "không chạy lệnh hệ thống và không thực hiện hành động bên ngoài. Nếu dữ liệu không đủ, "
+            "nói rõ phần còn thiếu. Trả về DUY NHẤT JSON object, không Markdown, theo schema: "
+            '{"summary":"...","details":{},"suggested_actions":["..."]}.\n\n'
+            f"YÊU CẦU VÀ DỮ LIỆU:\n{json.dumps(payload, ensure_ascii=False, default=str)}"
         )
