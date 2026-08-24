@@ -320,6 +320,14 @@ class OcrJobService
             $exceptions[] = 'MISSING_WORK_CONTENT';
         }
 
-        return $exceptions;
+        $normalizationFlags = $row['raw_data']['normalization_flags'] ?? [];
+        if (in_array('MISSING_DATE', $normalizationFlags, true)) {
+            $exceptions[] = 'MISSING_DATE';
+        }
+        if (in_array('NEW_JOB', $normalizationFlags, true)) {
+            $exceptions[] = 'NEW_JOB';
+        }
+
+        return array_values(array_unique($exceptions));
     }
 }
