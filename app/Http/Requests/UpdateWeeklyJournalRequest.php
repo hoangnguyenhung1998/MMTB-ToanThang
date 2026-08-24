@@ -20,6 +20,7 @@ class UpdateWeeklyJournalRequest extends FormRequest
             'rows.*.start_time' => ['nullable', 'date_format:H:i'],
             'rows.*.end_time' => ['nullable', 'date_format:H:i'],
             'rows.*.work_content' => ['nullable', 'string', 'max:5000'],
+            'rows.*.error_explanation' => ['nullable', 'string', 'max:5000'],
             'rows.*.quantity' => ['nullable', 'numeric', 'min:0'],
             'rows.*.unit' => ['nullable', 'string', 'max:50'],
             'rows.*.work_location' => ['nullable', 'string', 'max:2000'],

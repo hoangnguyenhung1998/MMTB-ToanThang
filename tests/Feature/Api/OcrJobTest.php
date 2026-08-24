@@ -330,7 +330,8 @@ class OcrJobTest extends TestCase
                         'row_number' => 2,
                         'work_date' => '2026-08-18',
                         'total_minutes' => 480,
-                        'work_content' => 'San gat mat bang',
+                        'work_content' => 'San gat mat bang; Chờ dầu',
+                        'error_explanation' => 'Chờ dầu',
                         'work_location' => 'Ha Long Xanh',
                         'confidence' => 0.91,
                     ],
@@ -347,7 +348,8 @@ class OcrJobTest extends TestCase
         ]);
         $this->assertDatabaseHas('journal_rows', [
             'work_date' => '2026-08-18',
-            'work_content' => 'San gat mat bang',
+            'work_content' => 'San gat mat bang; Chờ dầu',
+            'error_explanation' => 'Chờ dầu',
         ]);
 
         $storedJob = OcrJob::query()

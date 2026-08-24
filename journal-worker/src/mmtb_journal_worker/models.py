@@ -27,6 +27,7 @@ class JournalRow(BaseModel):
     end_time: str | None = None
     total_minutes: int | None = Field(default=None, ge=0, le=1440)
     work_content: str | None = None
+    error_explanation: str | None = None
     quantity: float | None = Field(default=None, ge=0)
     unit: str | None = None
     work_location: str | None = None
@@ -46,13 +47,6 @@ class JournalRow(BaseModel):
     def validate_time(cls, value: object) -> str | None:
         return normalize_time(None if value is None else str(value))
 
-    @field_validator("work_date")
-    @classmethod
-    def validate_date(cls, value: str | None) -> str | None:
-        if value is None or not value.strip():
-            return None
-        return datetime.strptime(value.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
-
     @model_validator(mode="after")
     def calculate_total_minutes(self) -> "JournalRow":
         if self.total_minutes is not None or not self.start_time or not self.end_time:
@@ -60,8 +54,7 @@ class JournalRow(BaseModel):
         start = datetime.strptime(self.start_time, "%H:%M:%S")
         end = datetime.strptime(self.end_time, "%H:%M:%S")
         minutes = int((end - start).total_seconds() // 60)
-        if minutes >= 0:
-            self.total_minutes = minutes
+        self.total_minutes = minutes if minutes >= 0 else minutes + 1440
         return self
 
 
@@ -79,6 +72,10 @@ class JournalExtraction(BaseModel):
         if value is None or not value.strip():
             return None
         return value.strip().upper().replace(" ", "")
+
+    def normalize(self, reference_year: int | None = None) -> "JournalExtraction":
+        from .normalizer import normalize_extraction
+        return normalize_extraction(self, reference_year)
 
     def api_payload(self) -> dict[str, Any]:
         rows = []
