@@ -156,6 +156,17 @@ class ModelsTest(unittest.TestCase):
         self.assertIn("INVALID_ROW_SHAPE", extraction.rows[0].raw_data["normalization_flags"])
         self.assertLess(extraction.rows[0].confidence, 0.5)
 
+    def test_rejects_nearby_machine_code_instead_of_auto_matching(self):
+        extraction = JournalExtraction(
+            asset_code="VT-LU5021",
+            confidence=0.95,
+            rows=[JournalRow(work_date="24/08/2026", work_content="Đào đất", confidence=0.9)],
+        ).enforce_machine_catalog(["VT-LU5020"])
+        self.assertIsNone(extraction.asset_code)
+        self.assertEqual("VT-LU5021", extraction.rows[0].raw_data["vision_asset_code"])
+        self.assertIn("UNMATCHED_ASSET_CODE", extraction.rows[0].raw_data["normalization_flags"])
+        self.assertLess(extraction.rows[0].confidence, 0.5)
+
     def test_rejects_empty_document(self):
         with self.assertRaises(ValidationError):
             JournalExtraction(confidence=0.2, rows=[])
