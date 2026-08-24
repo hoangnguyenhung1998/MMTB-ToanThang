@@ -12,24 +12,6 @@ DICTIONARY_VERSION = "SOP_OCR_Anh_NhatTrinh_MMTB_V1.1"
 
 SHIFT_WORDS = re.compile(r"^(?:ca\s*)?(?:sáng|sang|chiều|chieu|tối|toi|đêm|dem)\b[\s:.-]*", re.IGNORECASE)
 
-STATUS_ALIASES: dict[str, tuple[str, ...]] = {
-    "Máy nghỉ": ("máy nghỉ", "xe nghỉ", "nghỉ off"),
-    "Mưa nghỉ / Không thi công do mưa": (
-        "mưa nghỉ", "nghỉ mưa", "trời mưa nghỉ", "bch báo nghỉ",
-        "kỹ thuật báo nghỉ", "đất ướt không lu được", "đất ẩm không lu được",
-        "chờ việc do mưa", "không thi công do mưa",
-    ),
-    "Máy hỏng / Sửa chữa": (
-        "máy hỏng", "xe hỏng", "sửa máy", "sửa chữa máy",
-        "máy hỏng chờ sửa chữa", "nghỉ sửa máy",
-    ),
-    "Chờ việc": ("chờ việc",),
-    "Chờ dầu": ("chờ dầu",),
-    "Chờ bàn giao / Trả máy": ("chờ bàn giao", "trả máy"),
-    "Trực sản xuất": ("trực sản xuất",),
-    "Nghỉ bảo dưỡng": ("nghỉ bảo dưỡng", "bảo dưỡng máy"),
-}
-
 EXPLANATION_STATUSES = {
     "Mưa nghỉ / Không thi công do mưa",
     "Máy nghỉ",
@@ -38,46 +20,6 @@ EXPLANATION_STATUSES = {
     "Chờ dầu",
     "Chờ bàn giao / Trả máy",
     "Nghỉ bảo dưỡng",
-}
-
-# Catalog V1.1. Matching is deliberately conservative: an unknown phrase is retained
-# verbatim and marked NEW_JOB instead of being forced into the nearest known job.
-JOB_ALIASES: dict[str, tuple[str, ...]] = {
-    "Dọn vệ sinh": ("dọn vệ sinh", "dọn vệ sinh bãi đúc", "dọn vệ sinh đường"),
-    "Dọn rác": ("dọn rác", "xử lý dọn rác", "dọn trạc", "xúc dọn trạc rác"),
-    "Gắp rác": ("gắp rác",),
-    "Chở rác": ("chở rác", "vc rác", "vận chuyển rác", "chạy rác", "rác chạc"),
-    "Xúc rác": ("xúc rác",),
-    "Xúc đất": ("xúc đất", "xúc đất lên xe", "xúc đất thừa"),
-    "Vận chuyển đất": ("vận chuyển đất", "vc đất", "chở đất", "chạy đất"),
-    "Đào đất": ("đào đất", "đào móng", "đào rãnh", "đào hố"),
-    "Lấp đất": ("lấp đất", "lấp rãnh", "lấp hố", "hoàn trả đất"),
-    "San gạt mặt bằng": ("san gạt mặt bằng", "san mặt bằng", "gạt mặt bằng", "san nền"),
-    "Lu lèn": ("lu lèn", "lu nền", "lu đường", "lu đất"),
-    "Cẩu vật tư": ("cẩu vật tư", "cẩu vt", "cẩu hàng", "cẩu đồ"),
-    "Cẩu cấu kiện": ("cẩu cấu kiện", "cẩu bê tông", "cẩu ống", "cẩu tấm"),
-    "Cẩu cây": ("cẩu cây", "cẩu chuyển cây", "cẩu hạ cây"),
-    "Cẩu quả ga": ("cẩu quả ga", "cẩu ga"),
-    "Hạ quả ga": ("hạ quả ga", "hạ ga"),
-    "Đảo hố ga": ("đảo hố ga", "đào hố ga"),
-    "Lắp đặt hố ga": ("lắp đặt hố ga", "lắp hố ga"),
-    "Đào gen điện": ("đào gen điện", "đào gen"),
-    "Lắp gen điện": ("lắp gen điện", "lắp gen"),
-    "Lấp gen điện": ("lấp gen điện", "lấp gen"),
-    "Đào và lấp gen": ("đào và lấp gen", "đào + lấp gen", "đào lấp gen"),
-    "Chuyển vật tư": ("chuyển vật tư", "vc vật tư", "vận chuyển vật tư"),
-    "Chuyển máy": ("chuyển máy", "di chuyển máy", "điều chuyển máy"),
-    "Phá bê tông": ("phá bê tông", "đục bê tông"),
-    "Đổ bê tông": ("đổ bê tông",),
-    "Trộn bê tông": ("trộn bê tông",),
-    "Tưới nước": ("tưới nước", "tưới đường", "tưới chống bụi"),
-    "Bơm nước": ("bơm nước", "hút nước"),
-    "Gạt bùn": ("gạt bùn", "xúc bùn", "dọn bùn"),
-    "Sàng đất": ("sàng đất",),
-    "Xới đất": ("xới đất", "xới nền"),
-    "Nâng hạ vật tư": ("nâng hạ vật tư", "nâng vật tư", "hạ vật tư"),
-    "Làm đường công vụ": ("làm đường công vụ", "sửa đường công vụ"),
-    "Dọn mặt bằng": ("dọn mặt bằng", "giải phóng mặt bằng"),
 }
 
 DATE_PATTERN = re.compile(r"^\s*(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?\s*$")
