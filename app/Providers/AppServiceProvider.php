@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Models\CommandCenter;
+use App\Models\AiReconciliationJob;
+use App\Models\AiReconciliationSubmission;
 use App\Models\Driver;
 use App\Models\DriverDocument;
 use App\Models\Machine;
@@ -13,6 +15,8 @@ use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Models\ReconciliationRow;
 use App\Observers\ActivityObserver;
+use App\Observers\AiReconciliationJobObserver;
+use App\Observers\AiReconciliationSubmissionObserver;
 use App\Policies\ReconciliationPeriodPolicy;
 use App\Policies\ReconciliationRowPolicy;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -53,5 +57,8 @@ class AppServiceProvider extends ServiceProvider
         DriverDocument::observe(ActivityObserver::class);
         Project::observe(ActivityObserver::class);
         CommandCenter::observe(ActivityObserver::class);
+
+        AiReconciliationSubmission::observe(AiReconciliationSubmissionObserver::class);
+        AiReconciliationJob::observe(AiReconciliationJobObserver::class);
     }
 }

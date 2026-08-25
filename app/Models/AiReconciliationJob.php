@@ -41,4 +41,9 @@ class AiReconciliationJob extends Model
     {
         return $this->hasMany(OpenClawCommand::class);
     }
+
+    public function alerts(): HasMany
+    {
+        return $this->hasMany(AiReconciliationAlert::class);
+    }
 }

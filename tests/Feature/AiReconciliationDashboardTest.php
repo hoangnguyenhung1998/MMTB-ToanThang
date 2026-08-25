@@ -80,7 +80,9 @@ class AiReconciliationDashboardTest extends TestCase
             ->assertOk()
             ->assertSee('Phát hiện lệch thời gian nghiêm trọng.')
             ->assertSee('Giờ cuối ca lệch trên 60 phút')
-            ->assertSee('75');
+            ->assertSee('75')
+            ->assertSee('Lịch sử thông báo')
+            ->assertSee('PENDING');
     }
 
     public function test_user_can_queue_one_openclaw_command_per_job(): void

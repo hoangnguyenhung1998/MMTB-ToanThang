@@ -38,6 +38,7 @@ class AiReconciliationDashboardController extends Controller
             'machine:id,asset_code,status',
             'submissions' => fn ($query) => $query->with('findings')->latest('submitted_at'),
             'commands' => fn ($query) => $query->with('user:id,name')->latest(),
+            'alerts' => fn ($query) => $query->latest(),
         ]);
 
         return view('ai-reconciliation.show', [

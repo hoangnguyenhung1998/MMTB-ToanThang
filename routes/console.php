@@ -8,6 +8,19 @@ Schedule::command('notifications:sync-operational')
     ->hourly()
     ->withoutOverlapping();
 
+Schedule::command('reconciliation:dispatch-alerts urgent')
+    ->everyFiveMinutes()
+    ->withoutOverlapping();
+
+Schedule::command('reconciliation:dispatch-alerts warnings')
+    ->everyThirtyMinutes()
+    ->withoutOverlapping();
+
+Schedule::command('reconciliation:dispatch-alerts daily')
+    ->dailyAt('07:00')
+    ->timezone('Asia/Ho_Chi_Minh')
+    ->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
