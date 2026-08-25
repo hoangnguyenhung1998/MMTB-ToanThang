@@ -62,7 +62,15 @@ class ReconciliationRowController extends Controller
         abort_unless($reconciliationRow->reconciliation_period_id === $reconciliationPeriod->id, 404);
 
         try {
-            $this->rowService->update($reconciliationRow, $request->validated());
+            $validated = $request->validated();
+            unset($validated['return_to']);
+            $this->rowService->update($reconciliationRow, $validated);
+
+            if ($request->input('return_to') === 'period') {
+                return redirect()
+                    ->route('reconciliation-periods.show', $reconciliationPeriod)
+                    ->with('success', 'Đã cập nhật và tự tính lại giờ đối chiếu.');
+            }
 
             return redirect()
                 ->route('reconciliation-rows.show', [$reconciliationPeriod, $reconciliationRow])

@@ -49,6 +49,15 @@
                 </form>
             @endif
 
+            @if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING']))
+                <form method="POST"
+                      action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}"
+                      onsubmit="return confirm('Tự phân bổ lại giờ từ các nhật trình đã duyệt? Các dòng chưa xác nhận sẽ trở về nháp.')">
+                    @csrf
+                    <button class="btn btn-outline-primary" type="submit">Tự phân bổ 7 giờ</button>
+                </form>
+            @endif
+
             @if ($canConfirmPeriod)
                 <form method="POST"
                       action="{{ route('reconciliation-periods.confirm', $reconciliationPeriod) }}"
@@ -371,62 +380,87 @@
             </form>
         </div>
 
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead class="table-light">
+        <div class="table-responsive reconciliation-grid">
+            <table class="table table-bordered table-hover align-middle mb-0 text-nowrap">
+                <thead class="table-light text-center align-middle">
                     <tr>
-                        <th>Ngày</th>
-                        <th>Máy</th>
-                        <th>BCH</th>
-                        <th>Dự án</th>
-                        <th>Lái xe</th>
-                        <th>Trạng thái</th>
-                        <th>Biến động</th>
-                        <th>Kiểm tra</th>
-                        <th class="text-end">Thao tác</th>
+                        <th rowspan="2" class="sticky-col">Ngày</th>
+                        <th rowspan="2">Máy</th>
+                        @if (!request('command_center_id'))<th rowspan="2">BCH</th>@endif
+                        <th colspan="3" class="table-primary">Định vị</th>
+                        <th colspan="4" class="table-success">Hành chính</th>
+                        <th colspan="6" class="table-warning">Tăng ca</th>
+                        <th rowspan="2">Tổng NT</th>
+                        <th rowspan="2">Chênh lệch</th>
+                        <th rowspan="2">Vị trí</th>
+                        <th rowspan="2">Công việc</th>
+                        <th rowspan="2">Trạng thái</th>
+                        <th rowspan="2">Chi tiết</th>
+                    </tr>
+                    <tr>
+                        <th>Bắt đầu</th><th>Kết thúc</th><th>Tổng</th>
+                        <th>Sáng BĐ</th><th>Sáng KT</th><th>Chiều BĐ</th><th>Chiều KT</th>
+                        <th>Trưa BĐ</th><th>Trưa KT</th><th>Chiều BĐ</th><th>Chiều KT</th><th>Tối BĐ</th><th>Tối KT</th>
                     </tr>
                 </thead>
                 <tbody>
                     @forelse ($rows as $row)
                         @php
                             $machineCode = $row->machine?->asset_code ?? $row->machine?->code ?? ('Máy #' . $row->machine_id);
-                            $driverName = $row->driver?->name ?? $row->driver?->full_name ?? '—';
+                            $calculation = $rowCalculations[$row->id] ?? [];
+                            $fmtTime = fn ($value) => $value ? substr((string) $value, 0, 5) : '—';
+                            $fmtMinutes = fn ($minutes) => $minutes === null ? '—' : sprintf('%d:%02d', intdiv(abs((int) $minutes), 60), abs((int) $minutes) % 60);
+                            $difference = $calculation['difference_minutes'] ?? null;
+                            $differenceClass = match ($calculation['variance'] ?? null) {
+                                'MATCHED', 'MINOR' => 'text-success',
+                                'REVIEW_REQUIRED' => 'text-warning',
+                                'ABNORMAL' => 'text-danger',
+                                default => 'text-muted',
+                            };
+                            $canEditRow = in_array($row->status, ['DRAFT', 'REJECTED', 'REVIEWED'], true);
+                            $rowFormId = 'row-form-'.$row->id;
                         @endphp
                         <tr>
-                            <td class="text-nowrap">{{ $row->work_date?->format('d/m/Y') ?? '—' }}</td>
-                            <td class="fw-semibold text-nowrap">{{ $machineCode }}</td>
-                            <td>{{ $row->commandCenter?->name ?? '—' }}</td>
-                            <td>{{ $row->project?->name ?? '—' }}</td>
-                            <td>{{ $driverName }}</td>
-                            <td>
-                                <span class="badge text-bg-{{ $row->status === 'OK' ? 'success' : 'warning' }}">
-                                    {{ $row->status ?? '—' }}
-                                </span>
+                            <td class="sticky-col bg-white">{{ $row->work_date?->format('d/m/Y') ?? '—' }}</td>
+                            <td class="fw-semibold">{{ $machineCode }}</td>
+                            @if (!request('command_center_id'))<td>{{ $row->commandCenter?->name ?? '—' }}</td>@endif
+                            <td>{{ $fmtTime($row->gps_check_in) }}</td>
+                            <td>{{ $fmtTime($row->gps_check_out) }}</td>
+                            <td class="fw-semibold">{{ $fmtMinutes($calculation['gps_minutes'] ?? null) }}</td>
+                            @foreach (['regular_morning_start', 'regular_morning_end', 'regular_afternoon_start', 'regular_afternoon_end', 'overtime_lunch_start', 'overtime_lunch_end', 'overtime_afternoon_start', 'overtime_afternoon_end', 'overtime_evening_start', 'overtime_evening_end'] as $timeField)
+                                <td>
+                                    @if ($canEditRow)
+                                        <input class="form-control form-control-sm grid-time-input" type="time"
+                                               name="{{ $timeField }}" form="{{ $rowFormId }}"
+                                               value="{{ $row->{$timeField} ? substr((string) $row->{$timeField}, 0, 5) : '' }}"
+                                               aria-label="{{ $timeField }}">
+                                    @else
+                                        {{ $fmtTime($row->{$timeField}) }}
+                                    @endif
+                                </td>
+                            @endforeach
+                            <td class="fw-semibold">{{ $fmtMinutes($calculation['logbook_minutes'] ?? null) }}</td>
+                            <td class="fw-semibold {{ $differenceClass }}">
+                                {{ $difference === null ? '—' : (($difference > 0 ? '+' : ($difference < 0 ? '−' : '')) . $fmtMinutes($difference)) }}
                             </td>
-                            <td>
-                                @if ($row->change_type)
-                                    <span class="badge text-bg-danger">{{ $row->change_type }}</span>
-                                @else
-                                    <span class="text-muted">—</span>
+                            <td class="text-truncate" style="max-width: 150px" title="{{ $row->work_location }}">{{ $row->work_location ?: '—' }}</td>
+                            <td class="text-truncate" style="max-width: 220px" title="{{ $row->work_content }}">{{ $row->work_content ?: '—' }}</td>
+                            <td><span class="badge text-bg-{{ $row->status === 'CONFIRMED' ? 'success' : ($row->status === 'REJECTED' ? 'danger' : 'warning') }}">{{ $row->status }}</span></td>
+                            <td class="d-flex gap-1">
+                                @if ($canEditRow)
+                                    <form id="{{ $rowFormId }}" method="POST" action="{{ route('reconciliation-rows.update', [$reconciliationPeriod, $row]) }}">
+                                        @csrf
+                                        @method('PUT')
+                                        <input type="hidden" name="return_to" value="period">
+                                        <button class="btn btn-sm btn-primary" type="submit">Lưu</button>
+                                    </form>
                                 @endif
-                            </td>
-                            <td>
-                                @if ($row->reviewed_at)
-                                    <span class="text-success">Đã kiểm tra</span>
-                                    <div class="text-muted small">{{ $row->reviewer?->name ?? '—' }}</div>
-                                @else
-                                    <span class="text-warning">Chưa kiểm tra</span>
-                                @endif
-                            </td>
-                            <td class="text-end">
-                                <a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">
-                                    Chi tiết
-                                </a>
+                                <a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">Chi tiết</a>
                             </td>
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="9" class="text-center text-muted py-5">
+                            <td colspan="24" class="text-center text-muted py-5">
                                 Không có dòng đối chiếu phù hợp với bộ lọc.
                             </td>
                         </tr>
@@ -434,6 +468,15 @@
                 </tbody>
             </table>
         </div>
+
+        <style>
+            .reconciliation-grid { max-height: 68vh; }
+            .reconciliation-grid thead { position: sticky; top: 0; z-index: 3; }
+            .reconciliation-grid th, .reconciliation-grid td { font-size: .78rem; padding: .5rem .55rem; }
+            .reconciliation-grid .grid-time-input { min-width: 92px; padding: .25rem .35rem; font-size: .78rem; }
+            .reconciliation-grid .sticky-col { position: sticky; left: 0; z-index: 2; min-width: 92px; }
+            .reconciliation-grid thead .sticky-col { z-index: 4; }
+        </style>
 
         @if ($rows->hasPages())
             <div class="card-footer bg-white">

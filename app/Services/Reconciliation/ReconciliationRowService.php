@@ -8,6 +8,10 @@ use RuntimeException;
 
 class ReconciliationRowService
 {
+    public function __construct(private readonly ReconciliationTimeAllocator $timeAllocator)
+    {
+    }
+
     public function update(ReconciliationRow $row, array $data): ReconciliationRow
     {
         if ($row->status === 'CONFIRMED') {
@@ -15,6 +19,34 @@ class ReconciliationRowService
         }
 
         return DB::transaction(function () use ($row, $data) {
+            $timeFields = [
+                'regular_morning_start', 'regular_morning_end',
+                'regular_afternoon_start', 'regular_afternoon_end',
+                'overtime_lunch_start', 'overtime_lunch_end',
+                'overtime_afternoon_start', 'overtime_afternoon_end',
+                'overtime_evening_start', 'overtime_evening_end',
+            ];
+            $timeData = [
+                ...$row->only($timeFields),
+                ...$data,
+            ];
+            $sourceIntervals = collect([
+                ['start_time' => $timeData['regular_morning_start'] ?? null, 'end_time' => $timeData['regular_morning_end'] ?? null],
+                ['start_time' => $timeData['regular_afternoon_start'] ?? null, 'end_time' => $timeData['regular_afternoon_end'] ?? null],
+                ['start_time' => $timeData['overtime_lunch_start'] ?? null, 'end_time' => $timeData['overtime_lunch_end'] ?? null],
+                ['start_time' => $timeData['overtime_afternoon_start'] ?? null, 'end_time' => $timeData['overtime_afternoon_end'] ?? null],
+                ['start_time' => $timeData['overtime_evening_start'] ?? null, 'end_time' => $timeData['overtime_evening_end'] ?? null],
+            ]);
+            $recalculated = $this->timeAllocator->allocate($sourceIntervals);
+            $data = [
+                ...$data,
+                ...collect($recalculated)->only([
+                    ...$timeFields,
+                    'confirmed_check_in', 'confirmed_check_out',
+                    'regular_minutes', 'lunch_minutes',
+                    'ot_afternoon_minutes', 'ot_evening_minutes',
+                ])->all(),
+            ];
             $row->update([
                 ...$data,
                 'status' => 'DRAFT',

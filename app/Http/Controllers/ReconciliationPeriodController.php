@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exports\ReconciliationBchWorkbookExport;
+use App\Http\Requests\Reconciliation\AllocateReconciliationTimesRequest;
 use App\Http\Requests\Reconciliation\ConfirmReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\DestroyReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\ExportReconciliationPeriodRequest;
@@ -16,9 +17,11 @@ use App\Models\CommandCenter;
 use App\Models\Machine;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
-use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationBchZipService;
+use App\Services\Reconciliation\ReconciliationCalculator;
+use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationPeriodService;
+use App\Services\Reconciliation\ReconciliationTimeSyncService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
@@ -28,8 +31,10 @@ use Throwable;
 
 class ReconciliationPeriodController extends Controller
 {
-    public function __construct(private readonly ReconciliationPeriodService $periodService)
-    {
+    public function __construct(
+        private readonly ReconciliationPeriodService $periodService,
+        private readonly ReconciliationCalculator $calculator
+    ) {
     }
 
     public function index(IndexReconciliationPeriodsRequest $request): View
@@ -122,6 +127,9 @@ class ReconciliationPeriodController extends Controller
             ->orderBy('machine_id');
 
         $rows = $rowsQuery->paginate(50)->withQueryString();
+        $rowCalculations = $rows->getCollection()->mapWithKeys(
+            fn ($row) => [$row->id => $this->calculator->summaryFor($row)]
+        );
 
         $machineIds = $reconciliationPeriod->rows()
             ->whereNotNull('machine_id')
@@ -193,6 +201,7 @@ class ReconciliationPeriodController extends Controller
             'changedCount',
             'rejectedCount',
             'draftCount',
+            'rowCalculations',
             'exportable',
             'exportValidation',
             'canConfirmPeriod'
@@ -226,6 +235,22 @@ class ReconciliationPeriodController extends Controller
             return redirect()
                 ->route('reconciliation-periods.show', $reviewing)
                 ->with('success', 'Đã chuyển kỳ đối chiếu sang trạng thái kiểm tra.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function allocateTimes(
+        AllocateReconciliationTimesRequest $request,
+        ReconciliationPeriod $reconciliationPeriod,
+        ReconciliationTimeSyncService $timeSyncService
+    ): RedirectResponse {
+        try {
+            $updated = $timeSyncService->sync($reconciliationPeriod);
+
+            return back()->with('success', "Đã tự phân bổ giờ cho {$updated} dòng có nhật trình đã duyệt.");
         } catch (Throwable $exception) {
             report($exception);
 

@@ -32,6 +32,11 @@ class ReconciliationPeriodPolicy
         return $period->status === 'GENERATED';
     }
 
+    public function allocateTimes(User $user, ReconciliationPeriod $period): bool
+    {
+        return in_array($period->status, ['GENERATED', 'REVIEWING'], true);
+    }
+
     public function delete(User $user, ReconciliationPeriod $period): bool
     {
         return $period->status === 'DRAFT';

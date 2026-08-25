@@ -58,10 +58,31 @@ class ReconciliationExportValidator
                 $blocking->push($label.': thiếu khoảng giờ thuộc BCH.');
             }
 
-            if (!$row->gps_check_in || !$row->gps_check_out) {
-                $warnings->push($label.': chưa có định vị.');
+            $hasLogbookDuration = collect([
+                $row->regular_minutes,
+                $row->lunch_minutes,
+                $row->ot_afternoon_minutes,
+                $row->ot_evening_minutes,
+            ])->contains(fn ($minutes) => (int) $minutes > 0);
+            $hasAllocatedTimes = $row->regular_morning_start || $row->regular_afternoon_start
+                || $row->overtime_lunch_start || $row->overtime_afternoon_start
+                || $row->overtime_evening_start;
+
+            if ($hasLogbookDuration && !$hasAllocatedTimes) {
+                $blocking->push($label.': chưa phân bổ giờ nhật trình vào các cột hành chính/tăng ca.');
             }
         }
+
+        $rows->filter(fn ($row) => !$row->gps_check_in || !$row->gps_check_out)
+            ->groupBy('machine_id')
+            ->each(function (Collection $machineRows) use ($warnings): void {
+                $machine = $machineRows->first()->machine;
+                $warnings->push(sprintf(
+                    '%s: %d ngày chưa có dữ liệu định vị.',
+                    $machine?->asset_code ?? 'Máy #'.$machineRows->first()->machine_id,
+                    $machineRows->count()
+                ));
+            });
 
         $rows->groupBy(fn ($row) => $row->machine_id.'|'.$row->work_date?->format('Y-m-d'))
             ->each(function (Collection $dailyRows) use ($blocking, $warnings): void {

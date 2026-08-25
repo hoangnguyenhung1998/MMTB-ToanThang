@@ -2,6 +2,7 @@
 
 namespace App\Services\Reconciliation;
 
+use App\Models\JournalRow;
 use App\Models\MachineAssignment;
 use App\Models\ReconciliationPeriod;
 use Carbon\Carbon;
@@ -12,6 +13,12 @@ use RuntimeException;
 
 class ReconciliationGenerator
 {
+    private const JOURNAL_REVIEW_STATUSES = ['APPROVED', 'CORRECTED'];
+
+    public function __construct(private readonly ReconciliationTimeAllocator $timeAllocator)
+    {
+    }
+
     public function generate(ReconciliationPeriod $period): ReconciliationPeriod
     {
         if ($period->date_from->gt($period->date_to)) {
@@ -40,6 +47,22 @@ class ReconciliationGenerator
                 ->get();
 
             $machineIds = $assignments->pluck('machine_id')->unique()->values();
+
+            $journalRows = $machineIds->isEmpty()
+                ? collect()
+                : JournalRow::query()
+                    ->whereBetween('work_date', [$period->date_from, $period->date_to])
+                    ->whereHas('document', fn ($query) => $query->whereIn('machine_id', $machineIds))
+                    ->whereHas('document.ocrJob', fn ($query) => $query
+                        ->whereIn('review_status', self::JOURNAL_REVIEW_STATUSES))
+                    ->with('document:id,machine_id,ocr_job_id')
+                    ->orderBy('work_date')
+                    ->orderBy('start_time')
+                    ->get()
+                    ->groupBy(fn (JournalRow $row) => implode('|', [
+                        $row->document->machine_id,
+                        $row->work_date?->format('Y-m-d'),
+                    ]));
 
             $driverHistories = $machineIds->isEmpty()
                 ? collect()
@@ -99,18 +122,30 @@ class ReconciliationGenerator
                         $assignment->id,
                     ]);
 
+                    $segmentStart = $this->segmentStart($assignmentStart, $date);
+                    $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);
+                    $sourceRows = collect($journalRows->get(
+                        $assignment->machine_id.'|'.$date->toDateString(),
+                        []
+                    ))->filter(fn (JournalRow $row) => $this->belongsToSegment($row, $segmentStart, $segmentEnd));
+                    $allocation = $this->timeAllocator->allocate($sourceRows);
+
                     $rows[$key] = [
                         'reconciliation_period_id' => $period->id,
                         'machine_assignment_id' => $assignment->id,
                         'machine_id' => $assignment->machine_id,
                         'work_date' => $date->toDateString(),
-                        'segment_start' => $this->segmentStart($assignmentStart, $date),
-                        'segment_end' => $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null),
+                        'segment_start' => $segmentStart,
+                        'segment_end' => $segmentEnd,
                         'project_id' => $assignment->project_id,
                         'command_center_id' => $assignment->command_center_id,
                         'driver_id' => $this->driverForDate($histories, $date),
                         'change_type' => $changeType,
                         'change_note' => $changeNote,
+                        ...$allocation,
+                        'work_location' => $sourceRows->pluck('work_location')->filter()->unique()->implode(', ') ?: null,
+                        'work_content' => $sourceRows->pluck('work_content')->filter()->unique()->implode("\n") ?: null,
+                        'explanation' => $sourceRows->pluck('error_explanation')->filter()->unique()->implode("\n") ?: null,
                         'status' => 'DRAFT',
                         'created_at' => $now,
                         'updated_at' => $now,
@@ -129,6 +164,15 @@ class ReconciliationGenerator
 
             return $period->fresh(['rows']);
         });
+    }
+
+    private function belongsToSegment(JournalRow $row, string $segmentStart, string $segmentEnd): bool
+    {
+        if (!$row->start_time) {
+            return false;
+        }
+
+        return $row->start_time >= $segmentStart && $row->start_time <= $segmentEnd;
     }
 
     private function segmentStart(Carbon $assignmentStart, Carbon $date): string

@@ -40,9 +40,9 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
         $result = [
             ['BÁO CÁO TỔNG HỢP ĐỐI CHIẾU NHẬT TRÌNH THÁNG '.$month.' TỪ NGÀY '.$range.' - NCC TOÀN THẮNG'],
             ['DỰ ÁN: '.mb_strtoupper($projectNames).' - '.$this->sheetTitle],
-            ['STT', 'Loại xe', 'Biển số xe', 'Ngày tháng', 'Thời gian ghi nhận trên phần mềm', '', '', 'Thời gian ghi nhận trên nhật trình', '', '', '', '', '', '', '', '', '', '', 'Vị trí thi công', 'Lỗi/vi phạm/sai khác/giải trình', 'BCH', 'KTC', 'Khóa dữ liệu', 'Nội dung công việc'],
-            ['', '', '', '', 'Hành chính Ca sáng', '', 'Tổng thời gian làm việc', 'Hành chính Ca sáng', '', 'Hành chính Ca chiều', '', 'Tăng ca trưa', '', 'Tăng ca chiều', '', 'Tăng ca tối', '', 'Tổng thời gian làm việc'],
-            ['', '', '', '', 'Bắt đầu (trên PM)', 'Kết thúc (trên PM)', '', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)'],
+            ['STT', 'Loại xe', 'Biển số xe', 'Ngày tháng', 'Định vị', '', '', 'Thời gian ghi nhận trên nhật trình', '', '', '', '', '', '', '', '', '', '', 'Vị trí thi công', 'Lỗi/vi phạm/sai khác/giải trình', 'BCH', 'KTC', 'Khóa dữ liệu', 'Nội dung công việc'],
+            ['', '', '', '', 'Bắt đầu', 'Kết thúc', 'Tổng', 'Hành chính Ca sáng', '', 'Hành chính Ca chiều', '', 'Tăng ca trưa', '', 'Tăng ca chiều', '', 'Tăng ca tối', '', 'Tổng thời gian làm việc'],
+            ['', '', '', '', '', '', '', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)'],
         ];
 
         foreach ($this->rows->groupBy('machine_id') as $machineRows) {
@@ -78,9 +78,16 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                     $active ? $row->gps_check_in : null,
                     $active ? $row->gps_check_out : null,
                     $gpsMinutes === null ? null : $gpsMinutes / 1440,
-                    $active ? $row->confirmed_check_in : null,
-                    $active ? $row->confirmed_check_out : null,
-                    null, null, null, null, null, null, null, null,
+                    $active ? $row->regular_morning_start : null,
+                    $active ? $row->regular_morning_end : null,
+                    $active ? $row->regular_afternoon_start : null,
+                    $active ? $row->regular_afternoon_end : null,
+                    $active ? $row->overtime_lunch_start : null,
+                    $active ? $row->overtime_lunch_end : null,
+                    $active ? $row->overtime_afternoon_start : null,
+                    $active ? $row->overtime_afternoon_end : null,
+                    $active ? $row->overtime_evening_start : null,
+                    $active ? $row->overtime_evening_end : null,
                     $logbookMinutes === null ? null : $logbookMinutes / 1440,
                     $active ? $row->work_location : null,
                     $active ? $row->explanation : null,
@@ -115,7 +122,8 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                 $sheet->mergeCells('V3:V5');
                 $sheet->mergeCells('W3:W5');
                 $sheet->mergeCells('X3:X5');
-                $sheet->mergeCells('E4:F4');
+                $sheet->mergeCells('E4:E5');
+                $sheet->mergeCells('F4:F5');
                 $sheet->mergeCells('G4:G5');
                 $sheet->mergeCells('H4:I4');
                 $sheet->mergeCells('J4:K4');

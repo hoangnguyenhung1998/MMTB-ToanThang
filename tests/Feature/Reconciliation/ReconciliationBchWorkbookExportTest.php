@@ -34,7 +34,11 @@ class ReconciliationBchWorkbookExportTest extends TestCase
             'segment_start' => '07:00:00', 'segment_end' => '23:59:59',
             'project_id' => $project, 'command_center_id' => $bch,
             'confirmed_check_in' => '07:00:00', 'confirmed_check_out' => '17:30:00',
-            'regular_minutes' => 480, 'work_location' => 'DK', 'work_content' => 'Rửa đường',
+            'regular_morning_start' => '07:00:00', 'regular_morning_end' => '11:00:00',
+            'regular_afternoon_start' => '13:30:00', 'regular_afternoon_end' => '16:30:00',
+            'overtime_afternoon_start' => '16:30:00', 'overtime_afternoon_end' => '17:30:00',
+            'regular_minutes' => 420, 'ot_afternoon_minutes' => 60,
+            'work_location' => 'DK', 'work_content' => 'Rửa đường',
             'status' => 'CONFIRMED',
         ]);
 

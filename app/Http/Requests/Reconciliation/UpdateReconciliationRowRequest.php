@@ -18,7 +18,8 @@ class UpdateReconciliationRowRequest extends FormRequest
 
     public function rules(): array
     {
-        return [
+        $rules = [
+            'return_to' => ['nullable', 'in:period'],
             'ocr_check_in_raw' => ['nullable', 'date_format:H:i'],
             'ocr_check_out_raw' => ['nullable', 'date_format:H:i'],
             'rounded_check_in' => ['nullable', 'date_format:H:i'],
@@ -38,5 +39,12 @@ class UpdateReconciliationRowRequest extends FormRequest
             'explanation' => ['nullable', 'string', 'max:5000'],
             'notes' => ['nullable', 'string', 'max:5000'],
         ];
+
+        foreach (['regular_morning', 'regular_afternoon', 'overtime_lunch', 'overtime_afternoon', 'overtime_evening'] as $prefix) {
+            $rules[$prefix.'_start'] = ['nullable', 'date_format:H:i', 'required_with:'.$prefix.'_end'];
+            $rules[$prefix.'_end'] = ['nullable', 'date_format:H:i', 'required_with:'.$prefix.'_start'];
+        }
+
+        return $rules;
     }
 }
