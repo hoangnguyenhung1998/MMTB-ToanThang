@@ -20,6 +20,10 @@
         </div>
     @endif
 
+    @if (session('error'))
+        <div class="alert alert-danger">{{ session('error') }}</div>
+    @endif
+
     <form method="POST" action="{{ route('reconciliation-periods.store') }}" class="card">
         @csrf
         <div class="card-body">
@@ -33,7 +37,6 @@
                     <label class="form-label">Loại kỳ <span class="text-danger">*</span></label>
                     <select class="form-select" name="type" required>
                         <option value="MONTHLY" @selected(old('type', 'MONTHLY') === 'MONTHLY')>Theo tháng</option>
-                        <option value="WEEKLY" @selected(old('type') === 'WEEKLY')>Theo tuần</option>
                     </select>
                 </div>
                 <div class="col-md-4">
@@ -52,7 +55,7 @@
             </div>
 
             <div class="alert alert-info mt-3 mb-0">
-                Sau khi lưu, kỳ ở trạng thái <strong>Nháp</strong>. Dữ liệu chỉ được sinh khi anh bấm nút <strong>Sinh dữ liệu</strong> ở màn hình chi tiết.
+                Mỗi tháng chỉ có một kỳ gốc. Nhu cầu theo tuần hoặc khoảng ngày được xử lý bằng bộ lọc trong kỳ tháng.
             </div>
         </div>
         <div class="card-footer d-flex justify-content-end gap-2">

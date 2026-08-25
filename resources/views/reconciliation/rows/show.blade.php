@@ -152,17 +152,15 @@
 
         <div class="col-lg-4">
             <div class="card h-100 shadow-sm border-0">
-                <div class="card-header bg-white fw-semibold">GPS</div>
+                <div class="card-header bg-white fw-semibold">Định vị</div>
                 <div class="card-body">
                     <dl class="row mb-0">
-                        <dt class="col-7 text-muted">GPS vào</dt>
+                        <dt class="col-7 text-muted">Bắt đầu</dt>
                         <dd class="col-5 text-end">{{ $formatTime($reconciliationRow->gps_check_in) }}</dd>
-                        <dt class="col-7 text-muted">GPS ra</dt>
+                        <dt class="col-7 text-muted">Kết thúc</dt>
                         <dd class="col-5 text-end">{{ $formatTime($reconciliationRow->gps_check_out) }}</dd>
-                        <dt class="col-7 text-muted">Lệch giờ vào</dt>
-                        <dd class="col-5 text-end">{{ $formatMinutes($reconciliationRow->gps_check_in_diff_minutes) }}</dd>
-                        <dt class="col-7 text-muted">Lệch giờ ra</dt>
-                        <dd class="col-5 text-end">{{ $formatMinutes($reconciliationRow->gps_check_out_diff_minutes) }}</dd>
+                        <dt class="col-7 text-muted">Tổng</dt>
+                        <dd class="col-5 text-end fw-semibold">{{ $formatMinutes($calculation['gps_minutes']) }}</dd>
                     </dl>
                 </div>
             </div>
@@ -191,49 +189,49 @@
         <form method="POST" action="{{ route('reconciliation-rows.update', [$reconciliationPeriod, $reconciliationRow]) }}" class="card shadow-sm border-0 mb-3">
             @csrf
             @method('PUT')
-            <div class="card-header bg-white fw-semibold">Cập nhật dữ liệu đối chiếu</div>
+            <div class="card-header bg-white">
+                <div class="fw-semibold">Cập nhật dữ liệu đối chiếu</div>
+                <div class="small text-muted">Hệ thống tự tính tổng phút từ các cặp giờ. Tối đa 7 giờ được tính hành chính; phần còn lại để ở tăng ca.</div>
+            </div>
             <div class="card-body">
+                @php
+                    $timeGroups = [
+                        'Hành chính ca sáng' => ['regular_morning_start', 'regular_morning_end'],
+                        'Hành chính ca chiều' => ['regular_afternoon_start', 'regular_afternoon_end'],
+                        'Tăng ca trưa' => ['overtime_lunch_start', 'overtime_lunch_end'],
+                        'Tăng ca chiều' => ['overtime_afternoon_start', 'overtime_afternoon_end'],
+                        'Tăng ca tối' => ['overtime_evening_start', 'overtime_evening_end'],
+                    ];
+                @endphp
                 <div class="row g-3">
                     <div class="col-md-3">
                         <label class="form-label">OCR vào thô</label>
-                        <input class="form-control" type="time" name="ocr_check_in_raw" value="{{ old('ocr_check_in_raw', $reconciliationRow->ocr_check_in_raw ? substr((string) $reconciliationRow->ocr_check_in_raw, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="ocr_check_in_raw" value="{{ old('ocr_check_in_raw', $reconciliationRow->ocr_check_in_raw ? substr((string) $reconciliationRow->ocr_check_in_raw, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">OCR ra thô</label>
-                        <input class="form-control" type="time" name="ocr_check_out_raw" value="{{ old('ocr_check_out_raw', $reconciliationRow->ocr_check_out_raw ? substr((string) $reconciliationRow->ocr_check_out_raw, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="ocr_check_out_raw" value="{{ old('ocr_check_out_raw', $reconciliationRow->ocr_check_out_raw ? substr((string) $reconciliationRow->ocr_check_out_raw, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label">GPS vào</label>
-                        <input class="form-control" type="time" name="gps_check_in" value="{{ old('gps_check_in', $reconciliationRow->gps_check_in ? substr((string) $reconciliationRow->gps_check_in, 0, 5) : '') }}">
+                        <label class="form-label">Định vị bắt đầu</label>
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="gps_check_in" value="{{ old('gps_check_in', $reconciliationRow->gps_check_in ? substr((string) $reconciliationRow->gps_check_in, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label">GPS ra</label>
-                        <input class="form-control" type="time" name="gps_check_out" value="{{ old('gps_check_out', $reconciliationRow->gps_check_out ? substr((string) $reconciliationRow->gps_check_out, 0, 5) : '') }}">
+                        <label class="form-label">Định vị kết thúc</label>
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="gps_check_out" value="{{ old('gps_check_out', $reconciliationRow->gps_check_out ? substr((string) $reconciliationRow->gps_check_out, 0, 5) : '') }}">
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Lệch GPS vào</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="gps_check_in_diff_minutes" value="{{ old('gps_check_in_diff_minutes', $reconciliationRow->gps_check_in_diff_minutes) }}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Lệch GPS ra</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="gps_check_out_diff_minutes" value="{{ old('gps_check_out_diff_minutes', $reconciliationRow->gps_check_out_diff_minutes) }}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Giờ thường</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="regular_minutes" value="{{ old('regular_minutes', $reconciliationRow->regular_minutes) }}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Nghỉ trưa</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="lunch_minutes" value="{{ old('lunch_minutes', $reconciliationRow->lunch_minutes) }}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">OT chiều</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="ot_afternoon_minutes" value="{{ old('ot_afternoon_minutes', $reconciliationRow->ot_afternoon_minutes) }}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">OT tối</label>
-                        <input class="form-control" type="number" min="0" max="1440" name="ot_evening_minutes" value="{{ old('ot_evening_minutes', $reconciliationRow->ot_evening_minutes) }}">
-                    </div>
+                    <div class="col-12"><hr class="my-1"><div class="fw-semibold">Giờ nhật trình xác nhận</div></div>
+                    @foreach ($timeGroups as $label => [$startField, $endField])
+                        <div class="col-lg col-md-4">
+                            <div class="border rounded p-3 h-100 bg-light">
+                                <div class="fw-semibold small mb-2">{{ $label }}</div>
+                                <label class="form-label small">Bắt đầu</label>
+                                <input class="form-control form-control-sm mb-2" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="{{ $startField }}" value="{{ old($startField, $reconciliationRow->{$startField} ? substr((string) $reconciliationRow->{$startField}, 0, 5) : '') }}">
+                                <label class="form-label small">Kết thúc</label>
+                                <input class="form-control form-control-sm" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="{{ $endField }}" value="{{ old($endField, $reconciliationRow->{$endField} ? substr((string) $reconciliationRow->{$endField}, 0, 5) : '') }}">
+                            </div>
+                        </div>
+                    @endforeach
                     <div class="col-md-6">
                         <label class="form-label">Địa điểm</label>
                         <input class="form-control" name="work_location" value="{{ old('work_location', $reconciliationRow->work_location) }}">

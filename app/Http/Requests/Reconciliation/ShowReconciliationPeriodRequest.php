@@ -24,8 +24,11 @@ class ShowReconciliationPeriodRequest extends FormRequest
             'project_id' => ['nullable', 'integer', 'exists:projects,id'],
             'command_center_id' => ['nullable', 'integer', 'exists:command_centers,id'],
             'work_date' => ['nullable', 'date'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
             'row_status' => ['nullable', 'in:DRAFT,REVIEWED,CONFIRMED,REJECTED'],
             'change_type' => ['nullable', 'string', 'max:255'],
+            'machine_page' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

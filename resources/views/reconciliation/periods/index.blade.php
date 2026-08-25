@@ -5,7 +5,7 @@
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
         <div>
             <h1 class="h4 mb-1">Kỳ đối chiếu</h1>
-            <div class="text-muted small">Quản lý các kỳ tuần/tháng và sinh dữ liệu máy theo lịch sử thực tế.</div>
+            <div class="text-muted small">Mỗi tháng một kỳ gốc; xem và xuất theo tuần/ngày ngay trong kỳ tháng.</div>
         </div>
         <a class="btn btn-primary" href="{{ route('reconciliation-periods.create') }}">Tạo kỳ đối chiếu</a>
     </div>

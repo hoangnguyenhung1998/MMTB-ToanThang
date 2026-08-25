@@ -31,6 +31,7 @@ class ReconciliationCalculator
     {
         $minutes = collect([
             $row->regular_minutes,
+            $row->lunch_minutes,
             $row->ot_afternoon_minutes,
             $row->ot_evening_minutes,
         ])->filter(fn ($value) => $value !== null);

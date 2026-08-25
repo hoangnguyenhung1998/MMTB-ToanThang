@@ -62,7 +62,31 @@ class ReconciliationRowController extends Controller
         abort_unless($reconciliationRow->reconciliation_period_id === $reconciliationPeriod->id, 404);
 
         try {
-            $this->rowService->update($reconciliationRow, $request->validated());
+            $validated = $request->validated();
+            $machinePage = $validated['machine_page'] ?? null;
+            $submitAction = $validated['submit_action'] ?? 'save';
+            $returnFilters = array_filter(
+                $validated['return_filters'] ?? [],
+                fn ($value) => $value !== null && $value !== ''
+            );
+            unset($validated['return_to'], $validated['submit_action'], $validated['machine_page'], $validated['return_filters']);
+            $updatedRow = $this->rowService->update($reconciliationRow, $validated);
+
+            if ($submitAction === 'quick_confirm') {
+                $this->rowService->quickConfirm($updatedRow, (int) $request->user()->id);
+            }
+
+            if ($request->input('return_to') === 'period') {
+                return redirect()
+                    ->route('reconciliation-periods.show', [
+                        'reconciliationPeriod' => $reconciliationPeriod,
+                        ...$returnFilters,
+                        'machine_page' => $machinePage,
+                    ])
+                    ->with('success', $submitAction === 'quick_confirm'
+                        ? 'Đã lưu, duyệt và xác nhận dòng đối chiếu.'
+                        : 'Đã cập nhật và tự tính lại giờ đối chiếu.');
+            }
 
             return redirect()
                 ->route('reconciliation-rows.show', [$reconciliationPeriod, $reconciliationRow])

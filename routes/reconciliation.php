@@ -17,6 +17,8 @@ Route::middleware('auth')->group(function () {
         ->name('reconciliation-periods.generate');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/start-review', [ReconciliationPeriodController::class, 'startReview'])
         ->name('reconciliation-periods.start-review');
+    Route::post('/reconciliation-periods/{reconciliationPeriod}/allocate-times', [ReconciliationPeriodController::class, 'allocateTimes'])
+        ->name('reconciliation-periods.allocate-times');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/confirm', [ReconciliationPeriodController::class, 'confirm'])
         ->name('reconciliation-periods.confirm');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/lock', [ReconciliationPeriodController::class, 'lock'])
