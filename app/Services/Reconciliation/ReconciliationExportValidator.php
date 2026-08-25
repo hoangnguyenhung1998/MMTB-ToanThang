@@ -26,7 +26,10 @@ class ReconciliationExportValidator
 
         Machine::query()
             ->where('status', 'ACTIVE')
-            ->where('created_at', '<=', $period->date_to->copy()->endOfDay())
+            ->where(function ($query) use ($period): void {
+                $query->whereNull('created_at')
+                    ->orWhere('created_at', '<=', $period->date_to->copy()->endOfDay());
+            })
             ->whereDoesntHave('assignments', function ($query) use ($period): void {
                 $query->where('time_in', '<=', $period->date_to->copy()->endOfDay())
                     ->where(function ($assignmentQuery) use ($period): void {
