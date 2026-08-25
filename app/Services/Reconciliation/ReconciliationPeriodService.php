@@ -42,7 +42,12 @@ class ReconciliationPeriodService
 
     public function ensureMonthly(string|Carbon|null $month = null, ?int $userId = null): ReconciliationPeriod
     {
-        $date = $month instanceof Carbon ? $month->copy() : Carbon::parse($month ?: 'today');
+        $date = match (true) {
+            $month instanceof Carbon => $month->copy(),
+            is_string($month) && preg_match('/^\d{4}-(?:0[1-9]|1[0-2])$/', $month) === 1
+                => Carbon::createFromFormat('!Y-m', $month),
+            default => Carbon::parse($month ?: 'today'),
+        };
         $from = $date->copy()->startOfMonth();
         $to = $date->copy()->endOfMonth();
 
