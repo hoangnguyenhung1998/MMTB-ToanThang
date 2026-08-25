@@ -11,6 +11,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('reconciliation_rows', function (Blueprint $table): void {
+            $table->index('reconciliation_period_id', 'reconciliation_row_period_fk_support');
+        });
+
+        Schema::table('reconciliation_rows', function (Blueprint $table): void {
             $table->dropUnique('reconciliation_row_unique');
             $table->time('segment_start')->nullable()->after('work_date');
             $table->time('segment_end')->nullable()->after('segment_start');
@@ -48,10 +52,18 @@ return new class extends Migration
                 'reconciliation_row_time_lookup'
             );
         });
+
+        Schema::table('reconciliation_rows', function (Blueprint $table): void {
+            $table->dropIndex('reconciliation_row_period_fk_support');
+        });
     }
 
     public function down(): void
     {
+        Schema::table('reconciliation_rows', function (Blueprint $table): void {
+            $table->index('reconciliation_period_id', 'reconciliation_row_period_fk_support');
+        });
+
         Schema::table('reconciliation_rows', function (Blueprint $table): void {
             $table->dropIndex('reconciliation_row_time_lookup');
             $table->dropUnique('reconciliation_row_segment_unique');
@@ -60,6 +72,10 @@ return new class extends Migration
                 ['reconciliation_period_id', 'machine_id', 'work_date'],
                 'reconciliation_row_unique'
             );
+        });
+
+        Schema::table('reconciliation_rows', function (Blueprint $table): void {
+            $table->dropIndex('reconciliation_row_period_fk_support');
         });
     }
 };
