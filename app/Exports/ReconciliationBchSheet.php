@@ -49,7 +49,9 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
             ['', '', '', '', '', '', '', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)', 'Bắt đầu (trên NT)', 'Kết thúc (trên NT)'],
         ];
 
+        $machineSequence = 0;
         foreach ($this->rows->groupBy('machine_id') as $machineRows) {
+            $machineSequence++;
             $machine = $machineRows->first()->machine;
             $summaryRow = count($result) + 1;
             $firstDayRow = $summaryRow + 1;
@@ -57,7 +59,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
             $this->machineRanges[] = [$summaryRow, $firstDayRow, $lastDayRow];
 
             $result[] = [
-                '',
+                $this->toRoman($machineSequence),
                 $machine?->machine_type,
                 $machine?->asset_code,
                 '', '', '', '=SUM(G'.$firstDayRow.':G'.$lastDayRow.')',
@@ -78,20 +80,20 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                     $sequence++,
                     $machine?->machine_type,
                     $machine?->asset_code,
-                    $date->copy(),
-                    $active ? $row->gps_check_in : null,
-                    $active ? $row->gps_check_out : null,
+                    $date->format('d/m/Y'),
+                    $active ? $this->formatTime($row->gps_check_in) : null,
+                    $active ? $this->formatTime($row->gps_check_out) : null,
                     $gpsMinutes === null ? null : $gpsMinutes / 1440,
-                    $active ? $row->regular_morning_start : null,
-                    $active ? $row->regular_morning_end : null,
-                    $active ? $row->regular_afternoon_start : null,
-                    $active ? $row->regular_afternoon_end : null,
-                    $active ? $row->overtime_lunch_start : null,
-                    $active ? $row->overtime_lunch_end : null,
-                    $active ? $row->overtime_afternoon_start : null,
-                    $active ? $row->overtime_afternoon_end : null,
-                    $active ? $row->overtime_evening_start : null,
-                    $active ? $row->overtime_evening_end : null,
+                    $active ? $this->formatTime($row->regular_morning_start) : null,
+                    $active ? $this->formatTime($row->regular_morning_end) : null,
+                    $active ? $this->formatTime($row->regular_afternoon_start) : null,
+                    $active ? $this->formatTime($row->regular_afternoon_end) : null,
+                    $active ? $this->formatTime($row->overtime_lunch_start) : null,
+                    $active ? $this->formatTime($row->overtime_lunch_end) : null,
+                    $active ? $this->formatTime($row->overtime_afternoon_start) : null,
+                    $active ? $this->formatTime($row->overtime_afternoon_end) : null,
+                    $active ? $this->formatTime($row->overtime_evening_start) : null,
+                    $active ? $this->formatTime($row->overtime_evening_end) : null,
                     $logbookMinutes === null ? null : $logbookMinutes / 1440,
                     $active ? $row->work_location : null,
                     $active ? $row->explanation : null,
@@ -177,9 +179,8 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                 $sheet->getPageSetup()->setOrientation(PageSetup::ORIENTATION_LANDSCAPE)->setFitToWidth(1)->setFitToHeight(0);
                 $sheet->getPageSetup()->setRowsToRepeatAtTopByStartAndEnd(1, 5);
                 $sheet->getPageMargins()->setTop(0.3)->setBottom(0.3)->setLeft(0.2)->setRight(0.2);
-                $sheet->getPageSetup()->setPrintArea('A1:V'.$lastRow);
+                $sheet->getPageSetup()->setPrintArea('A1:X'.$lastRow);
                 $sheet->getColumnDimension('W')->setVisible(false);
-                $sheet->getColumnDimension('X')->setVisible(false);
             },
         ];
     }
@@ -194,6 +195,30 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
         $to = Carbon::createFromFormat('H:i:s', $end);
 
         return (int) $from->diffInMinutes($to);
+    }
+
+    private function formatTime(?string $time): ?string
+    {
+        return $time ? substr($time, 0, 5) : null;
+    }
+
+    private function toRoman(int $number): string
+    {
+        $map = [
+            1000 => 'M', 900 => 'CM', 500 => 'D', 400 => 'CD',
+            100 => 'C', 90 => 'XC', 50 => 'L', 40 => 'XL',
+            10 => 'X', 9 => 'IX', 5 => 'V', 4 => 'IV', 1 => 'I',
+        ];
+        $roman = '';
+
+        foreach ($map as $value => $symbol) {
+            while ($number >= $value) {
+                $roman .= $symbol;
+                $number -= $value;
+            }
+        }
+
+        return $roman;
     }
 
     private function logbookMinutes($row): ?int

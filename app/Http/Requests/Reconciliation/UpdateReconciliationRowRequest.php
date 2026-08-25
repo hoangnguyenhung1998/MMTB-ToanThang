@@ -8,6 +8,30 @@ use Illuminate\Support\Facades\Gate;
 
 class UpdateReconciliationRowRequest extends FormRequest
 {
+    protected function prepareForValidation(): void
+    {
+        $timeFields = [
+            'ocr_check_in_raw', 'ocr_check_out_raw',
+            'rounded_check_in', 'rounded_check_out',
+            'confirmed_check_in', 'confirmed_check_out',
+            'gps_check_in', 'gps_check_out',
+        ];
+
+        foreach (['regular_morning', 'regular_afternoon', 'overtime_lunch', 'overtime_afternoon', 'overtime_evening'] as $prefix) {
+            $timeFields[] = $prefix.'_start';
+            $timeFields[] = $prefix.'_end';
+        }
+
+        $normalized = [];
+        foreach ($timeFields as $field) {
+            if ($this->exists($field)) {
+                $normalized[$field] = $this->normalizeTime($this->input($field));
+            }
+        }
+
+        $this->merge($normalized);
+    }
+
     public function authorize(): bool
     {
         $row = $this->route('reconciliationRow');
@@ -20,6 +44,7 @@ class UpdateReconciliationRowRequest extends FormRequest
     {
         $rules = [
             'return_to' => ['nullable', 'in:period'],
+            'submit_action' => ['nullable', 'in:save,quick_confirm'],
             'machine_page' => ['nullable', 'integer', 'min:1'],
             'return_filters' => ['nullable', 'array'],
             'return_filters.q' => ['nullable', 'string', 'max:255'],
@@ -57,5 +82,27 @@ class UpdateReconciliationRowRequest extends FormRequest
         }
 
         return $rules;
+    }
+
+    private function normalizeTime(mixed $value): mixed
+    {
+        if ($value === null || trim((string) $value) === '') {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        if (preg_match('/^(\d{1,2})$/', $value, $matches) === 1) {
+            $hour = (int) $matches[1];
+
+            return $hour <= 23 ? sprintf('%02d:00', $hour) : $value;
+        }
+
+        if (preg_match('/^(\d{1,2}):([0-5]\d)$/', $value, $matches) === 1) {
+            $hour = (int) $matches[1];
+
+            return $hour <= 23 ? sprintf('%02d:%s', $hour, $matches[2]) : $value;
+        }
+
+        return $value;
     }
 }

@@ -475,8 +475,8 @@
                                     @if ($canEditRow)
                                         <input class="form-control form-control-sm grid-time-input" type="text" inputmode="numeric"
                                                name="{{ $timeField }}" form="{{ $rowFormId }}"
-                                               maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm"
-                                               title="Nhập giờ 24h theo định dạng HH:mm, ví dụ 06:30"
+                                               maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00"
+                                               title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ"
                                                value="{{ $row->{$timeField} ? substr((string) $row->{$timeField}, 0, 5) : '' }}"
                                                aria-label="{{ $timeField }}">
                                     @else
@@ -513,7 +513,13 @@
                                                 <input type="hidden" name="return_filters[{{ $filterName }}]" value="{{ $filterValue }}">
                                             @endif
                                         @endforeach
-                                        <button class="btn btn-sm btn-primary" type="submit">Lưu</button>
+                                        <button class="btn btn-sm btn-primary" type="submit" name="submit_action" value="save">Lưu</button>
+                                        @if ($reconciliationPeriod->status === 'REVIEWING')
+                                            <button class="btn btn-sm btn-success" type="submit" name="submit_action" value="quick_confirm"
+                                                    onclick="return confirm('Lưu dữ liệu và xác nhận dòng này?')">
+                                                Lưu & xác nhận
+                                            </button>
+                                        @endif
                                     </form>
                                 @endif
                                 <a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">Chi tiết</a>

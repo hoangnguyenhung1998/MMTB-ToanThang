@@ -100,4 +100,37 @@ class ReconciliationRowService
             return $row->refresh();
         });
     }
+
+    public function quickConfirm(ReconciliationRow $row, int $userId): ReconciliationRow
+    {
+        if ($row->period()->value('status') !== 'REVIEWING') {
+            throw new RuntimeException('Chỉ xác nhận nhanh khi kỳ đang ở trạng thái kiểm tra.');
+        }
+
+        if (!in_array($row->status, ['DRAFT', 'REJECTED', 'REVIEWED'], true)) {
+            throw new RuntimeException('Dòng này không còn ở trạng thái cho phép xác nhận nhanh.');
+        }
+
+        foreach (['regular_morning', 'regular_afternoon', 'overtime_lunch', 'overtime_afternoon', 'overtime_evening'] as $prefix) {
+            $start = $row->{$prefix.'_start'};
+            $end = $row->{$prefix.'_end'};
+
+            if (($start && !$end) || (!$start && $end)) {
+                throw new RuntimeException('Mỗi khoảng giờ phải có đủ bắt đầu và kết thúc; có thể để trống cả hai nếu nghỉ.');
+            }
+        }
+
+        return DB::transaction(function () use ($row, $userId) {
+            $now = now();
+            $row->update([
+                'status' => 'CONFIRMED',
+                'reviewed_at' => $now,
+                'reviewed_by' => $userId,
+                'confirmed_at' => $now,
+                'confirmed_by' => $userId,
+            ]);
+
+            return $row->refresh();
+        });
+    }
 }

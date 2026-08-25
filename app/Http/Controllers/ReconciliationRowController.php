@@ -64,12 +64,17 @@ class ReconciliationRowController extends Controller
         try {
             $validated = $request->validated();
             $machinePage = $validated['machine_page'] ?? null;
+            $submitAction = $validated['submit_action'] ?? 'save';
             $returnFilters = array_filter(
                 $validated['return_filters'] ?? [],
                 fn ($value) => $value !== null && $value !== ''
             );
-            unset($validated['return_to'], $validated['machine_page'], $validated['return_filters']);
-            $this->rowService->update($reconciliationRow, $validated);
+            unset($validated['return_to'], $validated['submit_action'], $validated['machine_page'], $validated['return_filters']);
+            $updatedRow = $this->rowService->update($reconciliationRow, $validated);
+
+            if ($submitAction === 'quick_confirm') {
+                $this->rowService->quickConfirm($updatedRow, (int) $request->user()->id);
+            }
 
             if ($request->input('return_to') === 'period') {
                 return redirect()
@@ -78,7 +83,9 @@ class ReconciliationRowController extends Controller
                         ...$returnFilters,
                         'machine_page' => $machinePage,
                     ])
-                    ->with('success', 'Đã cập nhật và tự tính lại giờ đối chiếu.');
+                    ->with('success', $submitAction === 'quick_confirm'
+                        ? 'Đã lưu, duyệt và xác nhận dòng đối chiếu.'
+                        : 'Đã cập nhật và tự tính lại giờ đối chiếu.');
             }
 
             return redirect()

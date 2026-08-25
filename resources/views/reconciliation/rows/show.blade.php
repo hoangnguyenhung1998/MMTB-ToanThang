@@ -206,19 +206,19 @@
                 <div class="row g-3">
                     <div class="col-md-3">
                         <label class="form-label">OCR vào thô</label>
-                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 06:30" name="ocr_check_in_raw" value="{{ old('ocr_check_in_raw', $reconciliationRow->ocr_check_in_raw ? substr((string) $reconciliationRow->ocr_check_in_raw, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="ocr_check_in_raw" value="{{ old('ocr_check_in_raw', $reconciliationRow->ocr_check_in_raw ? substr((string) $reconciliationRow->ocr_check_in_raw, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">OCR ra thô</label>
-                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 18:00" name="ocr_check_out_raw" value="{{ old('ocr_check_out_raw', $reconciliationRow->ocr_check_out_raw ? substr((string) $reconciliationRow->ocr_check_out_raw, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="ocr_check_out_raw" value="{{ old('ocr_check_out_raw', $reconciliationRow->ocr_check_out_raw ? substr((string) $reconciliationRow->ocr_check_out_raw, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Định vị bắt đầu</label>
-                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 06:30" name="gps_check_in" value="{{ old('gps_check_in', $reconciliationRow->gps_check_in ? substr((string) $reconciliationRow->gps_check_in, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="gps_check_in" value="{{ old('gps_check_in', $reconciliationRow->gps_check_in ? substr((string) $reconciliationRow->gps_check_in, 0, 5) : '') }}">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Định vị kết thúc</label>
-                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 18:00" name="gps_check_out" value="{{ old('gps_check_out', $reconciliationRow->gps_check_out ? substr((string) $reconciliationRow->gps_check_out, 0, 5) : '') }}">
+                        <input class="form-control" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="gps_check_out" value="{{ old('gps_check_out', $reconciliationRow->gps_check_out ? substr((string) $reconciliationRow->gps_check_out, 0, 5) : '') }}">
                     </div>
                     <div class="col-12"><hr class="my-1"><div class="fw-semibold">Giờ nhật trình xác nhận</div></div>
                     @foreach ($timeGroups as $label => [$startField, $endField])
@@ -226,9 +226,9 @@
                             <div class="border rounded p-3 h-100 bg-light">
                                 <div class="fw-semibold small mb-2">{{ $label }}</div>
                                 <label class="form-label small">Bắt đầu</label>
-                                <input class="form-control form-control-sm mb-2" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 06:30" name="{{ $startField }}" value="{{ old($startField, $reconciliationRow->{$startField} ? substr((string) $reconciliationRow->{$startField}, 0, 5) : '') }}">
+                                <input class="form-control form-control-sm mb-2" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="7 hoặc 07:00" title="Có thể nhập 7, 7:00 hoặc 07:00; để trống nếu nghỉ" name="{{ $startField }}" value="{{ old($startField, $reconciliationRow->{$startField} ? substr((string) $reconciliationRow->{$startField}, 0, 5) : '') }}">
                                 <label class="form-label small">Kết thúc</label>
-                                <input class="form-control form-control-sm" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm" title="Nhập giờ 24h, ví dụ 18:00" name="{{ $endField }}" value="{{ old($endField, $reconciliationRow->{$endField} ? substr((string) $reconciliationRow->{$endField}, 0, 5) : '') }}">
+                                <input class="form-control form-control-sm" type="text" inputmode="numeric" maxlength="5" pattern="(?:[01]?\d|2[0-3])(?::[0-5]\d)?" placeholder="18 hoặc 18:00" title="Có thể nhập 18 hoặc 18:00; để trống nếu nghỉ" name="{{ $endField }}" value="{{ old($endField, $reconciliationRow->{$endField} ? substr((string) $reconciliationRow->{$endField}, 0, 5) : '') }}">
                             </div>
                         </div>
                     @endforeach
