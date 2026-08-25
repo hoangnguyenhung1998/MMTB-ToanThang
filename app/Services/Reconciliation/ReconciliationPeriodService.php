@@ -3,6 +3,7 @@
 namespace App\Services\Reconciliation;
 
 use App\Models\ReconciliationPeriod;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -14,6 +15,22 @@ class ReconciliationPeriodService
 
     public function create(array $data, ?int $userId): ReconciliationPeriod
     {
+        if (($data['type'] ?? null) === 'MONTHLY') {
+            $from = Carbon::parse($data['date_from'])->startOfMonth();
+            $to = Carbon::parse($data['date_to'])->endOfMonth();
+
+            if (ReconciliationPeriod::query()
+                ->where('type', 'MONTHLY')
+                ->whereDate('date_from', $from)
+                ->whereDate('date_to', $to)
+                ->exists()) {
+                throw new RuntimeException('Tháng này đã có kỳ đối chiếu. Mỗi tháng chỉ được có một kỳ gốc.');
+            }
+
+            $data['date_from'] = $from->toDateString();
+            $data['date_to'] = $to->toDateString();
+        }
+
         return DB::transaction(function () use ($data, $userId) {
             return ReconciliationPeriod::query()->create([
                 ...$data,
@@ -21,6 +38,48 @@ class ReconciliationPeriodService
                 'created_by' => $userId,
             ]);
         });
+    }
+
+    public function ensureMonthly(string|Carbon|null $month = null, ?int $userId = null): ReconciliationPeriod
+    {
+        $date = $month instanceof Carbon ? $month->copy() : Carbon::parse($month ?: 'today');
+        $from = $date->copy()->startOfMonth();
+        $to = $date->copy()->endOfMonth();
+
+        return ReconciliationPeriod::query()->firstOrCreate(
+            [
+                'type' => 'MONTHLY',
+                'date_from' => $from->toDateString(),
+                'date_to' => $to->toDateString(),
+            ],
+            [
+                'name' => 'Đối chiếu tháng '.$from->format('m/Y'),
+                'status' => 'DRAFT',
+                'created_by' => $userId,
+                'notes' => 'Kỳ tháng được hệ thống tạo tự động.',
+            ]
+        );
+    }
+
+    public function syncMonthly(ReconciliationPeriod $period): ReconciliationPeriod
+    {
+        if ($period->type !== 'MONTHLY') {
+            throw new RuntimeException('Chỉ đồng bộ tự động đối với kỳ tháng.');
+        }
+
+        if (!in_array($period->status, ['DRAFT', 'GENERATED'], true)) {
+            return $period->refresh();
+        }
+
+        if ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()) {
+            return $period->refresh();
+        }
+
+        if ($period->rows()->whereColumn('updated_at', '>', 'created_at')->exists()) {
+            return $period->refresh();
+        }
+
+        return $this->generator->generate($period);
     }
 
     public function generate(ReconciliationPeriod $period): ReconciliationPeriod
@@ -36,6 +95,10 @@ class ReconciliationPeriodService
     {
         if ($period->status !== 'GENERATED') {
             throw new RuntimeException('Chỉ được chuyển sang kiểm tra sau khi kỳ đã sinh dữ liệu.');
+        }
+
+        if ($period->type === 'MONTHLY') {
+            $period = $this->syncMonthly($period);
         }
 
         if (!$period->rows()->exists()) {

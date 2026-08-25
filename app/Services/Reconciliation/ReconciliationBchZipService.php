@@ -23,6 +23,8 @@ class ReconciliationBchZipService
             ->when($filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
             ->when($filters['project_id'] ?? null, fn ($query, $id) => $query->where('project_id', $id))
             ->when($filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
+            ->when($filters['date_from'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '>=', $date))
+            ->when($filters['date_to'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '<=', $date))
             ->get()
             ->pluck('commandCenter')
             ->filter()

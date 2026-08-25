@@ -21,6 +21,16 @@ Schedule::command('reconciliation:dispatch-alerts daily')
     ->timezone('Asia/Ho_Chi_Minh')
     ->withoutOverlapping();
 
+Schedule::command('reconciliation:sync-monthly --create-only')
+    ->monthlyOn(1, '00:05')
+    ->timezone('Asia/Ho_Chi_Minh')
+    ->withoutOverlapping();
+
+Schedule::command('reconciliation:sync-monthly')
+    ->dailyAt('00:15')
+    ->timezone('Asia/Ho_Chi_Minh')
+    ->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

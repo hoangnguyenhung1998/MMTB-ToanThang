@@ -63,14 +63,20 @@ class ReconciliationPeriodController extends Controller
 
     public function store(StoreReconciliationPeriodRequest $request): RedirectResponse
     {
-        $period = $this->periodService->create(
-            $request->validated(),
-            $request->user()?->id
-        );
+        try {
+            $period = $this->periodService->create(
+                $request->validated(),
+                $request->user()?->id
+            );
 
-        return redirect()
-            ->route('reconciliation-periods.show', $period)
-            ->with('success', 'Đã tạo kỳ đối chiếu. Anh có thể kiểm tra thông tin rồi bấm “Sinh dữ liệu”.');
+            return redirect()
+                ->route('reconciliation-periods.show', $period)
+                ->with('success', 'Đã tạo kỳ đối chiếu. Anh có thể kiểm tra thông tin rồi bấm “Sinh dữ liệu”.');
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return back()->with('error', $exception->getMessage())->withInput();
+        }
     }
 
     public function show(
@@ -107,6 +113,8 @@ class ReconciliationPeriodController extends Controller
             ->when(!empty($filters['project_id']), fn ($query) => $query->where('project_id', (int) $filters['project_id']))
             ->when(!empty($filters['command_center_id']), fn ($query) => $query->where('command_center_id', (int) $filters['command_center_id']))
             ->when(!empty($filters['work_date']), fn ($query) => $query->whereDate('work_date', $filters['work_date']))
+            ->when(!empty($filters['date_from']), fn ($query) => $query->whereDate('work_date', '>=', $filters['date_from']))
+            ->when(!empty($filters['date_to']), fn ($query) => $query->whereDate('work_date', '<=', $filters['date_to']))
             ->when(!empty($filters['row_status']), fn ($query) => $query->where('status', $filters['row_status']))
             ->when(!empty($filters['change_type']), fn ($query) => $query->where('change_type', $filters['change_type']))
             ->when(!empty($filters['q']), function ($query) use ($filters) {
@@ -339,12 +347,16 @@ class ReconciliationPeriodController extends Controller
             'Kỳ đối chiếu còn cảnh báo. Hãy kiểm tra và xác nhận vẫn xuất.'
         );
 
-        $filters = $request->safe()->only(['machine_id', 'project_id', 'command_center_id']);
+        $filters = $request->safe()->only([
+            'machine_id', 'project_id', 'command_center_id', 'date_from', 'date_to',
+        ]);
         $hasRows = $reconciliationPeriod->rows()
             ->whereNotNull('command_center_id')
             ->when($filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
             ->when($filters['project_id'] ?? null, fn ($query, $id) => $query->where('project_id', $id))
             ->when($filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
+            ->when($filters['date_from'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '>=', $date))
+            ->when($filters['date_to'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '<=', $date))
             ->exists();
         abort_unless($hasRows, 422, 'Không có dữ liệu phù hợp với bộ lọc xuất Excel.');
 

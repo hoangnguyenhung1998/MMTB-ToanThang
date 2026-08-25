@@ -79,7 +79,7 @@
             @if ($exportable && $exportValidation['can_export'])
                 <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
                     <input type="hidden" name="mode" value="workbook">
-                    @foreach (['machine_id', 'project_id', 'command_center_id'] as $exportFilter)
+                    @foreach (['machine_id', 'project_id', 'command_center_id', 'date_from', 'date_to'] as $exportFilter)
                         @if (request($exportFilter))
                             <input type="hidden" name="{{ $exportFilter }}" value="{{ request($exportFilter) }}">
                         @endif
@@ -96,7 +96,7 @@
                 </form>
                 <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
                     <input type="hidden" name="mode" value="zip">
-                    @foreach (['machine_id', 'project_id', 'command_center_id'] as $exportFilter)
+                    @foreach (['machine_id', 'project_id', 'command_center_id', 'date_from', 'date_to'] as $exportFilter)
                         @if (request($exportFilter))
                             <input type="hidden" name="{{ $exportFilter }}" value="{{ request($exportFilter) }}">
                         @endif
@@ -358,6 +358,20 @@
                     </div>
 
                     <div class="col-md-3 col-xl-2">
+                        <label class="form-label small">Từ ngày</label>
+                        <input type="date" name="date_from" value="{{ request('date_from') }}"
+                               min="{{ $reconciliationPeriod->date_from->toDateString() }}"
+                               max="{{ $reconciliationPeriod->date_to->toDateString() }}" class="form-control">
+                    </div>
+
+                    <div class="col-md-3 col-xl-2">
+                        <label class="form-label small">Đến ngày</label>
+                        <input type="date" name="date_to" value="{{ request('date_to') }}"
+                               min="{{ $reconciliationPeriod->date_from->toDateString() }}"
+                               max="{{ $reconciliationPeriod->date_to->toDateString() }}" class="form-control">
+                    </div>
+
+                    <div class="col-md-3 col-xl-2">
                         <label class="form-label small">Trạng thái</label>
                         <select name="row_status" class="form-select">
                             <option value="">Tất cả trạng thái</option>
@@ -380,6 +394,24 @@
                     <div class="col-12 d-flex gap-2 mt-3">
                         <button type="submit" class="btn btn-primary">Lọc dữ liệu</button>
                         <a href="{{ route('reconciliation-periods.show', $reconciliationPeriod) }}" class="btn btn-outline-secondary">Xóa lọc</a>
+                    </div>
+                    <div class="col-12 d-flex flex-wrap align-items-center gap-2 mt-2">
+                        <span class="small text-muted">Phạm vi nhanh:</span>
+                        @foreach ([[1, 7], [8, 14], [15, 21], [22, $reconciliationPeriod->date_to->day]] as [$fromDay, $toDay])
+                            @php
+                                $quickFrom = $reconciliationPeriod->date_from->copy()->day($fromDay)->toDateString();
+                                $quickTo = $reconciliationPeriod->date_from->copy()->day($toDay)->toDateString();
+                                $quickQuery = [
+                                    ...request()->except(['date_from', 'date_to', 'work_date', 'machine_page']),
+                                    'date_from' => $quickFrom,
+                                    'date_to' => $quickTo,
+                                ];
+                            @endphp
+                            <a class="btn btn-sm btn-outline-secondary"
+                               href="{{ route('reconciliation-periods.show', ['reconciliationPeriod' => $reconciliationPeriod, ...$quickQuery]) }}">
+                                {{ str_pad($fromDay, 2, '0', STR_PAD_LEFT) }}–{{ str_pad($toDay, 2, '0', STR_PAD_LEFT) }}
+                            </a>
+                        @endforeach
                     </div>
                 </div>
             </form>
@@ -471,7 +503,7 @@
                                         @method('PUT')
                                         <input type="hidden" name="return_to" value="period">
                                         <input type="hidden" name="machine_page" value="{{ $machinePager->currentPage() }}">
-                                        @foreach (request()->only(['q', 'machine_id', 'project_id', 'command_center_id', 'work_date', 'row_status', 'change_type']) as $filterName => $filterValue)
+                                        @foreach (request()->only(['q', 'machine_id', 'project_id', 'command_center_id', 'work_date', 'date_from', 'date_to', 'row_status', 'change_type']) as $filterName => $filterValue)
                                             @if ($filterValue !== null && $filterValue !== '')
                                                 <input type="hidden" name="return_filters[{{ $filterName }}]" value="{{ $filterValue }}">
                                             @endif

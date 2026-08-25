@@ -17,7 +17,7 @@ class StoreReconciliationPeriodRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'type' => ['required', 'in:WEEKLY,MONTHLY'],
+            'type' => ['required', 'in:MONTHLY'],
             'date_from' => ['required', 'date'],
             'date_to' => ['required', 'date', 'after_or_equal:date_from'],
             'notes' => ['nullable', 'string', 'max:2000'],

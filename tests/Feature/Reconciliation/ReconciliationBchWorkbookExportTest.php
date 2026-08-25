@@ -51,5 +51,15 @@ class ReconciliationBchWorkbookExportTest extends TestCase
         $this->assertSame('T-XN0042', $data[6][2]);
         $this->assertNull($data[6][7]); // 01/08 chưa thuộc BCH.
         $this->assertSame('07:00:00', $data[15][7]); // 10/08 thuộc BCH.
+
+        $scopedSheets = (new ReconciliationBchWorkbookExport($period, [
+            'date_from' => '2026-08-08',
+            'date_to' => '2026-08-14',
+        ]))->sheets();
+        $scopedData = $scopedSheets[0]->array();
+
+        $this->assertCount(13, $scopedData); // 5 dòng đầu + 1 dòng tổng máy + 7 ngày.
+        $this->assertSame('2026-08-08', $scopedData[6][3]->format('Y-m-d'));
+        $this->assertSame('07:00:00', $scopedData[8][7]); // 10/08 trong phạm vi đã chọn.
     }
 }

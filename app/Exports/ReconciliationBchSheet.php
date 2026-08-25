@@ -22,7 +22,9 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
     public function __construct(
         private readonly ReconciliationPeriod $period,
         private readonly Collection $rows,
-        private readonly string $sheetTitle
+        private readonly string $sheetTitle,
+        private readonly ?string $dateFrom = null,
+        private readonly ?string $dateTo = null
     ) {
     }
 
@@ -34,8 +36,10 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
     public function array(): array
     {
         $first = $this->rows->first();
+        $scopeFrom = $this->dateFrom ? Carbon::parse($this->dateFrom)->max($this->period->date_from) : $this->period->date_from->copy();
+        $scopeTo = $this->dateTo ? Carbon::parse($this->dateTo)->min($this->period->date_to) : $this->period->date_to->copy();
         $month = $this->period->date_from->format('m/Y');
-        $range = $this->period->date_from->format('d/m/Y').' - '.$this->period->date_to->format('d/m/Y');
+        $range = $scopeFrom->format('d/m/Y').' - '.$scopeTo->format('d/m/Y');
         $projectNames = $this->rows->pluck('project.name')->filter()->unique()->implode(', ');
         $result = [
             ['BÁO CÁO TỔNG HỢP ĐỐI CHIẾU NHẬT TRÌNH THÁNG '.$month.' TỪ NGÀY '.$range.' - NCC TOÀN THẮNG'],
@@ -49,7 +53,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
             $machine = $machineRows->first()->machine;
             $summaryRow = count($result) + 1;
             $firstDayRow = $summaryRow + 1;
-            $lastDayRow = $firstDayRow + $this->period->date_from->diffInDays($this->period->date_to);
+            $lastDayRow = $firstDayRow + $scopeFrom->diffInDays($scopeTo);
             $this->machineRanges[] = [$summaryRow, $firstDayRow, $lastDayRow];
 
             $result[] = [
@@ -63,7 +67,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
 
             $rowsByDate = $machineRows->groupBy(fn ($row) => $row->work_date->format('Y-m-d'));
             $sequence = 1;
-            for ($date = $this->period->date_from->copy(); $date->lte($this->period->date_to); $date->addDay()) {
+            for ($date = $scopeFrom->copy(); $date->lte($scopeTo); $date->addDay()) {
                 $dayRows = $rowsByDate->get($date->format('Y-m-d'), collect());
                 $row = $dayRows->first();
                 $active = $row !== null;

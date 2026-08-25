@@ -27,6 +27,8 @@ class UpdateReconciliationRowRequest extends FormRequest
             'return_filters.project_id' => ['nullable', 'integer'],
             'return_filters.command_center_id' => ['nullable', 'integer'],
             'return_filters.work_date' => ['nullable', 'date'],
+            'return_filters.date_from' => ['nullable', 'date'],
+            'return_filters.date_to' => ['nullable', 'date'],
             'return_filters.row_status' => ['nullable', 'in:DRAFT,REVIEWED,CONFIRMED,REJECTED'],
             'return_filters.change_type' => ['nullable', 'string', 'max:255'],
             'ocr_check_in_raw' => ['nullable', 'date_format:H:i'],

@@ -22,6 +22,8 @@ class ReconciliationBchWorkbookExport implements WithMultipleSheets
             ->when($this->filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
             ->when($this->filters['project_id'] ?? null, fn ($query, $id) => $query->where('project_id', $id))
             ->when($this->filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
+            ->when($this->filters['date_from'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '>=', $date))
+            ->when($this->filters['date_to'] ?? null, fn ($query, $date) => $query->whereDate('work_date', '<=', $date))
             ->orderBy('command_center_id')
             ->orderBy('machine_id')
             ->orderBy('work_date');
@@ -33,7 +35,13 @@ class ReconciliationBchWorkbookExport implements WithMultipleSheets
             ->map(function (Collection $rows) use (&$usedTitles) {
                 $title = $this->uniqueTitle($rows->first()->commandCenter?->name ?? 'BCH', $usedTitles);
 
-                return new ReconciliationBchSheet($this->period, $rows, $title);
+                return new ReconciliationBchSheet(
+                    $this->period,
+                    $rows,
+                    $title,
+                    $this->filters['date_from'] ?? null,
+                    $this->filters['date_to'] ?? null
+                );
             })
             ->values()
             ->all();
