@@ -20,27 +20,46 @@ return new class extends Migration
             $table->time('segment_end')->nullable()->after('segment_start');
         });
 
-        DB::table('reconciliation_rows')
-            ->join('machine_assignments', 'machine_assignments.id', '=', 'reconciliation_rows.machine_assignment_id')
-            ->select([
-                'reconciliation_rows.id',
-                'reconciliation_rows.work_date',
-                'machine_assignments.time_in',
-                'machine_assignments.time_out',
-            ])
-            ->orderBy('reconciliation_rows.id')
-            ->chunk(500, function ($rows): void {
-                foreach ($rows as $row) {
-                    $workDate = Carbon::parse($row->work_date);
-                    $timeIn = Carbon::parse($row->time_in);
-                    $timeOut = $row->time_out ? Carbon::parse($row->time_out) : null;
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement(<<<'SQL'
+                UPDATE reconciliation_rows AS rows_table
+                INNER JOIN machine_assignments AS assignments
+                    ON assignments.id = rows_table.machine_assignment_id
+                SET
+                    rows_table.segment_start = CASE
+                        WHEN DATE(assignments.time_in) = rows_table.work_date THEN TIME(assignments.time_in)
+                        ELSE '00:00:00'
+                    END,
+                    rows_table.segment_end = CASE
+                        WHEN assignments.time_out IS NOT NULL
+                            AND DATE(assignments.time_out) = rows_table.work_date
+                        THEN TIME(assignments.time_out)
+                        ELSE '23:59:59'
+                    END
+                SQL);
+        } else {
+            DB::table('reconciliation_rows')
+                ->join('machine_assignments', 'machine_assignments.id', '=', 'reconciliation_rows.machine_assignment_id')
+                ->select([
+                    'reconciliation_rows.id',
+                    'reconciliation_rows.work_date',
+                    'machine_assignments.time_in',
+                    'machine_assignments.time_out',
+                ])
+                ->orderBy('reconciliation_rows.id')
+                ->chunk(500, function ($rows): void {
+                    foreach ($rows as $row) {
+                        $workDate = Carbon::parse($row->work_date);
+                        $timeIn = Carbon::parse($row->time_in);
+                        $timeOut = $row->time_out ? Carbon::parse($row->time_out) : null;
 
-                    DB::table('reconciliation_rows')->where('id', $row->id)->update([
-                        'segment_start' => $workDate->isSameDay($timeIn) ? $timeIn->format('H:i:s') : '00:00:00',
-                        'segment_end' => $timeOut && $workDate->isSameDay($timeOut) ? $timeOut->format('H:i:s') : '23:59:59',
-                    ]);
-                }
-            });
+                        DB::table('reconciliation_rows')->where('id', $row->id)->update([
+                            'segment_start' => $workDate->isSameDay($timeIn) ? $timeIn->format('H:i:s') : '00:00:00',
+                            'segment_end' => $timeOut && $workDate->isSameDay($timeOut) ? $timeOut->format('H:i:s') : '23:59:59',
+                        ]);
+                    }
+                });
+        }
 
         Schema::table('reconciliation_rows', function (Blueprint $table): void {
             $table->unique(
