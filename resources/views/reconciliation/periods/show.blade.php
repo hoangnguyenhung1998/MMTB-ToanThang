@@ -15,6 +15,7 @@
         $totalRows = (int) $reconciliationPeriod->rows_count;
         $pendingCount = max($totalRows - $reviewedCount, 0);
         $progress = $totalRows > 0 ? round(($reviewedCount / $totalRows) * 100, 1) : 0;
+        $isDraftExport = in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING'], true);
     @endphp
 
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
@@ -76,7 +77,7 @@
                 </form>
             @endif
 
-            @if ($exportable && $exportValidation['can_export'])
+            @if ($exportable)
                 <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
                     <input type="hidden" name="mode" value="workbook">
                     @foreach (['machine_id', 'project_id', 'command_center_id', 'date_from', 'date_to'] as $exportFilter)
@@ -88,10 +89,12 @@
                         <input type="hidden" name="acknowledge_warnings" value="1">
                     @endif
                     <button class="btn btn-outline-success" type="submit"
+                            @disabled(!$exportValidation['can_export'])
+                            title="{{ $exportValidation['can_export'] ? '' : 'Kỳ còn lỗi bắt buộc phải sửa trước khi xuất' }}"
                             @if ($exportValidation['warnings']->isNotEmpty())
                                 onclick="return confirm('Kỳ này còn cảnh báo. Anh đã kiểm tra và vẫn muốn xuất?')"
                             @endif>
-                        Xuất Excel BCH
+                        {{ $isDraftExport ? 'Xuất Excel nháp' : 'Xuất Excel BCH' }}
                     </button>
                 </form>
                 <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
@@ -105,10 +108,12 @@
                         <input type="hidden" name="acknowledge_warnings" value="1">
                     @endif
                     <button class="btn btn-success" type="submit"
+                            @disabled(!$exportValidation['can_export'])
+                            title="{{ $exportValidation['can_export'] ? '' : 'Kỳ còn lỗi bắt buộc phải sửa trước khi xuất' }}"
                             @if ($exportValidation['warnings']->isNotEmpty())
                                 onclick="return confirm('Kỳ này còn cảnh báo. Anh đã kiểm tra và vẫn muốn xuất từng BCH?')"
                             @endif>
-                        Tải ZIP từng BCH
+                        {{ $isDraftExport ? 'ZIP nháp từng BCH' : 'Tải ZIP từng BCH' }}
                     </button>
                 </form>
             @endif

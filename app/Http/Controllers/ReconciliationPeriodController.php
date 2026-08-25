@@ -202,7 +202,7 @@ class ReconciliationPeriodController extends Controller
         $rejectedCount = $reconciliationPeriod->rows()->where('status', 'REJECTED')->count();
         $draftCount = $reconciliationPeriod->rows()->where('status', 'DRAFT')->count();
         $totalRowsForConfirmation = $reconciliationPeriod->rows()->count();
-        $exportable = in_array($reconciliationPeriod->status, ['CONFIRMED', 'EXPORTED'], true);
+        $exportable = in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING', 'CONFIRMED', 'EXPORTED'], true);
         $exportValidation = $exportValidator->validate($reconciliationPeriod);
         $canConfirmPeriod = $reconciliationPeriod->status === 'REVIEWING'
             && $totalRowsForConfirmation > 0
@@ -367,12 +367,18 @@ class ReconciliationPeriodController extends Controller
                 report($exception);
                 abort(422, $exception->getMessage());
             }
-            $zipName = 'doi-chieu-tung-bch-'.$reconciliationPeriod->date_from->format('Y-m').'.zip';
+            $prefix = in_array($reconciliationPeriod->status, ['CONFIRMED', 'EXPORTED'], true)
+                ? 'doi-chieu-tung-bch-'
+                : 'doi-chieu-nhap-tung-bch-';
+            $zipName = $prefix.$reconciliationPeriod->date_from->format('Y-m').'.zip';
 
             return response()->download($zipPath, $zipName)->deleteFileAfterSend(true);
         }
 
-        $filename = 'doi-chieu-bch-'.$reconciliationPeriod->date_from->format('Y-m').'-'.now()->format('YmdHis').'.xlsx';
+        $prefix = in_array($reconciliationPeriod->status, ['CONFIRMED', 'EXPORTED'], true)
+            ? 'doi-chieu-bch-'
+            : 'doi-chieu-nhap-bch-';
+        $filename = $prefix.$reconciliationPeriod->date_from->format('Y-m').'-'.now()->format('YmdHis').'.xlsx';
 
         return Excel::download(
             new ReconciliationBchWorkbookExport($reconciliationPeriod, $filters),

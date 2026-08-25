@@ -54,6 +54,6 @@ class ReconciliationPeriodPolicy
 
     public function export(User $user, ReconciliationPeriod $period): bool
     {
-        return in_array($period->status, ['CONFIRMED', 'EXPORTED'], true);
+        return in_array($period->status, ['GENERATED', 'REVIEWING', 'CONFIRMED', 'EXPORTED'], true);
     }
 }
