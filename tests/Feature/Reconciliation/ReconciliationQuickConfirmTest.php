@@ -29,12 +29,14 @@ class ReconciliationQuickConfirmTest extends TestCase
 
         $this->assertDatabaseHas('reconciliation_rows', [
             'id' => $row->id,
-            'regular_morning_start' => '07:00:00',
-            'regular_morning_end' => '11:00:00',
             'status' => 'CONFIRMED',
             'reviewed_by' => $user->id,
             'confirmed_by' => $user->id,
         ]);
+
+        $confirmedRow = $row->fresh();
+        $this->assertSame('07:00', substr((string) $confirmedRow->regular_morning_start, 0, 5));
+        $this->assertSame('11:00', substr((string) $confirmedRow->regular_morning_end, 0, 5));
 
         $restRow = ReconciliationRow::query()->create([
             'reconciliation_period_id' => $period->id,
