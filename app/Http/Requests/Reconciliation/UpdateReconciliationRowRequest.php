@@ -20,6 +20,15 @@ class UpdateReconciliationRowRequest extends FormRequest
     {
         $rules = [
             'return_to' => ['nullable', 'in:period'],
+            'machine_page' => ['nullable', 'integer', 'min:1'],
+            'return_filters' => ['nullable', 'array'],
+            'return_filters.q' => ['nullable', 'string', 'max:255'],
+            'return_filters.machine_id' => ['nullable', 'integer'],
+            'return_filters.project_id' => ['nullable', 'integer'],
+            'return_filters.command_center_id' => ['nullable', 'integer'],
+            'return_filters.work_date' => ['nullable', 'date'],
+            'return_filters.row_status' => ['nullable', 'in:DRAFT,REVIEWED,CONFIRMED,REJECTED'],
+            'return_filters.change_type' => ['nullable', 'string', 'max:255'],
             'ocr_check_in_raw' => ['nullable', 'date_format:H:i'],
             'ocr_check_out_raw' => ['nullable', 'date_format:H:i'],
             'rounded_check_in' => ['nullable', 'date_format:H:i'],

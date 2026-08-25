@@ -48,6 +48,17 @@ class ReconciliationExportValidatorTest extends TestCase
         $this->assertStringContainsString('chồng lấn', $result['warnings']->implode(' '));
     }
 
+    public function test_missing_gps_does_not_create_export_warning(): void
+    {
+        [$period, $machine, $project, $firstBch] = $this->baseData();
+        $this->row($period, $machine, $project, $firstBch, '07:00:00', '11:00:00');
+
+        $result = app(ReconciliationExportValidator::class)->validate($period);
+
+        $this->assertTrue($result['warnings']->isEmpty());
+        $this->assertStringNotContainsString('định vị', $result['warnings']->implode(' '));
+    }
+
     public function test_active_machine_without_bch_assignment_blocks_export(): void
     {
         [$period] = $this->baseData();

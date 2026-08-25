@@ -300,7 +300,12 @@
         <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
             <div>
                 <div class="fw-semibold">Danh sách máy theo ngày</div>
-                <div class="text-muted small">Hiển thị {{ number_format($rows->total()) }} dòng phù hợp.</div>
+                <div class="text-muted small">
+                    Máy {{ $machinePager->first()?->machine_code ?? '—' }}
+                    · {{ number_format($rows->count()) }} dòng
+                    · trang {{ $machinePager->currentPage() }}/{{ max(1, $machinePager->lastPage()) }} máy
+                    · ngày tăng dần.
+                </div>
             </div>
         </div>
 
@@ -393,6 +398,7 @@
                         <th rowspan="2">Tổng NT</th>
                         <th rowspan="2">Chênh lệch</th>
                         <th rowspan="2">Vị trí</th>
+                        <th rowspan="2">Lỗi giải trình</th>
                         <th rowspan="2">Công việc</th>
                         <th rowspan="2">Trạng thái</th>
                         <th rowspan="2">Chi tiết</th>
@@ -430,8 +436,10 @@
                             @foreach (['regular_morning_start', 'regular_morning_end', 'regular_afternoon_start', 'regular_afternoon_end', 'overtime_lunch_start', 'overtime_lunch_end', 'overtime_afternoon_start', 'overtime_afternoon_end', 'overtime_evening_start', 'overtime_evening_end'] as $timeField)
                                 <td>
                                     @if ($canEditRow)
-                                        <input class="form-control form-control-sm grid-time-input" type="time"
+                                        <input class="form-control form-control-sm grid-time-input" type="text" inputmode="numeric"
                                                name="{{ $timeField }}" form="{{ $rowFormId }}"
+                                               maxlength="5" pattern="(?:[01]\d|2[0-3]):[0-5]\d" placeholder="HH:mm"
+                                               title="Nhập giờ 24h theo định dạng HH:mm, ví dụ 06:30"
                                                value="{{ $row->{$timeField} ? substr((string) $row->{$timeField}, 0, 5) : '' }}"
                                                aria-label="{{ $timeField }}">
                                     @else
@@ -443,8 +451,18 @@
                             <td class="fw-semibold {{ $differenceClass }}">
                                 {{ $difference === null ? '—' : (($difference > 0 ? '+' : ($difference < 0 ? '−' : '')) . $fmtMinutes($difference)) }}
                             </td>
-                            <td class="text-truncate" style="max-width: 150px" title="{{ $row->work_location }}">{{ $row->work_location ?: '—' }}</td>
-                            <td class="text-truncate" style="max-width: 220px" title="{{ $row->work_content }}">{{ $row->work_content ?: '—' }}</td>
+                            @foreach (['work_location', 'explanation', 'work_content'] as $textField)
+                                <td>
+                                    @if ($canEditRow)
+                                        <input class="form-control form-control-sm grid-text-input" type="text"
+                                               name="{{ $textField }}" form="{{ $rowFormId }}"
+                                               value="{{ $row->{$textField} }}"
+                                               aria-label="{{ $textField }}">
+                                    @else
+                                        <div class="text-truncate grid-text-value" title="{{ $row->{$textField} }}">{{ $row->{$textField} ?: '—' }}</div>
+                                    @endif
+                                </td>
+                            @endforeach
                             <td><span class="badge text-bg-{{ $row->status === 'CONFIRMED' ? 'success' : ($row->status === 'REJECTED' ? 'danger' : 'warning') }}">{{ $row->status }}</span></td>
                             <td class="d-flex gap-1">
                                 @if ($canEditRow)
@@ -452,6 +470,12 @@
                                         @csrf
                                         @method('PUT')
                                         <input type="hidden" name="return_to" value="period">
+                                        <input type="hidden" name="machine_page" value="{{ $machinePager->currentPage() }}">
+                                        @foreach (request()->only(['q', 'machine_id', 'project_id', 'command_center_id', 'work_date', 'row_status', 'change_type']) as $filterName => $filterValue)
+                                            @if ($filterValue !== null && $filterValue !== '')
+                                                <input type="hidden" name="return_filters[{{ $filterName }}]" value="{{ $filterValue }}">
+                                            @endif
+                                        @endforeach
                                         <button class="btn btn-sm btn-primary" type="submit">Lưu</button>
                                     </form>
                                 @endif
@@ -460,7 +484,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="24" class="text-center text-muted py-5">
+                            <td colspan="25" class="text-center text-muted py-5">
                                 Không có dòng đối chiếu phù hợp với bộ lọc.
                             </td>
                         </tr>
@@ -474,13 +498,15 @@
             .reconciliation-grid thead { position: sticky; top: 0; z-index: 3; }
             .reconciliation-grid th, .reconciliation-grid td { font-size: .78rem; padding: .5rem .55rem; }
             .reconciliation-grid .grid-time-input { min-width: 92px; padding: .25rem .35rem; font-size: .78rem; }
+            .reconciliation-grid .grid-text-input { min-width: 170px; padding: .25rem .35rem; font-size: .78rem; }
+            .reconciliation-grid .grid-text-value { max-width: 190px; }
             .reconciliation-grid .sticky-col { position: sticky; left: 0; z-index: 2; min-width: 92px; }
             .reconciliation-grid thead .sticky-col { z-index: 4; }
         </style>
 
-        @if ($rows->hasPages())
+        @if ($machinePager->hasPages())
             <div class="card-footer bg-white">
-                {{ $rows->links() }}
+                {{ $machinePager->links() }}
             </div>
         @endif
     </div>

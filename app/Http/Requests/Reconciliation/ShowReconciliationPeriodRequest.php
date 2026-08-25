@@ -26,6 +26,7 @@ class ShowReconciliationPeriodRequest extends FormRequest
             'work_date' => ['nullable', 'date'],
             'row_status' => ['nullable', 'in:DRAFT,REVIEWED,CONFIRMED,REJECTED'],
             'change_type' => ['nullable', 'string', 'max:255'],
+            'machine_page' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

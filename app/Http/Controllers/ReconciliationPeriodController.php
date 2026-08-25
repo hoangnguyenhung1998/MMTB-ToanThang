@@ -123,11 +123,26 @@ class ReconciliationPeriodController extends Controller
                         ->orWhereHas('commandCenter', fn ($centerQuery) => $centerQuery->where('name', 'like', $keyword));
                 });
             })
-            ->orderByDesc('work_date')
-            ->orderBy('machine_id');
+            ->orderBy('work_date')
+            ->orderBy('segment_start');
 
-        $rows = $rowsQuery->paginate(50)->withQueryString();
-        $rowCalculations = $rows->getCollection()->mapWithKeys(
+        $machinePager = (clone $rowsQuery)
+            ->reorder()
+            ->join('machines', 'machines.id', '=', 'reconciliation_rows.machine_id')
+            ->select([
+                'reconciliation_rows.machine_id',
+                'machines.asset_code as machine_code',
+            ])
+            ->distinct()
+            ->orderBy('machines.asset_code')
+            ->paginate(1, ['*'], 'machine_page')
+            ->withQueryString();
+
+        $currentMachineId = $machinePager->first()?->machine_id;
+        $rows = (clone $rowsQuery)
+            ->when($currentMachineId, fn ($query) => $query->where('reconciliation_rows.machine_id', $currentMachineId))
+            ->get();
+        $rowCalculations = $rows->mapWithKeys(
             fn ($row) => [$row->id => $this->calculator->summaryFor($row)]
         );
 
@@ -191,6 +206,7 @@ class ReconciliationPeriodController extends Controller
             'rowSummary',
             'changeSummary',
             'rows',
+            'machinePager',
             'machines',
             'projects',
             'commandCenters',

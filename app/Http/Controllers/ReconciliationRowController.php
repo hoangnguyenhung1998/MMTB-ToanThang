@@ -63,12 +63,21 @@ class ReconciliationRowController extends Controller
 
         try {
             $validated = $request->validated();
-            unset($validated['return_to']);
+            $machinePage = $validated['machine_page'] ?? null;
+            $returnFilters = array_filter(
+                $validated['return_filters'] ?? [],
+                fn ($value) => $value !== null && $value !== ''
+            );
+            unset($validated['return_to'], $validated['machine_page'], $validated['return_filters']);
             $this->rowService->update($reconciliationRow, $validated);
 
             if ($request->input('return_to') === 'period') {
                 return redirect()
-                    ->route('reconciliation-periods.show', $reconciliationPeriod)
+                    ->route('reconciliation-periods.show', [
+                        'reconciliationPeriod' => $reconciliationPeriod,
+                        ...$returnFilters,
+                        'machine_page' => $machinePage,
+                    ])
                     ->with('success', 'Đã cập nhật và tự tính lại giờ đối chiếu.');
             }
 
