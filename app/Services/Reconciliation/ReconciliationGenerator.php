@@ -93,15 +93,19 @@ class ReconciliationGenerator
                         $changeNote = trim(($changeNote ? $changeNote.' ' : '').'Máy kết thúc phân công trong ngày.');
                     }
 
-                    $key = $assignment->machine_id.'|'.$date->toDateString();
+                    $key = implode('|', [
+                        $assignment->machine_id,
+                        $date->toDateString(),
+                        $assignment->id,
+                    ]);
 
-                    // Assignment bắt đầu muộn hơn trong cùng ngày sẽ thắng. Điều này
-                    // giúp ngày điều chuyển thuộc về BCH/dự án mới và không sinh trùng.
                     $rows[$key] = [
                         'reconciliation_period_id' => $period->id,
                         'machine_assignment_id' => $assignment->id,
                         'machine_id' => $assignment->machine_id,
                         'work_date' => $date->toDateString(),
+                        'segment_start' => $this->segmentStart($assignmentStart, $date),
+                        'segment_end' => $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null),
                         'project_id' => $assignment->project_id,
                         'command_center_id' => $assignment->command_center_id,
                         'driver_id' => $this->driverForDate($histories, $date),
@@ -125,6 +129,22 @@ class ReconciliationGenerator
 
             return $period->fresh(['rows']);
         });
+    }
+
+    private function segmentStart(Carbon $assignmentStart, Carbon $date): string
+    {
+        return $date->isSameDay($assignmentStart)
+            ? $assignmentStart->format('H:i:s')
+            : '00:00:00';
+    }
+
+    private function segmentEnd(Carbon $assignmentEnd, Carbon $date, bool $hasTimeOut): string
+    {
+        if ($hasTimeOut && $date->isSameDay($assignmentEnd)) {
+            return $assignmentEnd->format('H:i:s');
+        }
+
+        return '23:59:59';
     }
 
     private function driverForDate(Collection $histories, Carbon $date): ?int

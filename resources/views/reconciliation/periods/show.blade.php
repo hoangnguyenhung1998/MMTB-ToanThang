@@ -67,8 +67,41 @@
                 </form>
             @endif
 
-            @if ($exportable)
-                <a class="btn btn-outline-success" href="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">Xuất Excel</a>
+            @if ($exportable && $exportValidation['can_export'])
+                <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
+                    <input type="hidden" name="mode" value="workbook">
+                    @foreach (['machine_id', 'project_id', 'command_center_id'] as $exportFilter)
+                        @if (request($exportFilter))
+                            <input type="hidden" name="{{ $exportFilter }}" value="{{ request($exportFilter) }}">
+                        @endif
+                    @endforeach
+                    @if ($exportValidation['warnings']->isNotEmpty())
+                        <input type="hidden" name="acknowledge_warnings" value="1">
+                    @endif
+                    <button class="btn btn-outline-success" type="submit"
+                            @if ($exportValidation['warnings']->isNotEmpty())
+                                onclick="return confirm('Kỳ này còn cảnh báo. Anh đã kiểm tra và vẫn muốn xuất?')"
+                            @endif>
+                        Xuất Excel BCH
+                    </button>
+                </form>
+                <form method="GET" action="{{ route('reconciliation-periods.export', $reconciliationPeriod) }}">
+                    <input type="hidden" name="mode" value="zip">
+                    @foreach (['machine_id', 'project_id', 'command_center_id'] as $exportFilter)
+                        @if (request($exportFilter))
+                            <input type="hidden" name="{{ $exportFilter }}" value="{{ request($exportFilter) }}">
+                        @endif
+                    @endforeach
+                    @if ($exportValidation['warnings']->isNotEmpty())
+                        <input type="hidden" name="acknowledge_warnings" value="1">
+                    @endif
+                    <button class="btn btn-success" type="submit"
+                            @if ($exportValidation['warnings']->isNotEmpty())
+                                onclick="return confirm('Kỳ này còn cảnh báo. Anh đã kiểm tra và vẫn muốn xuất từng BCH?')"
+                            @endif>
+                        Tải ZIP từng BCH
+                    </button>
+                </form>
             @endif
 
             @if ($reconciliationPeriod->status === 'DRAFT')
@@ -88,6 +121,35 @@
 
     @if (session('error'))
         <div class="alert alert-danger">{{ session('error') }}</div>
+    @endif
+
+    @if ($exportValidation['blocking']->isNotEmpty() || $exportValidation['warnings']->isNotEmpty())
+        <div class="card shadow-sm border-0 mb-3">
+            <div class="card-header bg-white fw-semibold">Kiểm tra trước khi xuất Excel</div>
+            <div class="card-body">
+                @if ($exportValidation['blocking']->isNotEmpty())
+                    <div class="alert alert-danger mb-3">
+                        <div class="fw-semibold mb-2">Có {{ $exportValidation['blocking']->count() }} lỗi đang chặn xuất:</div>
+                        <ul class="mb-0">
+                            @foreach ($exportValidation['blocking']->take(20) as $message)
+                                <li>{{ $message }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+
+                @if ($exportValidation['warnings']->isNotEmpty())
+                    <div class="alert alert-warning mb-0">
+                        <div class="fw-semibold mb-2">Có {{ $exportValidation['warnings']->count() }} cảnh báo cần kiểm tra:</div>
+                        <ul class="mb-0">
+                            @foreach ($exportValidation['warnings']->take(20) as $message)
+                                <li>{{ $message }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+            </div>
+        </div>
     @endif
 
     <div class="row g-3 mb-3">

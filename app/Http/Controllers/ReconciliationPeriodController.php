@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Exports\ReconciliationRowsExport;
+use App\Exports\ReconciliationBchWorkbookExport;
 use App\Http\Requests\Reconciliation\ConfirmReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\DestroyReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\ExportReconciliationPeriodRequest;
@@ -16,7 +16,8 @@ use App\Models\CommandCenter;
 use App\Models\Machine;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
-use App\Services\Reconciliation\ReconciliationCalculator;
+use App\Services\Reconciliation\ReconciliationExportValidator;
+use App\Services\Reconciliation\ReconciliationBchZipService;
 use App\Services\Reconciliation\ReconciliationPeriodService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
@@ -67,7 +68,11 @@ class ReconciliationPeriodController extends Controller
             ->with('success', 'Đã tạo kỳ đối chiếu. Anh có thể kiểm tra thông tin rồi bấm “Sinh dữ liệu”.');
     }
 
-    public function show(ShowReconciliationPeriodRequest $request, ReconciliationPeriod $reconciliationPeriod): View
+    public function show(
+        ShowReconciliationPeriodRequest $request,
+        ReconciliationPeriod $reconciliationPeriod,
+        ReconciliationExportValidator $exportValidator
+    ): View
     {
         $filters = $request->validated();
 
@@ -167,6 +172,7 @@ class ReconciliationPeriodController extends Controller
         $draftCount = $reconciliationPeriod->rows()->where('status', 'DRAFT')->count();
         $totalRowsForConfirmation = $reconciliationPeriod->rows()->count();
         $exportable = in_array($reconciliationPeriod->status, ['CONFIRMED', 'EXPORTED'], true);
+        $exportValidation = $exportValidator->validate($reconciliationPeriod);
         $canConfirmPeriod = $reconciliationPeriod->status === 'REVIEWING'
             && $totalRowsForConfirmation > 0
             && $confirmedCount === $totalRowsForConfirmation
@@ -188,6 +194,7 @@ class ReconciliationPeriodController extends Controller
             'rejectedCount',
             'draftCount',
             'exportable',
+            'exportValidation',
             'canConfirmPeriod'
         ));
     }
@@ -280,12 +287,42 @@ class ReconciliationPeriodController extends Controller
     public function export(
         ExportReconciliationPeriodRequest $request,
         ReconciliationPeriod $reconciliationPeriod,
-        ReconciliationCalculator $calculator
+        ReconciliationExportValidator $exportValidator,
+        ReconciliationBchZipService $zipService
     ): BinaryFileResponse {
-        $filename = 'doi-chieu-'.$reconciliationPeriod->id.'-'.now()->format('YmdHis').'.xlsx';
+        $validation = $exportValidator->validate($reconciliationPeriod);
+        abort_unless($validation['can_export'], 422, 'Chưa thể xuất: kỳ đối chiếu còn lỗi bắt buộc phải sửa.');
+        abort_if(
+            $validation['warnings']->isNotEmpty() && !$request->boolean('acknowledge_warnings'),
+            422,
+            'Kỳ đối chiếu còn cảnh báo. Hãy kiểm tra và xác nhận vẫn xuất.'
+        );
+
+        $filters = $request->safe()->only(['machine_id', 'project_id', 'command_center_id']);
+        $hasRows = $reconciliationPeriod->rows()
+            ->whereNotNull('command_center_id')
+            ->when($filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
+            ->when($filters['project_id'] ?? null, fn ($query, $id) => $query->where('project_id', $id))
+            ->when($filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
+            ->exists();
+        abort_unless($hasRows, 422, 'Không có dữ liệu phù hợp với bộ lọc xuất Excel.');
+
+        if ($request->input('mode', 'workbook') === 'zip') {
+            try {
+                $zipPath = $zipService->create($reconciliationPeriod, $filters);
+            } catch (Throwable $exception) {
+                report($exception);
+                abort(422, $exception->getMessage());
+            }
+            $zipName = 'doi-chieu-tung-bch-'.$reconciliationPeriod->date_from->format('Y-m').'.zip';
+
+            return response()->download($zipPath, $zipName)->deleteFileAfterSend(true);
+        }
+
+        $filename = 'doi-chieu-bch-'.$reconciliationPeriod->date_from->format('Y-m').'-'.now()->format('YmdHis').'.xlsx';
 
         return Excel::download(
-            new ReconciliationRowsExport($reconciliationPeriod, $calculator),
+            new ReconciliationBchWorkbookExport($reconciliationPeriod, $filters),
             $filename
         );
     }

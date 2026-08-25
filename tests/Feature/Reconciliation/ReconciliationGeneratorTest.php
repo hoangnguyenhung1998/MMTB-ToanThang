@@ -71,7 +71,7 @@ class ReconciliationGeneratorTest extends TestCase
         ]);
     }
 
-    public function test_transfer_day_uses_the_new_assignment_without_duplicate_rows(): void
+    public function test_transfer_day_keeps_both_bch_segments_when_hours_are_different(): void
     {
         [$machineId, $projectA, $commandCenterA] = $this->createBaseData();
         $projectB = DB::table('projects')->insertGetId(['name' => 'Dự án B']);
@@ -96,11 +96,19 @@ class ReconciliationGeneratorTest extends TestCase
         $period = $this->period('2026-07-01', '2026-07-31');
         app(ReconciliationGenerator::class)->generate($period);
 
-        $this->assertDatabaseCount('reconciliation_rows', 31);
-        $this->assertSame(1, DB::table('reconciliation_rows')
+        $this->assertDatabaseCount('reconciliation_rows', 32);
+        $this->assertSame(2, DB::table('reconciliation_rows')
             ->where('machine_id', $machineId)
             ->whereDate('work_date', '2026-07-15')
             ->count());
+        $this->assertDatabaseHas('reconciliation_rows', [
+            'machine_id' => $machineId,
+            'work_date' => '2026-07-15',
+            'project_id' => $projectA,
+            'command_center_id' => $commandCenterA,
+            'segment_start' => '00:00:00',
+            'segment_end' => '12:00:00',
+        ]);
         $this->assertDatabaseHas('reconciliation_rows', [
             'machine_id' => $machineId,
             'work_date' => '2026-07-15',
@@ -108,6 +116,8 @@ class ReconciliationGeneratorTest extends TestCase
             'project_id' => $projectB,
             'command_center_id' => $commandCenterB,
             'change_type' => 'TRANSFER_IN',
+            'segment_start' => '12:00:00',
+            'segment_end' => '23:59:59',
         ]);
     }
 
