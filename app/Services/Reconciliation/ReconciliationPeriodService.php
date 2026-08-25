@@ -51,19 +51,28 @@ class ReconciliationPeriodService
         $from = $date->copy()->startOfMonth();
         $to = $date->copy()->endOfMonth();
 
-        return ReconciliationPeriod::query()->firstOrCreate(
-            [
+        return DB::transaction(function () use ($from, $to, $userId) {
+            $existing = ReconciliationPeriod::query()
+                ->where('type', 'MONTHLY')
+                ->whereDate('date_from', $from->toDateString())
+                ->whereDate('date_to', $to->toDateString())
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing) {
+                return $existing;
+            }
+
+            return ReconciliationPeriod::query()->create([
+                'name' => 'Đối chiếu tháng '.$from->format('m/Y'),
                 'type' => 'MONTHLY',
                 'date_from' => $from->toDateString(),
                 'date_to' => $to->toDateString(),
-            ],
-            [
-                'name' => 'Đối chiếu tháng '.$from->format('m/Y'),
                 'status' => 'DRAFT',
                 'created_by' => $userId,
                 'notes' => 'Kỳ tháng được hệ thống tạo tự động.',
-            ]
-        );
+            ]);
+        });
     }
 
     public function syncMonthly(ReconciliationPeriod $period): ReconciliationPeriod
