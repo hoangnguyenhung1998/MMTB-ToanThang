@@ -28,4 +28,9 @@ class AiReconciliationSubmission extends Model
     {
         return $this->hasMany(AiReconciliationFinding::class);
     }
+
+    public function alerts(): HasMany
+    {
+        return $this->hasMany(AiReconciliationAlert::class);
+    }
 }
