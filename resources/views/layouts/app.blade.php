@@ -48,6 +48,10 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4V6Zm3 3h4m-4 3h7m-7 3h5m5-6 2 2 3-4"/></svg></span>
                 <span>Đối soát AI</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('automation-health.*') ? 'active' : '' }}" href="{{ route('automation-health.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 18h3v-5H4v5Zm6 0h4V6h-4v12Zm7 0h3V9h-3v9ZM3 21h18M5 10l5-5 4 3 5-5"/></svg></span>
+                <span>Giám sát tự động</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>
