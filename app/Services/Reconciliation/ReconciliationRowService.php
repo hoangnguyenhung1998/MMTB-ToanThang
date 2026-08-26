@@ -49,6 +49,8 @@ class ReconciliationRowService
             ];
             $row->update([
                 ...$data,
+                'manually_edited_at' => now(),
+                'has_evidence_changes' => false,
                 'status' => 'DRAFT',
                 'reviewed_at' => null,
                 'reviewed_by' => null,
