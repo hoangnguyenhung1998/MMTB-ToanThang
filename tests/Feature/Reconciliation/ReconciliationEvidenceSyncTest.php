@@ -134,6 +134,7 @@ class ReconciliationEvidenceSyncTest extends TestCase
         return OcrJob::query()->create([
             'zalo_attachment_id' => $attachment->id, 'machine_id' => $machineId,
             'document_type' => $type, 'status' => 'COMPLETED', 'review_status' => 'APPROVED',
+            'reviewed_at' => now(),
             'extracted_date' => '2026-08-17', 'extracted_time' => $time,
             'asset_code' => 'VT-XL0196', 'work_location' => 'PK5',
         ]);
