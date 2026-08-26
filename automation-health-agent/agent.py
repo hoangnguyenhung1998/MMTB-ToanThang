@@ -4,13 +4,14 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +75,19 @@ class LogSnapshot:
                 return line.strip()[-1800:]
         return None
 
-    def consecutive_errors(self) -> int:
+    def latest_error_at(self) -> datetime | None:
+        for line in reversed(self.lines):
+            if ERROR_PATTERN.search(line):
+                return self._datetime(line)
+        return None
+
+    def consecutive_errors(self, fresh_seconds: int = 600) -> int:
+        latest_error_at = self.latest_error_at()
+        if latest_error_at is None:
+            return 0
+        age = (datetime.now(timezone.utc) - latest_error_at.astimezone(timezone.utc)).total_seconds()
+        if age > fresh_seconds:
+            return 0
         count = 0
         for line in reversed(self.lines):
             if ERROR_PATTERN.search(line):
@@ -85,13 +98,38 @@ class LogSnapshot:
 
     @staticmethod
     def _timestamp(line: str) -> str | None:
+        value = LogSnapshot._datetime(line)
+        return value.astimezone(timezone.utc).isoformat() if value else None
+
+    @staticmethod
+    def _datetime(line: str) -> datetime | None:
         match = TIMESTAMP_PATTERN.match(line)
         if not match:
             return None
         try:
-            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").astimezone().isoformat()
+            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").astimezone()
         except ValueError:
             return None
+
+
+def read_health_file(log_path: Path | None) -> dict[str, Any]:
+    if log_path is None:
+        return {}
+    path = log_path.parent / "health.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def iso_age_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+    except ValueError:
+        return None
 
 
 class WindowsTaskReader:
@@ -119,9 +157,12 @@ class WindowsTaskReader:
 
 
 class HealthAgent:
-    def __init__(self, root: Path, openclaw_command: str):
+    def __init__(self, root: Path, openclaw_host: str, openclaw_port: int, error_fresh_seconds: int = 600, api_stale_seconds: int = 300):
         self.root = root
-        self.openclaw_command = openclaw_command
+        self.openclaw_host = openclaw_host
+        self.openclaw_port = openclaw_port
+        self.error_fresh_seconds = error_fresh_seconds
+        self.api_stale_seconds = api_stale_seconds
         self.task_reader = WindowsTaskReader()
         self.definitions = [
             ServiceDefinition("zalo-collector", "Zalo Collector", "ZALO_COLLECTOR", "MMTB-ZaloCollector", root / "collector/data/collector.log"),
@@ -143,6 +184,7 @@ class HealthAgent:
 
     def _task_snapshot(self, definition: ServiceDefinition, task: dict[str, Any] | None) -> dict[str, Any]:
         log = LogSnapshot(definition.log_path)
+        health = read_health_file(definition.log_path)
         state = str(task.get("state", "MISSING")).upper() if task else "MISSING"
         status = "HEALTHY" if state == "RUNNING" else "PAUSED" if state == "DISABLED" else "DEGRADED"
         error = log.last_error()
@@ -150,43 +192,107 @@ class HealthAgent:
             error = f"Không tìm thấy Scheduled Task {definition.task_name}."
         elif state not in {"RUNNING", "DISABLED"}:
             error = f"Scheduled Task {definition.task_name} đang ở trạng thái {state}." + (f" {error}" if error else "")
-        errors = max(log.consecutive_errors(), 1 if status == "DEGRADED" else 0)
+        errors = max(log.consecutive_errors(self.error_fresh_seconds), 1 if status == "DEGRADED" else 0)
+        api_age = iso_age_seconds(health.get("last_api_success_at"))
+        current_job = health.get("current_job") if "current_job" in health else log.current_job()
+        if status == "HEALTHY" and not current_job and api_age is not None and api_age > self.api_stale_seconds:
+            status = "DEGRADED"; errors = max(errors, 3)
+            error = f"Worker không xác nhận API/loop thành công trong {int(api_age // 60)} phút."
+        if status == "HEALTHY" and errors == 0:
+            error = None
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": status,
-            "current_job": log.current_job(), "consecutive_errors": errors,
-            "last_success_at": log.last_success_at(), "error_code": None if status == "HEALTHY" else f"TASK_{state}",
-            "error_message": error, "metrics": {"task_state": state, "last_task_result": task.get("last_result") if task else None},
+            "current_job": current_job,
+            "current_job_started_at": health.get("current_job_started_at"),
+            "consecutive_errors": errors,
+            "last_success_at": health.get("last_api_success_at") or log.last_success_at(),
+            "last_api_success_at": health.get("last_api_success_at"),
+            "last_job_success_at": health.get("last_job_success_at"),
+            "error_code": None if status == "HEALTHY" else f"TASK_{state}",
+            "error_message": error, "metrics": {
+                "task_state": state,
+                "last_task_result": task.get("last_result") if task else None,
+                "latest_error_at": log.latest_error_at().astimezone(timezone.utc).isoformat() if log.latest_error_at() else None,
+                "api_age_seconds": api_age,
+            },
         }
+
+    def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        service_key = command["service"]["service_key"]
+        definition = next((item for item in self.definitions if item.service_key == service_key), None)
+        if definition is None:
+            raise RuntimeError(f"Dịch vụ không thuộc allowlist: {service_key}")
+        action = command["action"]
+        if action == "HEALTH_CHECK":
+            service = next(item for item in self.snapshot() if item["service_key"] == service_key)
+            return {"message": f"Health check: {service['status']}", "service": service}
+        task_name = definition.task_name or "OpenClaw Gateway"
+        escaped = task_name.replace("'", "''")
+        script = match_action(action, escaped, self.openclaw_port if definition.service_type == "OPENCLAW_GATEWAY" else None)
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=45, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or f"PowerShell exit {result.returncode}").strip())
+        return {"message": f"{action} đã thực hiện cho {definition.name}.", "task_name": task_name}
 
     def _openclaw_snapshot(self, definition: ServiceDefinition) -> dict[str, Any]:
         try:
-            result = subprocess.run(
-                f'"{self.openclaw_command}" gateway status', capture_output=True, text=True,
-                timeout=20, shell=True, check=False,
-            )
-            output = (result.stdout or result.stderr).strip()
-            healthy = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            with socket.create_connection((self.openclaw_host, self.openclaw_port), timeout=3):
+                healthy, output = True, ""
+        except OSError as exc:
             output, healthy = str(exc), False
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": "HEALTHY" if healthy else "DEGRADED",
             "consecutive_errors": 0 if healthy else 1,
-            "last_success_at": datetime.now().astimezone().isoformat() if healthy else None,
+            "last_success_at": datetime.now(timezone.utc).isoformat() if healthy else None,
             "error_code": None if healthy else "GATEWAY_UNAVAILABLE",
             "error_message": None if healthy else output[-1800:],
-            "metrics": {"command_exit_code": result.returncode if 'result' in locals() else None},
+            "metrics": {"host": self.openclaw_host, "port": self.openclaw_port, "tcp_reachable": healthy},
         }
 
 
 def post_heartbeat(url: str, token: str, payload: dict[str, Any], timeout: int = 20) -> dict[str, Any]:
+    return post_json(url, token, payload, timeout)
+
+
+def post_json(url: str, token: str, payload: dict[str, Any], timeout: int = 20) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": f"mmtb-health-agent/{AGENT_VERSION}"},
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def match_action(action: str, task_name: str, gateway_port: int | None = None) -> str:
+    stop_gateway = ""
+    if gateway_port is not None:
+        stop_gateway = f"$pids=Get-NetTCPConnection -LocalPort {gateway_port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; $pids | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}; "
+    if action == "PAUSE":
+        return stop_gateway + f"Stop-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; Disable-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop | Out-Null"
+    if action == "RETRY":
+        return f"Enable-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop | Out-Null; Start-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop"
+    if action == "RESTART":
+        return stop_gateway + f"Enable-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop | Out-Null; Stop-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Start-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop"
+    raise RuntimeError(f"Lệnh không thuộc allowlist: {action}")
+
+
+def process_commands(base_url: str, token: str, agent: HealthAgent) -> int:
+    response = post_json(f"{base_url}/commands/claim", token, {"agent_id": os.environ.get("COMPUTERNAME", "health-agent"), "limit": 5})
+    completed = 0
+    for command in response.get("commands", []):
+        try:
+            result = agent.execute_command(command)
+            post_json(f"{base_url}/commands/{command['id']}/complete", token, {"result": result})
+            completed += 1
+        except Exception as exc:
+            post_json(f"{base_url}/commands/{command['id']}/fail", token, {"error": str(exc)[:2000]})
+            logging.exception("Command %s failed", command.get("id"))
+    return completed
 
 
 def main() -> int:
@@ -203,8 +309,15 @@ def main() -> int:
         return 2
     root = Path(os.environ.get("AUTOMATION_REPOSITORY_ROOT", str(agent_root.parent))).resolve()
     interval = max(30, int(os.environ.get("AUTOMATION_AGENT_INTERVAL_SECONDS", "60")))
-    agent = HealthAgent(root, os.environ.get("OPENCLAW_COMMAND", "openclaw"))
+    agent = HealthAgent(
+        root,
+        os.environ.get("OPENCLAW_GATEWAY_HOST", "127.0.0.1"),
+        int(os.environ.get("OPENCLAW_GATEWAY_PORT", "18789")),
+        max(60, int(os.environ.get("AUTOMATION_LOG_ERROR_FRESH_SECONDS", "600"))),
+        max(60, int(os.environ.get("AUTOMATION_API_STALE_SECONDS", "300"))),
+    )
     logging.info("MMTB Automation Health Agent started; root=%s", root)
+    command_base_url = url.rsplit("/heartbeat", 1)[0]
     while True:
         payload = {
             "agent_version": AGENT_VERSION,
@@ -214,7 +327,10 @@ def main() -> int:
         try:
             response = post_heartbeat(url, token, payload)
             logging.info("Heartbeat sent: %s service(s).", len(response.get("services", [])))
-        except (OSError, urllib.error.HTTPError, ValueError) as exc:
+            completed = process_commands(command_base_url, token, agent)
+            if completed:
+                logging.info("Completed %s remote command(s).", completed)
+        except Exception as exc:
             logging.warning("Heartbeat failed: %s", exc)
         time.sleep(interval)
 

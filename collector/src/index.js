@@ -10,6 +10,7 @@ import { extractImageUrls, normalizeMessage } from "./message-parser.js";
 import { acquireProcessLock } from "./process-lock.js";
 import { QueueStore } from "./queue-store.js";
 import { QueueWorker } from "./queue-worker.js";
+import { HealthReporter } from "./health-reporter.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const credentialsPath = path.join(root, "data", "credentials.json");
@@ -17,6 +18,7 @@ const qrPath = path.join(root, "data", "qr.png");
 const config = loadConfig();
 const releaseProcessLock = acquireProcessLock(path.join(root, "data", "collector.lock"));
 const queue = new QueueStore(path.join(root, "data"), config);
+const health = new HealthReporter(path.join(root, "data", "health.json"));
 
 if (config.allowedGroupIds.size === 0) {
   console.error("ZALO_ALLOWED_GROUP_IDS is empty. Collector stops safely without collecting messages.");
@@ -37,8 +39,11 @@ try {
 
 writeCredentials(credentialsPath, api);
 const client = new LaravelCollectorClient(config);
-const worker = new QueueWorker(queue, client);
+const worker = new QueueWorker(queue, client, console, health);
 worker.start(config.queuePollMs);
+health.jobFinished();
+health.alive();
+const healthTimer = setInterval(() => health.alive(), 60 * 1000);
 
 api.listener.on("message", (message) => {
   if (message.type !== ThreadType.Group || !config.allowedGroupIds.has(String(message.threadId))) return;
@@ -63,6 +68,7 @@ console.log(`Collector started. Watching ${config.allowedGroupIds.size} allowed 
 console.log("Durable queue status:", queue.stats());
 
 const cleanupTimer = setInterval(() => {
+  health.alive();
   const removed = queue.pruneCompleted();
   if (removed > 0) console.log(`Removed ${removed} sent queue job(s) after retention period.`);
 }, 60 * 60 * 1000);
@@ -70,6 +76,7 @@ const cleanupTimer = setInterval(() => {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(cleanupTimer);
+    clearInterval(healthTimer);
     worker.stop();
     api.listener.stop();
     queue.close();

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class AutomationHealthService
 {
+    public function __construct(private readonly AutomationHealthAlertRecorder $alerts) {}
+
     public function heartbeat(AutomationNode $node, array $payload): Collection
     {
         return DB::transaction(function () use ($node, $payload): Collection {
@@ -28,6 +30,16 @@ class AutomationHealthService
                     $reported = 'DEGRADED';
                 }
 
+                $existing = $node->services()->where('service_key', $data['service_key'])->first();
+                $currentJob = $data['current_job'] ?? null;
+                $jobStartedAt = $data['current_job_started_at'] ?? null;
+                if ($currentJob && ! $jobStartedAt) {
+                    $jobStartedAt = $existing?->current_job === $currentJob
+                        ? $existing->current_job_started_at
+                        : $now;
+                }
+                if (! $currentJob) $jobStartedAt = null;
+
                 $service = $node->services()->updateOrCreate(
                     ['service_key' => $data['service_key']],
                     [
@@ -35,9 +47,12 @@ class AutomationHealthService
                         'service_type' => $data['service_type'],
                         'reported_status' => $reported,
                         'last_heartbeat_at' => $now,
-                        'last_success_at' => $data['last_success_at'] ?? null,
+                        'last_success_at' => $data['last_success_at'] ?? $existing?->last_success_at,
+                        'last_api_success_at' => $data['last_api_success_at'] ?? $existing?->last_api_success_at,
+                        'last_job_success_at' => $data['last_job_success_at'] ?? $existing?->last_job_success_at,
                         'version' => $data['version'] ?? null,
                         'current_job' => $data['current_job'] ?? null,
+                        'current_job_started_at' => $jobStartedAt,
                         'queue_depth' => $data['queue_depth'] ?? null,
                         'consecutive_errors' => $errors,
                         'last_error_code' => $data['error_code'] ?? null,
@@ -46,7 +61,7 @@ class AutomationHealthService
                     ]
                 );
 
-                $this->synchronizeIncident($service, $this->statusFor($service, $now));
+                $this->synchronizeIncident($service, $this->conditionFor($service, $now));
 
                 return $service;
             });
@@ -55,12 +70,22 @@ class AutomationHealthService
 
     public function statusFor(AutomationService $service, ?CarbonInterface $at = null): string
     {
+        $condition = $this->conditionFor($service, $at);
+        return $condition === 'HUNG' ? 'DEGRADED' : $condition;
+    }
+
+    public function conditionFor(AutomationService $service, ?CarbonInterface $at = null): string
+    {
         $at ??= now();
         if ($service->reported_status === 'PAUSED') {
             return 'PAUSED';
         }
         if (! $service->last_heartbeat_at || $service->last_heartbeat_at->diffInSeconds($at, false) > config('automation_health.offline_after_seconds')) {
             return 'OFFLINE';
+        }
+        if ($service->current_job_started_at
+            && $service->current_job_started_at->diffInMinutes($at, false) > config('automation_health.hung_job_minutes')) {
+            return 'HUNG';
         }
         if ($service->reported_status === 'DEGRADED'
             || $service->last_heartbeat_at->diffInSeconds($at, false) > config('automation_health.degraded_after_seconds')) {
@@ -74,9 +99,10 @@ class AutomationHealthService
     {
         $counts = ['HEALTHY' => 0, 'DEGRADED' => 0, 'OFFLINE' => 0, 'PAUSED' => 0];
         AutomationService::query()->eachById(function (AutomationService $service) use (&$counts): void {
-            $status = $this->statusFor($service);
+            $condition = $this->conditionFor($service);
+            $status = $condition === 'HUNG' ? 'DEGRADED' : $condition;
             $counts[$status]++;
-            $this->synchronizeIncident($service, $status);
+            $this->synchronizeIncident($service, $condition);
         });
 
         return $counts;
@@ -85,11 +111,10 @@ class AutomationHealthService
     public function synchronizeIncident(AutomationService $service, string $status): void
     {
         if (in_array($status, ['HEALTHY', 'PAUSED'], true)) {
-            $service->incidents()->where('status', 'OPEN')->update([
-                'status' => 'RESOLVED',
-                'resolved_at' => now(),
-                'updated_at' => now(),
-            ]);
+            $service->incidents()->where('status', 'OPEN')->get()->each(function (AutomationIncident $incident): void {
+                $incident->update(['status' => 'RESOLVED', 'resolved_at' => now()]);
+                $this->alerts->record($incident, 'RECOVERED');
+            });
             return;
         }
 
@@ -101,7 +126,7 @@ class AutomationHealthService
             $open->update(['status' => 'RESOLVED', 'resolved_at' => now()]);
         }
 
-        AutomationIncident::query()->create([
+        $incident = AutomationIncident::query()->create([
             'automation_service_id' => $service->id,
             'type' => $status,
             'severity' => $status === 'OFFLINE' ? 'CRITICAL' : 'WARNING',
@@ -114,12 +139,14 @@ class AutomationHealthService
             ],
             'started_at' => now(),
         ]);
+        $this->alerts->record($incident, 'OPENED');
     }
 
     private function incidentMessage(AutomationService $service, string $status): string
     {
         return match ($status) {
             'OFFLINE' => "{$service->name} không gửi heartbeat quá 5 phút.",
+            'HUNG' => "{$service->name} giữ job {$service->current_job} quá ".config('automation_health.hung_job_minutes').' phút.',
             default => $service->last_error_message ?: "{$service->name} đang hoạt động không ổn định.",
         };
     }

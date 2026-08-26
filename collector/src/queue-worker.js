@@ -1,14 +1,16 @@
 export class QueueWorker {
-  constructor(queue, client, logger = console) {
+  constructor(queue, client, logger = console, health = null) {
     this.queue = queue;
     this.client = client;
     this.logger = logger;
     this.running = false;
+    this.health = health;
   }
 
   async runOnce() {
     const claimed = this.queue.claimNext();
     if (!claimed) return null;
+    this.health?.jobStarted(claimed.id);
     try {
       let job = claimed;
       if (!job.local_path) {
@@ -17,6 +19,8 @@ export class QueueWorker {
       }
       const result = await this.client.forwardStoredImage(job);
       this.queue.markCompleted(job.id);
+      this.health?.alive();
+      this.health?.jobSucceeded();
       this.logger.log("Forwarded queued Zalo image", job.message_id, job.attachment_index,
         result?.data?.status ?? "OK");
       return "SENT";
@@ -24,6 +28,8 @@ export class QueueWorker {
       const status = this.queue.markFailure(this.queue.get(claimed.id), error);
       this.logger.error(`Queue job ${claimed.id} moved to ${status}:`, error.message);
       return status;
+    } finally {
+      this.health?.jobFinished();
     }
   }
 

@@ -39,6 +39,10 @@ Schedule::command('automation:evaluate-health')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('automation:dispatch-alerts')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

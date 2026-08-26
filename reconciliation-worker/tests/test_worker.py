@@ -13,6 +13,7 @@ class WorkerTest(unittest.TestCase):
         worker.settings = Mock(worker_id="worker-1", openclaw_model=None)
         worker.laravel = Mock()
         worker.openclaw = Mock()
+        worker.health = Mock()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as file:
             path = Path(file.name)
         worker.laravel.download_image.return_value = path
@@ -35,6 +36,7 @@ class WorkerTest(unittest.TestCase):
         worker.settings = Mock(worker_id="worker-1", openclaw_model=None)
         worker.laravel = Mock()
         worker.openclaw = Mock()
+        worker.health = Mock()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as file:
             path = Path(file.name)
         worker.laravel.download_image.return_value = path

@@ -11,6 +11,7 @@ from .config import Settings
 from .laravel_client import LaravelReconciliationClient, WorkerApiError
 from .openclaw_client import OpenClawClient, OpenClawError
 from .process_lock import ProcessLock
+from .health import WorkerHealth
 
 
 LOGGER = logging.getLogger("mmtb_reconciliation_worker")
@@ -33,10 +34,13 @@ class ReconciliationWorker:
             settings.openclaw_timeout_seconds, settings.openclaw_agent_id,
             settings.openclaw_model, settings.openclaw_thinking,
         )
+        self.health = WorkerHealth(settings.data_dir / "health.json")
+        self.health.job_finished()
 
     def step(self) -> bool:
         processed = False
         commands = self.laravel.claim_commands(min(self.settings.claim_limit, 3))
+        self.health.api_success()
         for command in commands:
             processed = True
             self._process_command(command)
@@ -45,6 +49,7 @@ class ReconciliationWorker:
         for days_ago in range(self.settings.lookback_days - 1, -1, -1):
             work_date = (today - timedelta(days=days_ago)).isoformat()
             jobs = self.laravel.claim(work_date, self.settings.claim_limit)
+            self.health.api_success()
             for job in jobs:
                 processed = True
                 self._process(job)
@@ -55,6 +60,7 @@ class ReconciliationWorker:
     def _process_command(self, command: dict) -> None:
         image_paths: dict[int, Path] = {}
         job = command.get("reconciliation_job", {})
+        self.health.job_started(command.get("id"))
         try:
             for image in job.get("source_images", []):
                 ocr_job_id = int(image["ocr_job_id"])
@@ -63,6 +69,7 @@ class ReconciliationWorker:
                 )
             result = self.openclaw.execute_command(command, image_paths)
             self.laravel.complete_command(int(command["id"]), result.api_payload())
+            self.health.job_succeeded()
             LOGGER.info("Completed OpenClaw command %s: action=%s",
                         command["id"], command.get("action"))
         except WorkerApiError:
@@ -74,6 +81,7 @@ class ReconciliationWorker:
             LOGGER.exception("OpenClaw command %s failed locally", command.get("id"))
             self._report_command_failure(command, str(exc), int(command.get("attempts", 1)) < 3)
         finally:
+            self.health.job_finished()
             for path in image_paths.values():
                 path.unlink(missing_ok=True)
 
@@ -86,6 +94,7 @@ class ReconciliationWorker:
 
     def _process(self, job: dict) -> None:
         image_paths: dict[int, Path] = {}
+        self.health.job_started(job.get("id"))
         try:
             for image in job.get("source_images", []):
                 ocr_job_id = int(image["ocr_job_id"])
@@ -100,6 +109,7 @@ class ReconciliationWorker:
                 "metadata": {"source": "openclaw-cli", "image_count": len(image_paths)},
                 **result.api_payload(),
             })
+            self.health.job_succeeded()
             LOGGER.info("Completed reconciliation job %s: outcome=%s findings=%d",
                         job["id"], submission["outcome"], len(submission.get("findings", [])))
         except WorkerApiError:
@@ -111,6 +121,7 @@ class ReconciliationWorker:
             LOGGER.exception("Reconciliation job %s failed locally", job.get("id"))
             self._report_failure(job, str(exc), int(job.get("attempts", 1)) < 3)
         finally:
+            self.health.job_finished()
             for path in image_paths.values():
                 path.unlink(missing_ok=True)
 

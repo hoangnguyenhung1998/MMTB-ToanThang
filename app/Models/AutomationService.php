@@ -15,6 +15,9 @@ class AutomationService extends Model
         return [
             'last_heartbeat_at' => 'datetime',
             'last_success_at' => 'datetime',
+            'last_api_success_at' => 'datetime',
+            'last_job_success_at' => 'datetime',
+            'current_job_started_at' => 'datetime',
             'metrics' => 'array',
         ];
     }
@@ -27,5 +30,10 @@ class AutomationService extends Model
     public function incidents(): HasMany
     {
         return $this->hasMany(AutomationIncident::class);
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(AutomationOperationalCommand::class);
     }
 }

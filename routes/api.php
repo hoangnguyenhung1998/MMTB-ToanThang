@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\OcrJobController;
 use App\Http\Controllers\Api\OpenClawCommandController;
 use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Controllers\Api\AutomationHeartbeatController;
+use App\Http\Controllers\Api\AutomationOperationalCommandController;
 use App\Http\Middleware\AuthenticateAutomationAgent;
 use App\Http\Middleware\AuthenticateCollector;
 use App\Http\Middleware\AuthenticateOpenClaw;
@@ -14,6 +15,12 @@ use Illuminate\Support\Facades\Route;
 Route::post('/automation/v1/heartbeat', AutomationHeartbeatController::class)
     ->middleware([AuthenticateAutomationAgent::class, 'throttle:120,1'])
     ->name('api.automation.heartbeat');
+
+Route::prefix('automation/v1')->middleware([AuthenticateAutomationAgent::class, 'throttle:120,1'])->group(function (): void {
+    Route::post('/commands/claim', [AutomationOperationalCommandController::class, 'claim'])->name('api.automation.commands.claim');
+    Route::post('/commands/{command}/complete', [AutomationOperationalCommandController::class, 'complete'])->name('api.automation.commands.complete');
+    Route::post('/commands/{command}/fail', [AutomationOperationalCommandController::class, 'fail'])->name('api.automation.commands.fail');
+});
 
 Route::prefix('collector/v1')
     ->middleware([AuthenticateCollector::class, 'throttle:collector-api'])
