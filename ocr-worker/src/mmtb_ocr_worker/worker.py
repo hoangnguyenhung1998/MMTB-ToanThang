@@ -12,6 +12,7 @@ from .classifier import DocumentClassifier
 from .config import Settings
 from .process_lock import ProcessLock
 from .timemark import TimeMarkRecognizer
+from .health import WorkerHealth
 
 
 LOGGER = logging.getLogger("mmtb_ocr_worker")
@@ -36,6 +37,8 @@ class OcrWorker:
         self.classifier = DocumentClassifier(settings.classification_min_confidence, self.engine)
         self.recognizer: TimeMarkRecognizer | None = None
         self.machine_catalog_loaded_at = 0.0
+        self.health = WorkerHealth(settings.data_dir / "health.json")
+        self.health.job_finished()
 
     def step(self) -> bool:
         self._refresh_machine_catalog()
@@ -43,7 +46,11 @@ class OcrWorker:
         if job is None:
             job = self.client.claim(["UNKNOWN"])
         if job is None:
+            self.health.api_success()
             return False
+
+        self.health.api_success()
+        self.health.job_started(job["id"])
 
         image_path: Path | None = None
         try:
@@ -59,6 +66,7 @@ class OcrWorker:
             LOGGER.exception("OCR job %s failed locally", job["id"])
             self._report_failure(job, str(exc), retryable=attempts < 3)
         finally:
+            self.health.job_finished()
             if image_path is not None:
                 image_path.unlink(missing_ok=True)
         return True
@@ -66,6 +74,7 @@ class OcrWorker:
     def _classify(self, job: dict, image_path: Path) -> None:
         result = self.classifier.classify(image_path)
         saved = self.client.classify(job["id"], result.document_type, result.confidence)
+        self.health.job_succeeded()
         LOGGER.info(
             "Classified OCR job %s as %s (%.2f), status=%s",
             job["id"],
@@ -79,6 +88,7 @@ class OcrWorker:
             raise RuntimeError("Machine catalog is not loaded.")
         result = self.recognizer.recognize(image_path)
         saved = self.client.complete_timemark(job["id"], result.api_payload())
+        self.health.job_succeeded()
         LOGGER.info(
             "Completed TimeMark OCR job %s: machine=%s date=%s time=%s status=%s",
             job["id"],

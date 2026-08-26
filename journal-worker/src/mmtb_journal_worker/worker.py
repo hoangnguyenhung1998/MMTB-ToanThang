@@ -10,6 +10,7 @@ from .config import Settings
 from .laravel_client import LaravelJournalClient, WorkerApiError
 from .process_lock import ProcessLock
 from .vision_client import JournalVisionClient, VisionError
+from .health import WorkerHealth
 
 
 LOGGER = logging.getLogger("mmtb_journal_worker")
@@ -38,12 +39,18 @@ class JournalWorker:
         )
         self.machine_codes: list[str] = []
         self.machine_catalog_loaded_at = 0.0
+        self.health = WorkerHealth(settings.data_dir / "health.json")
+        self.health.job_finished()
 
     def step(self) -> bool:
         self._refresh_machine_catalog()
         job = self.laravel.claim()
         if job is None:
+            self.health.api_success()
             return False
+
+        self.health.api_success()
+        self.health.job_started(job["id"])
 
         image_path: Path | None = None
         try:
@@ -54,6 +61,7 @@ class JournalWorker:
             reference_year = datetime.fromisoformat(sent_at.replace("Z", "+00:00")).year if sent_at else None
             extraction.normalize(reference_year=reference_year)
             saved = self.laravel.complete_journal(job["id"], extraction.api_payload())
+            self.health.job_succeeded()
             LOGGER.info(
                 "Completed journal OCR job %s: machine=%s rows=%d confidence=%.2f status=%s",
                 job["id"],
@@ -72,6 +80,7 @@ class JournalWorker:
             LOGGER.exception("Journal OCR job %s failed locally", job["id"])
             self._report_failure(job, str(exc), retryable=attempts < 3)
         finally:
+            self.health.job_finished()
             if image_path is not None:
                 image_path.unlink(missing_ok=True)
         return True

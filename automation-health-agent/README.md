@@ -6,9 +6,10 @@ Agent Windows chạy trên laptop 24/24, gửi một heartbeat mỗi 60 giây v�
 - `MMTB-RapidOCRWorker`
 - `MMTB-JournalWorker`
 - `MMTB-OpenClawReconciliationWorker`
-- `openclaw gateway status`
+- cổng TCP OpenClaw Gateway (mặc định `127.0.0.1:18789`)
 
 Agent chỉ đọc trạng thái Scheduled Task và log; không khởi động, dừng hoặc sửa dữ liệu worker.
+Chỉ các lỗi xuất hiện trong 10 phút gần nhất mới được tính là lỗi liên tiếp.
 
 ## Cài đặt
 
