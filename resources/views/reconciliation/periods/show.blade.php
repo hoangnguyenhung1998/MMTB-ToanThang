@@ -430,6 +430,7 @@
                         <th rowspan="2">Máy</th>
                         @if (!request('command_center_id'))<th rowspan="2">BCH</th>@endif
                         <th colspan="3" class="table-primary">Định vị</th>
+                        <th rowspan="2" class="table-info">Mốc ảnh ngày</th>
                         <th colspan="4" class="table-success">Hành chính</th>
                         <th colspan="6" class="table-warning">Tăng ca</th>
                         <th rowspan="2">Tổng NT</th>
@@ -471,6 +472,18 @@
                             <td>{{ $fmtTime($row->gps_check_in) }}</td>
                             <td>{{ $fmtTime($row->gps_check_out) }}</td>
                             <td class="fw-semibold">{{ $fmtMinutes($calculation['gps_minutes'] ?? null) }}</td>
+                            <td title="Các mốc giờ đọc từ ảnh hằng ngày đã duyệt; không phải giờ làm đã xác nhận">
+                                @php $dailyTimes = $dailyEvidenceTimes[$row->id] ?? collect(); @endphp
+                                @if ($dailyTimes->isEmpty())
+                                    <span class="text-muted">—</span>
+                                @else
+                                    <div class="d-flex flex-wrap gap-1 daily-time-marks">
+                                        @foreach ($dailyTimes as $dailyTime)
+                                            <span class="badge text-bg-info">{{ $dailyTime }}</span>
+                                        @endforeach
+                                    </div>
+                                @endif
+                            </td>
                             @foreach (['regular_morning_start', 'regular_morning_end', 'regular_afternoon_start', 'regular_afternoon_end', 'overtime_lunch_start', 'overtime_lunch_end', 'overtime_afternoon_start', 'overtime_afternoon_end', 'overtime_evening_start', 'overtime_evening_end'] as $timeField)
                                 <td>
                                     @if ($canEditRow)
@@ -543,7 +556,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="26" class="text-center text-muted py-5">
+                            <td colspan="27" class="text-center text-muted py-5">
                                 Không có dòng đối chiếu phù hợp với bộ lọc.
                             </td>
                         </tr>
@@ -559,6 +572,7 @@
             .reconciliation-grid .grid-time-input { min-width: 92px; padding: .25rem .35rem; font-size: .78rem; }
             .reconciliation-grid .grid-text-input { min-width: 170px; padding: .25rem .35rem; font-size: .78rem; }
             .reconciliation-grid .grid-text-value { max-width: 190px; }
+            .reconciliation-grid .daily-time-marks { min-width: 120px; max-width: 210px; }
             .reconciliation-grid .sticky-col { position: sticky; left: 0; z-index: 2; min-width: 92px; }
             .reconciliation-grid thead .sticky-col { z-index: 4; }
         </style>
