@@ -4,13 +4,14 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +75,19 @@ class LogSnapshot:
                 return line.strip()[-1800:]
         return None
 
-    def consecutive_errors(self) -> int:
+    def latest_error_at(self) -> datetime | None:
+        for line in reversed(self.lines):
+            if ERROR_PATTERN.search(line):
+                return self._datetime(line)
+        return None
+
+    def consecutive_errors(self, fresh_seconds: int = 600) -> int:
+        latest_error_at = self.latest_error_at()
+        if latest_error_at is None:
+            return 0
+        age = (datetime.now(timezone.utc) - latest_error_at.astimezone(timezone.utc)).total_seconds()
+        if age > fresh_seconds:
+            return 0
         count = 0
         for line in reversed(self.lines):
             if ERROR_PATTERN.search(line):
@@ -85,11 +98,16 @@ class LogSnapshot:
 
     @staticmethod
     def _timestamp(line: str) -> str | None:
+        value = LogSnapshot._datetime(line)
+        return value.astimezone(timezone.utc).isoformat() if value else None
+
+    @staticmethod
+    def _datetime(line: str) -> datetime | None:
         match = TIMESTAMP_PATTERN.match(line)
         if not match:
             return None
         try:
-            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").astimezone().isoformat()
+            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").astimezone()
         except ValueError:
             return None
 
@@ -119,9 +137,11 @@ class WindowsTaskReader:
 
 
 class HealthAgent:
-    def __init__(self, root: Path, openclaw_command: str):
+    def __init__(self, root: Path, openclaw_host: str, openclaw_port: int, error_fresh_seconds: int = 600):
         self.root = root
-        self.openclaw_command = openclaw_command
+        self.openclaw_host = openclaw_host
+        self.openclaw_port = openclaw_port
+        self.error_fresh_seconds = error_fresh_seconds
         self.task_reader = WindowsTaskReader()
         self.definitions = [
             ServiceDefinition("zalo-collector", "Zalo Collector", "ZALO_COLLECTOR", "MMTB-ZaloCollector", root / "collector/data/collector.log"),
@@ -150,33 +170,35 @@ class HealthAgent:
             error = f"Không tìm thấy Scheduled Task {definition.task_name}."
         elif state not in {"RUNNING", "DISABLED"}:
             error = f"Scheduled Task {definition.task_name} đang ở trạng thái {state}." + (f" {error}" if error else "")
-        errors = max(log.consecutive_errors(), 1 if status == "DEGRADED" else 0)
+        errors = max(log.consecutive_errors(self.error_fresh_seconds), 1 if status == "DEGRADED" else 0)
+        if status == "HEALTHY" and errors == 0:
+            error = None
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": status,
             "current_job": log.current_job(), "consecutive_errors": errors,
             "last_success_at": log.last_success_at(), "error_code": None if status == "HEALTHY" else f"TASK_{state}",
-            "error_message": error, "metrics": {"task_state": state, "last_task_result": task.get("last_result") if task else None},
+            "error_message": error, "metrics": {
+                "task_state": state,
+                "last_task_result": task.get("last_result") if task else None,
+                "latest_error_at": log.latest_error_at().astimezone(timezone.utc).isoformat() if log.latest_error_at() else None,
+            },
         }
 
     def _openclaw_snapshot(self, definition: ServiceDefinition) -> dict[str, Any]:
         try:
-            result = subprocess.run(
-                f'"{self.openclaw_command}" gateway status', capture_output=True, text=True,
-                timeout=20, shell=True, check=False,
-            )
-            output = (result.stdout or result.stderr).strip()
-            healthy = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            with socket.create_connection((self.openclaw_host, self.openclaw_port), timeout=3):
+                healthy, output = True, ""
+        except OSError as exc:
             output, healthy = str(exc), False
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": "HEALTHY" if healthy else "DEGRADED",
             "consecutive_errors": 0 if healthy else 1,
-            "last_success_at": datetime.now().astimezone().isoformat() if healthy else None,
+            "last_success_at": datetime.now(timezone.utc).isoformat() if healthy else None,
             "error_code": None if healthy else "GATEWAY_UNAVAILABLE",
             "error_message": None if healthy else output[-1800:],
-            "metrics": {"command_exit_code": result.returncode if 'result' in locals() else None},
+            "metrics": {"host": self.openclaw_host, "port": self.openclaw_port, "tcp_reachable": healthy},
         }
 
 
@@ -203,7 +225,12 @@ def main() -> int:
         return 2
     root = Path(os.environ.get("AUTOMATION_REPOSITORY_ROOT", str(agent_root.parent))).resolve()
     interval = max(30, int(os.environ.get("AUTOMATION_AGENT_INTERVAL_SECONDS", "60")))
-    agent = HealthAgent(root, os.environ.get("OPENCLAW_COMMAND", "openclaw"))
+    agent = HealthAgent(
+        root,
+        os.environ.get("OPENCLAW_GATEWAY_HOST", "127.0.0.1"),
+        int(os.environ.get("OPENCLAW_GATEWAY_PORT", "18789")),
+        max(60, int(os.environ.get("AUTOMATION_LOG_ERROR_FRESH_SECONDS", "600"))),
+    )
     logging.info("MMTB Automation Health Agent started; root=%s", root)
     while True:
         payload = {

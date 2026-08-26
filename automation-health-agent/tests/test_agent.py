@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -27,10 +28,11 @@ class HealthAgentTest(unittest.TestCase):
     def test_log_snapshot_reads_latest_job_success_and_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "worker.log"
+            current = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             path.write_text(
-                "2026-08-26 08:00:00 INFO Completed OCR job 41\n"
-                "2026-08-26 08:01:00 WARNING API timeout\n"
-                "2026-08-26 08:02:00 ERROR API unavailable\n",
+                f"{current} INFO Completed OCR job 41\n"
+                f"{current} WARNING API timeout\n"
+                f"{current} ERROR API unavailable\n",
                 encoding="utf-8",
             )
             snapshot = agent.LogSnapshot(path)
@@ -40,18 +42,35 @@ class HealthAgentTest(unittest.TestCase):
             self.assertIsNotNone(snapshot.last_success_at())
 
     def test_missing_task_is_degraded(self):
-        health = agent.HealthAgent(Path("C:/MMTB"), "openclaw")
+        health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789)
         definition = health.definitions[0]
         result = health._task_snapshot(definition, None)
         self.assertEqual("DEGRADED", result["status"])
         self.assertEqual("TASK_MISSING", result["error_code"])
 
     def test_running_task_is_healthy(self):
-        health = agent.HealthAgent(Path("C:/MMTB"), "openclaw")
+        health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789)
         definition = health.definitions[1]
         result = health._task_snapshot(definition, {"state": "Running", "last_result": 267009})
         self.assertEqual("HEALTHY", result["status"])
         self.assertEqual("RUNNING", result["metrics"]["task_state"])
+
+    def test_old_errors_do_not_degrade_a_running_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_path = root / "ocr-worker/data/worker.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "2020-01-01 08:00:00 WARNING API timeout\n" * 4,
+                encoding="utf-8",
+            )
+            health = agent.HealthAgent(root, "127.0.0.1", 18789)
+            result = health._task_snapshot(
+                health.definitions[1], {"state": "Running", "last_result": 267009}
+            )
+            self.assertEqual("HEALTHY", result["status"])
+            self.assertEqual(0, result["consecutive_errors"])
+            self.assertIsNone(result["error_message"])
 
 
 if __name__ == "__main__":
