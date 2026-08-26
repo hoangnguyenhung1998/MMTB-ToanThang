@@ -237,7 +237,7 @@ class OcrReviewTest extends TestCase
             'machine_id' => $machine->id,
             'asset_code' => $machine->asset_code,
             'extracted_date' => '2026-08-22',
-            'extracted_time' => '07:00:00',
+            'extracted_time' => null,
             'review_status' => 'PENDING',
         ]);
         $automatic = $this->createJob('DAILY_TIMEMARK', 'COMPLETED');

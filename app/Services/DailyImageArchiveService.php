@@ -140,6 +140,8 @@ class DailyImageArchiveService
                 $times = $dailyJobs->map(fn (OcrJob $job) => substr((string) $job->extracted_time, 0, 5));
                 $hasDuplicateTimes = $times->duplicates()->isNotEmpty();
                 $sessions = $dailyJobs->chunk(2)->values()->map(function (Collection $pair, int $index): array {
+                    $pair = $pair->values();
+
                     return [
                         'number' => $index + 1,
                         'start' => $pair->get(0),
@@ -156,7 +158,7 @@ class DailyImageArchiveService
                     'command_center_id' => $assignment?->command_center_id,
                     'command_center' => $assignment?->commandCenter?->name ?: 'CHUA-XAC-DINH-BCH',
                     'image_count' => $dailyJobs->count(),
-                    'session_count' => $sessions->whereNotNull('end')->count(),
+                    'session_count' => $sessions->filter(fn (array $session) => $session['end'] !== null)->count(),
                     'has_duplicate_times' => $hasDuplicateTimes,
                     'is_complete' => $isComplete,
                     'sessions' => $sessions,
