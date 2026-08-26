@@ -88,6 +88,24 @@ class HealthAgentTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             agent.match_action("RUN_POWERSHELL", "MMTB-RapidOCRWorker")
 
+    def test_ready_task_is_started_once_per_recovery_cooldown(self):
+        health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789, recovery_cooldown_seconds=300)
+        health.task_reader.start = Mock()
+        tasks = {"MMTB-RapidOCRWorker": {"state": "Ready"}}
+
+        health._recover_ready_tasks(tasks)
+        health._recover_ready_tasks(tasks)
+
+        health.task_reader.start.assert_called_once_with("MMTB-RapidOCRWorker")
+
+    def test_disabled_task_is_not_automatically_started(self):
+        health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789)
+        health.task_reader.start = Mock()
+
+        health._recover_ready_tasks({"MMTB-RapidOCRWorker": {"state": "Disabled"}})
+
+        health.task_reader.start.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

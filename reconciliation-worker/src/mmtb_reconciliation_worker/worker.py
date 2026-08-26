@@ -18,8 +18,14 @@ LOGGER = logging.getLogger("mmtb_reconciliation_worker")
 
 
 def retry_delay(error: WorkerApiError, poll_seconds: int, failure_streak: int) -> float:
-    exponential = min(float(poll_seconds) * (2 ** min(failure_streak - 1, 4)), 300.0)
+    exponential = min(max(10.0, float(poll_seconds)) * (2 ** min(failure_streak - 1, 4)), 120.0)
     return max(error.retry_after_seconds or 0.0, exponential)
+
+
+def recovery_delay(poll_seconds: int, failure_streak: int, worker_id: str) -> float:
+    base = min(max(10.0, float(poll_seconds)) * (2 ** min(failure_streak - 1, 4)), 120.0)
+    jitter = (sum(ord(character) for character in worker_id) + failure_streak) % 4
+    return base + float(jitter)
 
 
 class ReconciliationWorker:
@@ -162,6 +168,11 @@ def run() -> None:
                 failure_streak += 1
                 delay = retry_delay(exc, settings.poll_seconds, failure_streak)
                 LOGGER.warning("%s Retrying in %.0f second(s).", exc, delay)
+                time.sleep(delay)
+            except Exception:
+                failure_streak += 1
+                delay = recovery_delay(settings.poll_seconds, failure_streak, settings.worker_id)
+                LOGGER.exception("Unexpected worker loop failure; recovering in %.0f second(s).", delay)
                 time.sleep(delay)
             except KeyboardInterrupt:
                 LOGGER.info("MMTB OpenClaw reconciliation worker stopped")

@@ -22,6 +22,7 @@ class LaravelClientTest(unittest.TestCase):
         jobs = self.client(session).claim("2026-08-23", 5)
         self.assertEqual(9, jobs[0]["id"])
         self.assertEqual("2026-08-23", session.request.call_args.kwargs["json"]["work_date"])
+        self.assertEqual("close", session.headers["Connection"])
 
     def test_claims_openclaw_commands(self):
         response = Mock(ok=True, status_code=200)
