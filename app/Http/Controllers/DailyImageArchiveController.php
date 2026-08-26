@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\IndexDailyImageArchiveRequest;
 use App\Models\CommandCenter;
 use App\Models\Machine;
+use App\Models\OcrJob;
 use App\Services\DailyImageArchiveService;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -24,7 +25,14 @@ class DailyImageArchiveController extends Controller
             'groups' => $this->service->paginate($filters),
             'summary' => $this->service->summary($filters),
             'filters' => $filters,
-            'machines' => Machine::query()->orderBy('asset_code')->get(['id', 'asset_code']),
+            'machines' => Machine::query()
+                ->whereIn('id', OcrJob::query()
+                    ->select('machine_id')
+                    ->where('document_type', 'DAILY_TIMEMARK')
+                    ->whereIn('review_status', ['AUTO_APPROVED', 'APPROVED', 'CORRECTED'])
+                    ->whereNotNull('machine_id'))
+                ->orderBy('asset_code')
+                ->get(['id', 'asset_code']),
             'commandCenters' => CommandCenter::query()->orderBy('name')->get(['id', 'name']),
         ]);
     }

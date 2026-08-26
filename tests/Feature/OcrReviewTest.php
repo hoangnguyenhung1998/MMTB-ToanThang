@@ -197,7 +197,7 @@ class OcrReviewTest extends TestCase
 
     public function test_user_can_approve_an_ocr_exception_and_audit_is_recorded(): void
     {
-        $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
         $user = User::factory()->create();
 
         $this->actingAs($user)->put("/ocr-reviews/{$job->id}", [
@@ -211,7 +211,7 @@ class OcrReviewTest extends TestCase
 
     public function test_user_can_bulk_approve_pending_jobs(): void
     {
-        $first = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $first = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
         $second = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
 
         $this->actingAs(User::factory()->create())->post('/ocr-reviews/bulk', [

@@ -30,7 +30,15 @@ class OcrJob extends Model
     protected static function booted(): void
     {
         static::saved(function (self $job): void {
-            if (! $job->wasChanged('status') || $job->reviewed_at || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
+            $receivedOcrResult = $job->wasRecentlyCreated || $job->wasChanged([
+                'status',
+                'document_type',
+                'machine_id',
+                'extracted_date',
+                'extracted_time',
+            ]);
+
+            if (! $receivedOcrResult || $job->reviewed_at || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
 
             if ($job->document_type === 'DAILY_TIMEMARK') {
                 $isComplete = $job->machine_id
