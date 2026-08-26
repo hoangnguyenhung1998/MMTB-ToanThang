@@ -39,6 +39,9 @@ class ApiClientTest(unittest.TestCase):
     def test_defaults_unknown_image_type_to_jpeg(self):
         self.assertEqual(".jpg", self.client._image_suffix("application/octet-stream"))
 
+    def test_requests_fresh_http_connection(self):
+        self.assertEqual("close", self.client.session.headers["Connection"])
+
     def test_reads_retry_after_from_rate_limit_response(self):
         response = Mock(ok=False, status_code=429, text="Too Many Attempts")
         response.headers = {"Retry-After": "17"}

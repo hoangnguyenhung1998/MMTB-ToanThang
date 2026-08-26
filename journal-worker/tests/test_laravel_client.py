@@ -36,6 +36,9 @@ class LaravelClientTest(unittest.TestCase):
     def test_maps_png_content_type(self):
         self.assertEqual(".png", self.client._image_suffix("image/png; charset=binary"))
 
+    def test_requests_fresh_http_connection(self):
+        self.assertEqual("close", self.client.session.headers["Connection"])
+
     def test_claims_only_weekly_journal_jobs(self):
         response = Mock()
         response.ok = True

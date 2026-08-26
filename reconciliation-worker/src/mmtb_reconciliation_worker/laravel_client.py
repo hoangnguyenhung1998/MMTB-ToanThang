@@ -26,6 +26,7 @@ class LaravelReconciliationClient:
         self.session.headers.update({
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
+            "Connection": "close",
             "User-Agent": "mmtb-reconciliation-worker/0.1.0",
         })
 

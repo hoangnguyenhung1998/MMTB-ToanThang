@@ -155,14 +155,32 @@ class WindowsTaskReader:
         rows = data if isinstance(data, list) else [data]
         return {row["name"]: row for row in rows}
 
+    def start(self, name: str) -> None:
+        if os.name != "nt":
+            return
+        escaped = name.replace("'", "''")
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                f"Start-ScheduledTask -TaskName '{escaped}' -ErrorAction Stop",
+            ],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or f"PowerShell exit {result.returncode}").strip())
+
 
 class HealthAgent:
-    def __init__(self, root: Path, openclaw_host: str, openclaw_port: int, error_fresh_seconds: int = 600, api_stale_seconds: int = 300):
+    def __init__(self, root: Path, openclaw_host: str, openclaw_port: int, error_fresh_seconds: int = 600,
+                 api_stale_seconds: int = 300, auto_recovery: bool = True, recovery_cooldown_seconds: int = 300):
         self.root = root
         self.openclaw_host = openclaw_host
         self.openclaw_port = openclaw_port
         self.error_fresh_seconds = error_fresh_seconds
         self.api_stale_seconds = api_stale_seconds
+        self.auto_recovery = auto_recovery
+        self.recovery_cooldown_seconds = recovery_cooldown_seconds
+        self.recovery_attempted_at: dict[str, float] = {}
         self.task_reader = WindowsTaskReader()
         self.definitions = [
             ServiceDefinition("zalo-collector", "Zalo Collector", "ZALO_COLLECTOR", "MMTB-ZaloCollector", root / "collector/data/collector.log"),
@@ -173,7 +191,9 @@ class HealthAgent:
         ]
 
     def snapshot(self) -> list[dict[str, Any]]:
-        tasks = self.task_reader.read([definition.task_name for definition in self.definitions if definition.task_name])
+        task_names = [definition.task_name for definition in self.definitions if definition.task_name]
+        tasks = self.task_reader.read(task_names)
+        self._recover_ready_tasks(tasks)
         services = []
         for definition in self.definitions:
             if definition.service_type == "OPENCLAW_GATEWAY":
@@ -181,6 +201,25 @@ class HealthAgent:
             else:
                 services.append(self._task_snapshot(definition, tasks.get(definition.task_name or "")))
         return services
+
+    def _recover_ready_tasks(self, tasks: dict[str, dict[str, Any]]) -> None:
+        if not self.auto_recovery:
+            return
+        now = time.monotonic()
+        for definition in self.definitions:
+            task_name = definition.task_name
+            task = tasks.get(task_name or "")
+            if not task_name or str((task or {}).get("state", "")).upper() != "READY":
+                continue
+            last_attempt = self.recovery_attempted_at.get(task_name, 0.0)
+            if now - last_attempt < self.recovery_cooldown_seconds:
+                continue
+            self.recovery_attempted_at[task_name] = now
+            try:
+                self.task_reader.start(task_name)
+                logging.warning("Auto-recovery started Scheduled Task %s.", task_name)
+            except Exception:
+                logging.exception("Auto-recovery failed for Scheduled Task %s.", task_name)
 
     def _task_snapshot(self, definition: ServiceDefinition, task: dict[str, Any] | None) -> dict[str, Any]:
         log = LogSnapshot(definition.log_path)
@@ -315,6 +354,8 @@ def main() -> int:
         int(os.environ.get("OPENCLAW_GATEWAY_PORT", "18789")),
         max(60, int(os.environ.get("AUTOMATION_LOG_ERROR_FRESH_SECONDS", "600"))),
         max(60, int(os.environ.get("AUTOMATION_API_STALE_SECONDS", "300"))),
+        os.environ.get("AUTOMATION_AUTO_RECOVERY_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
+        max(60, int(os.environ.get("AUTOMATION_RECOVERY_COOLDOWN_SECONDS", "300"))),
     )
     logging.info("MMTB Automation Health Agent started; root=%s", root)
     command_base_url = url.rsplit("/heartbeat", 1)[0]
