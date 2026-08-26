@@ -204,6 +204,8 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/ai-reconciliation', [App\Http\Controllers\AiReconciliationDashboardController::class, 'index'])
         ->name('ai-reconciliation.index');
+    Route::get('/automation-health', [App\Http\Controllers\AutomationHealthDashboardController::class, 'index'])
+        ->name('automation-health.index');
     Route::get('/ai-reconciliation/{aiReconciliationJob}', [App\Http\Controllers\AiReconciliationDashboardController::class, 'show'])
         ->name('ai-reconciliation.show');
     Route::post('/ai-reconciliation/{aiReconciliationJob}/commands', [App\Http\Controllers\AiReconciliationDashboardController::class, 'storeCommand'])

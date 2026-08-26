@@ -4,10 +4,16 @@ use App\Http\Controllers\Api\AiReconciliationController;
 use App\Http\Controllers\Api\OcrJobController;
 use App\Http\Controllers\Api\OpenClawCommandController;
 use App\Http\Controllers\Api\ZaloMessageController;
+use App\Http\Controllers\Api\AutomationHeartbeatController;
+use App\Http\Middleware\AuthenticateAutomationAgent;
 use App\Http\Middleware\AuthenticateCollector;
 use App\Http\Middleware\AuthenticateOpenClaw;
 use App\Http\Middleware\AuthenticateOcrWorker;
 use Illuminate\Support\Facades\Route;
+
+Route::post('/automation/v1/heartbeat', AutomationHeartbeatController::class)
+    ->middleware([AuthenticateAutomationAgent::class, 'throttle:120,1'])
+    ->name('api.automation.heartbeat');
 
 Route::prefix('collector/v1')
     ->middleware([AuthenticateCollector::class, 'throttle:collector-api'])
