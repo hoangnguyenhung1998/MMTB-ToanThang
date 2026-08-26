@@ -21,7 +21,7 @@ use App\Services\Reconciliation\ReconciliationBchZipService;
 use App\Services\Reconciliation\ReconciliationCalculator;
 use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationPeriodService;
-use App\Services\Reconciliation\ReconciliationTimeSyncService;
+use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
@@ -269,12 +269,12 @@ class ReconciliationPeriodController extends Controller
     public function allocateTimes(
         AllocateReconciliationTimesRequest $request,
         ReconciliationPeriod $reconciliationPeriod,
-        ReconciliationTimeSyncService $timeSyncService
+        ReconciliationEvidenceSyncService $evidenceSyncService
     ): RedirectResponse {
         try {
-            $updated = $timeSyncService->sync($reconciliationPeriod);
+            $result = $evidenceSyncService->sync($reconciliationPeriod);
 
-            return back()->with('success', "Đã tự phân bổ giờ cho {$updated} dòng có nhật trình đã duyệt.");
+            return back()->with('success', "Đã đồng bộ {$result['updated']} dòng; bảo vệ {$result['protected']} dòng đã sửa hoặc xác nhận.");
         } catch (Throwable $exception) {
             report($exception);
 
