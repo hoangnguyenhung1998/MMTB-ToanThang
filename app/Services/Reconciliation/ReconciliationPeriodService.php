@@ -89,7 +89,7 @@ class ReconciliationPeriodService
             return $period->refresh();
         }
 
-        if ($period->rows()->whereColumn('updated_at', '>', 'created_at')->exists()) {
+        if ($period->rows()->whereNotNull('manually_edited_at')->exists()) {
             return $period->refresh();
         }
 

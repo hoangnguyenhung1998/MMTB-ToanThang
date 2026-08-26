@@ -31,6 +31,10 @@ Schedule::command('reconciliation:sync-monthly')
     ->timezone('Asia/Ho_Chi_Minh')
     ->withoutOverlapping();
 
+Schedule::command('reconciliation:sync-evidence')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

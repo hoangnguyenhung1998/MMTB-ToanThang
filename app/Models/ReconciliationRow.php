@@ -11,6 +11,11 @@ class ReconciliationRow extends Model
 
     protected $casts = [
         'work_date' => 'date',
+        'daily_ocr_job_ids' => 'array',
+        'journal_row_ids' => 'array',
+        'has_evidence_changes' => 'boolean',
+        'evidence_synced_at' => 'datetime',
+        'manually_edited_at' => 'datetime',
         'reviewed_at' => 'datetime',
         'confirmed_at' => 'datetime',
     ];

@@ -15,13 +15,14 @@ use App\Http\Requests\Reconciliation\StartReviewReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\StoreReconciliationPeriodRequest;
 use App\Models\CommandCenter;
 use App\Models\Machine;
+use App\Models\OcrJob;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Services\Reconciliation\ReconciliationBchZipService;
 use App\Services\Reconciliation\ReconciliationCalculator;
 use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationPeriodService;
-use App\Services\Reconciliation\ReconciliationTimeSyncService;
+use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
@@ -153,6 +154,18 @@ class ReconciliationPeriodController extends Controller
         $rowCalculations = $rows->mapWithKeys(
             fn ($row) => [$row->id => $this->calculator->summaryFor($row)]
         );
+        $dailyTimesByJob = OcrJob::query()
+            ->whereIn('id', $rows->pluck('daily_ocr_job_ids')->flatten()->filter()->unique())
+            ->pluck('extracted_time', 'id');
+        $dailyEvidenceTimes = $rows->mapWithKeys(fn ($row) => [
+            $row->id => collect($row->daily_ocr_job_ids ?? [])
+                ->map(fn ($jobId) => $dailyTimesByJob->get($jobId))
+                ->filter()
+                ->map(fn ($time) => substr((string) $time, 0, 5))
+                ->unique()
+                ->sort()
+                ->values(),
+        ]);
 
         $machineIds = $reconciliationPeriod->rows()
             ->whereNotNull('machine_id')
@@ -226,6 +239,7 @@ class ReconciliationPeriodController extends Controller
             'rejectedCount',
             'draftCount',
             'rowCalculations',
+            'dailyEvidenceTimes',
             'exportable',
             'exportValidation',
             'canConfirmPeriod'
@@ -269,12 +283,12 @@ class ReconciliationPeriodController extends Controller
     public function allocateTimes(
         AllocateReconciliationTimesRequest $request,
         ReconciliationPeriod $reconciliationPeriod,
-        ReconciliationTimeSyncService $timeSyncService
+        ReconciliationEvidenceSyncService $evidenceSyncService
     ): RedirectResponse {
         try {
-            $updated = $timeSyncService->sync($reconciliationPeriod);
+            $result = $evidenceSyncService->sync($reconciliationPeriod);
 
-            return back()->with('success', "Đã tự phân bổ giờ cho {$updated} dòng có nhật trình đã duyệt.");
+            return back()->with('success', "Đã đồng bộ {$result['updated']} dòng; bảo vệ {$result['protected']} dòng đã sửa hoặc xác nhận.");
         } catch (Throwable $exception) {
             report($exception);
 

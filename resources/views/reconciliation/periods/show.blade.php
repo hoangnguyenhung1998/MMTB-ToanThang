@@ -53,9 +53,9 @@
             @if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING']))
                 <form method="POST"
                       action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}"
-                      onsubmit="return confirm('Tự phân bổ lại giờ từ các nhật trình đã duyệt? Các dòng chưa xác nhận sẽ trở về nháp.')">
+                      onsubmit="return confirm('Đồng bộ OCR ảnh hằng ngày, nhật trình và kết quả AI? Dòng đã sửa hoặc xác nhận sẽ không bị ghi đè.')">
                     @csrf
-                    <button class="btn btn-outline-primary" type="submit">Tự phân bổ 7 giờ</button>
+                    <button class="btn btn-outline-primary" type="submit">Đồng bộ OCR & AI</button>
                 </form>
             @endif
 
@@ -430,6 +430,7 @@
                         <th rowspan="2">Máy</th>
                         @if (!request('command_center_id'))<th rowspan="2">BCH</th>@endif
                         <th colspan="3" class="table-primary">Định vị</th>
+                        <th rowspan="2" class="table-info">Mốc ảnh ngày</th>
                         <th colspan="4" class="table-success">Hành chính</th>
                         <th colspan="6" class="table-warning">Tăng ca</th>
                         <th rowspan="2">Tổng NT</th>
@@ -437,6 +438,7 @@
                         <th rowspan="2">Vị trí</th>
                         <th rowspan="2">Lỗi giải trình</th>
                         <th rowspan="2">Công việc</th>
+                        <th rowspan="2">Nguồn</th>
                         <th rowspan="2">Trạng thái</th>
                         <th rowspan="2">Chi tiết</th>
                     </tr>
@@ -470,6 +472,18 @@
                             <td>{{ $fmtTime($row->gps_check_in) }}</td>
                             <td>{{ $fmtTime($row->gps_check_out) }}</td>
                             <td class="fw-semibold">{{ $fmtMinutes($calculation['gps_minutes'] ?? null) }}</td>
+                            <td title="Các mốc giờ đọc từ ảnh hằng ngày đã duyệt; không phải giờ làm đã xác nhận">
+                                @php $dailyTimes = $dailyEvidenceTimes[$row->id] ?? collect(); @endphp
+                                @if ($dailyTimes->isEmpty())
+                                    <span class="text-muted">—</span>
+                                @else
+                                    <div class="d-flex flex-wrap gap-1 daily-time-marks">
+                                        @foreach ($dailyTimes as $dailyTime)
+                                            <span class="badge text-bg-info">{{ $dailyTime }}</span>
+                                        @endforeach
+                                    </div>
+                                @endif
+                            </td>
                             @foreach (['regular_morning_start', 'regular_morning_end', 'regular_afternoon_start', 'regular_afternoon_end', 'overtime_lunch_start', 'overtime_lunch_end', 'overtime_afternoon_start', 'overtime_afternoon_end', 'overtime_evening_start', 'overtime_evening_end'] as $timeField)
                                 <td>
                                     @if ($canEditRow)
@@ -500,6 +514,21 @@
                                     @endif
                                 </td>
                             @endforeach
+                            @php
+                                $evidenceColor = match ($row->evidence_status) {
+                                    'MATCHED' => 'success',
+                                    'WARNING', 'JOURNAL_ONLY', 'DAILY_ONLY', 'WAITING_EVIDENCE' => 'warning',
+                                    'EXCEPTION' => 'danger',
+                                    'PENDING_ANALYSIS' => 'info',
+                                    default => 'secondary',
+                                };
+                            @endphp
+                            <td>
+                                <span class="badge text-bg-{{ $evidenceColor }}">{{ $row->evidence_status ?? 'NO_EVIDENCE' }}</span>
+                                @if ($row->has_evidence_changes)
+                                    <span class="badge text-bg-danger" title="Có OCR hoặc kết quả AI mới sau lần sửa/xác nhận">Có dữ liệu mới</span>
+                                @endif
+                            </td>
                             <td><span class="badge text-bg-{{ $row->status === 'CONFIRMED' ? 'success' : ($row->status === 'REJECTED' ? 'danger' : 'warning') }}">{{ $row->status }}</span></td>
                             <td class="d-flex gap-1">
                                 @if ($canEditRow)
@@ -527,7 +556,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="25" class="text-center text-muted py-5">
+                            <td colspan="27" class="text-center text-muted py-5">
                                 Không có dòng đối chiếu phù hợp với bộ lọc.
                             </td>
                         </tr>
@@ -543,6 +572,7 @@
             .reconciliation-grid .grid-time-input { min-width: 92px; padding: .25rem .35rem; font-size: .78rem; }
             .reconciliation-grid .grid-text-input { min-width: 170px; padding: .25rem .35rem; font-size: .78rem; }
             .reconciliation-grid .grid-text-value { max-width: 190px; }
+            .reconciliation-grid .daily-time-marks { min-width: 120px; max-width: 210px; }
             .reconciliation-grid .sticky-col { position: sticky; left: 0; z-index: 2; min-width: 92px; }
             .reconciliation-grid thead .sticky-col { z-index: 4; }
         </style>
