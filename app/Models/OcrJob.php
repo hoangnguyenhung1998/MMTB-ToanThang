@@ -31,6 +31,26 @@ class OcrJob extends Model
     {
         static::saved(function (self $job): void {
             if (! $job->wasChanged('status') || $job->reviewed_at || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
+
+            if ($job->document_type === 'DAILY_TIMEMARK') {
+                $isComplete = $job->machine_id
+                    && $job->extracted_date
+                    && $job->extracted_time
+                    && $job->machine()->exists();
+
+                $updates = [
+                    'status' => $isComplete ? 'COMPLETED' : $job->status,
+                    'review_status' => $isComplete ? 'AUTO_APPROVED' : 'PENDING',
+                ];
+                if ($isComplete) {
+                    $updates['review_flags'] = null;
+                    $updates['exceptions'] = null;
+                }
+                $job->newQuery()->whereKey($job->id)->update($updates);
+
+                return;
+            }
+
             $sample = max(0, min(100, (int) config('ocr.review_sample_percent', 3)));
             $sampled = (abs(crc32((string) $job->id)) % 100) < $sample;
             $job->newQuery()->whereKey($job->id)->update([

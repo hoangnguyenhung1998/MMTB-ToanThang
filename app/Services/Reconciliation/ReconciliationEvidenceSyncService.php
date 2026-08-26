@@ -21,13 +21,16 @@ class ReconciliationEvidenceSyncService
     {
     }
 
-    public function sync(ReconciliationPeriod $period): array
+    public function sync(ReconciliationPeriod $period, ?int $machineId = null, ?string $workDate = null): array
     {
         if (!in_array($period->status, ['GENERATED', 'REVIEWING'], true)) {
             throw new RuntimeException('Chỉ đồng bộ bằng chứng khi kỳ đã sinh dữ liệu hoặc đang kiểm tra.');
         }
 
-        $rows = $period->rows()->get();
+        $rows = $period->rows()
+            ->when($machineId, fn ($query) => $query->where('machine_id', $machineId))
+            ->when($workDate, fn ($query) => $query->whereDate('work_date', $workDate))
+            ->get();
         $machineIds = $rows->pluck('machine_id')->unique()->values();
 
         $journalRows = JournalRow::query()

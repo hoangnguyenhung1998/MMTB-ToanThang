@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\ActivityLog;
 use App\Models\Machine;
 use App\Models\OcrJob;
+use App\Models\ReconciliationPeriod;
 use App\Models\User;
+use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -15,6 +17,10 @@ use Illuminate\Validation\ValidationException;
 
 class OcrReviewService
 {
+    public function __construct(private readonly ReconciliationEvidenceSyncService $evidenceSync)
+    {
+    }
+
     public function paginate(array $filters): LengthAwarePaginator
     {
         return OcrJob::query()
@@ -94,7 +100,7 @@ class OcrReviewService
 
     public function review(OcrJob $job, array $data, User $user): OcrJob
     {
-        return DB::transaction(function () use ($job, $data, $user): OcrJob {
+        $reviewed = DB::transaction(function () use ($job, $data, $user): OcrJob {
             $before = $job->only(['status', 'review_status', 'machine_id', 'asset_code', 'extracted_date', 'extracted_time', 'exceptions']);
             $action = $data['action'];
             $changes = [
@@ -123,6 +129,20 @@ class OcrReviewService
                 ];
             }
 
+            if ($job->document_type === 'DAILY_TIMEMARK' && $action !== 'reject') {
+                $machineId = $changes['machine_id'] ?? $job->machine_id;
+                $date = $changes['extracted_date'] ?? $job->extracted_date;
+                $time = $changes['extracted_time'] ?? $job->extracted_time;
+                if (! $machineId || ! $date || ! $time) {
+                    throw ValidationException::withMessages([
+                        'machine_id' => 'Ảnh hằng ngày phải đủ mã máy, ngày và giờ trước khi duyệt.',
+                    ]);
+                }
+
+                $changes['status'] = 'COMPLETED';
+                $changes['exceptions'] = null;
+            }
+
             $job->update($changes);
             ActivityLog::query()->create([
                 'user_id' => $user->id,
@@ -141,6 +161,27 @@ class OcrReviewService
 
             return $job->fresh();
         });
+
+        if ($reviewed->document_type === 'DAILY_TIMEMARK'
+            && in_array($reviewed->review_status, ['APPROVED', 'CORRECTED'], true)) {
+            $this->syncRelatedPeriods($reviewed);
+        }
+
+        return $reviewed;
+    }
+
+    private function syncRelatedPeriods(OcrJob $job): void
+    {
+        ReconciliationPeriod::query()
+            ->whereIn('status', ['GENERATED', 'REVIEWING'])
+            ->whereDate('date_from', '<=', $job->extracted_date)
+            ->whereDate('date_to', '>=', $job->extracted_date)
+            ->get()
+            ->each(fn (ReconciliationPeriod $period) => $this->evidenceSync->sync(
+                $period,
+                $job->machine_id,
+                $job->extracted_date->format('Y-m-d'),
+            ));
     }
 
 

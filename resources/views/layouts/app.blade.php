@@ -44,6 +44,10 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4V4Zm4 4h8M8 12h5m-5 4h8M3 9h2m14 0h2M3 15h2m14 0h2"/></svg></span>
                 <span>Hậu kiểm OCR</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('daily-images.*') ? 'active' : '' }}" href="{{ route('daily-images.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm3 10 3-3 3 3 2-2 3 3M8 9h.01"/></svg></span>
+                <span>Kho ảnh hằng ngày</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('ai-reconciliation.*') ? 'active' : '' }}" href="{{ route('ai-reconciliation.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4V6Zm3 3h4m-4 3h7m-7 3h5m5-6 2 2 3-4"/></svg></span>
                 <span>Đối soát AI</span>
