@@ -53,9 +53,9 @@
             @if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING']))
                 <form method="POST"
                       action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}"
-                      onsubmit="return confirm('Tự phân bổ lại giờ từ các nhật trình đã duyệt? Các dòng chưa xác nhận sẽ trở về nháp.')">
+                      onsubmit="return confirm('Đồng bộ OCR ảnh hằng ngày, nhật trình và kết quả AI? Dòng đã sửa hoặc xác nhận sẽ không bị ghi đè.')">
                     @csrf
-                    <button class="btn btn-outline-primary" type="submit">Tự phân bổ 7 giờ</button>
+                    <button class="btn btn-outline-primary" type="submit">Đồng bộ OCR & AI</button>
                 </form>
             @endif
 
@@ -437,6 +437,7 @@
                         <th rowspan="2">Vị trí</th>
                         <th rowspan="2">Lỗi giải trình</th>
                         <th rowspan="2">Công việc</th>
+                        <th rowspan="2">Nguồn</th>
                         <th rowspan="2">Trạng thái</th>
                         <th rowspan="2">Chi tiết</th>
                     </tr>
@@ -500,6 +501,21 @@
                                     @endif
                                 </td>
                             @endforeach
+                            @php
+                                $evidenceColor = match ($row->evidence_status) {
+                                    'MATCHED' => 'success',
+                                    'WARNING', 'JOURNAL_ONLY', 'DAILY_ONLY', 'WAITING_EVIDENCE' => 'warning',
+                                    'EXCEPTION' => 'danger',
+                                    'PENDING_ANALYSIS' => 'info',
+                                    default => 'secondary',
+                                };
+                            @endphp
+                            <td>
+                                <span class="badge text-bg-{{ $evidenceColor }}">{{ $row->evidence_status ?? 'NO_EVIDENCE' }}</span>
+                                @if ($row->has_evidence_changes)
+                                    <span class="badge text-bg-danger" title="Có OCR hoặc kết quả AI mới sau lần sửa/xác nhận">Có dữ liệu mới</span>
+                                @endif
+                            </td>
                             <td><span class="badge text-bg-{{ $row->status === 'CONFIRMED' ? 'success' : ($row->status === 'REJECTED' ? 'danger' : 'warning') }}">{{ $row->status }}</span></td>
                             <td class="d-flex gap-1">
                                 @if ($canEditRow)
@@ -527,7 +543,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="25" class="text-center text-muted py-5">
+                            <td colspan="26" class="text-center text-muted py-5">
                                 Không có dòng đối chiếu phù hợp với bộ lọc.
                             </td>
                         </tr>
