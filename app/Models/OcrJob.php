@@ -45,8 +45,13 @@ class OcrJob extends Model
 
     private static function applyAutomaticReview(self $job): void
     {
+        // Database defaults are not hydrated back into a model immediately
+        // after INSERT. Treat a missing in-memory value as the persisted
+        // PENDING default so newly-created OCR results are evaluated too.
+        $reviewStatus = $job->review_status ?? 'PENDING';
+
         if ($job->reviewed_at
-            || ! in_array($job->review_status, ['PENDING', 'AUTO_APPROVED'], true)
+            || ! in_array($reviewStatus, ['PENDING', 'AUTO_APPROVED'], true)
             || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
 
         if ($job->document_type === 'DAILY_TIMEMARK') {
