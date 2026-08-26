@@ -15,6 +15,7 @@ use App\Http\Requests\Reconciliation\StartReviewReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\StoreReconciliationPeriodRequest;
 use App\Models\CommandCenter;
 use App\Models\Machine;
+use App\Models\OcrJob;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Services\Reconciliation\ReconciliationBchZipService;
@@ -153,6 +154,18 @@ class ReconciliationPeriodController extends Controller
         $rowCalculations = $rows->mapWithKeys(
             fn ($row) => [$row->id => $this->calculator->summaryFor($row)]
         );
+        $dailyTimesByJob = OcrJob::query()
+            ->whereIn('id', $rows->pluck('daily_ocr_job_ids')->flatten()->filter()->unique())
+            ->pluck('extracted_time', 'id');
+        $dailyEvidenceTimes = $rows->mapWithKeys(fn ($row) => [
+            $row->id => collect($row->daily_ocr_job_ids ?? [])
+                ->map(fn ($jobId) => $dailyTimesByJob->get($jobId))
+                ->filter()
+                ->map(fn ($time) => substr((string) $time, 0, 5))
+                ->unique()
+                ->sort()
+                ->values(),
+        ]);
 
         $machineIds = $reconciliationPeriod->rows()
             ->whereNotNull('machine_id')
@@ -226,6 +239,7 @@ class ReconciliationPeriodController extends Controller
             'rejectedCount',
             'draftCount',
             'rowCalculations',
+            'dailyEvidenceTimes',
             'exportable',
             'exportValidation',
             'canConfirmPeriod'
