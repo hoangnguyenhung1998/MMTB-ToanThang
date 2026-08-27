@@ -7,12 +7,16 @@ use App\Models\CommandCenter;
 use App\Models\Machine;
 use App\Models\OcrJob;
 use App\Services\DailyImageArchiveService;
+use App\Services\DailyImageExceptionService;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class DailyImageArchiveController extends Controller
 {
-    public function __construct(private readonly DailyImageArchiveService $service)
+    public function __construct(
+        private readonly DailyImageArchiveService $service,
+        private readonly DailyImageExceptionService $exceptionService,
+    )
     {
     }
 
@@ -41,5 +45,21 @@ class DailyImageArchiveController extends Controller
     {
         $archive = $this->service->createZip($request->validated());
         return response()->download($archive['path'], $archive['name'])->deleteFileAfterSend(true);
+    }
+
+    public function exceptions(IndexDailyImageArchiveRequest $request): View
+    {
+        $filters = $request->validated();
+        $filters['date_from'] ??= now()->toDateString();
+        $filters['date_to'] ??= $filters['date_from'];
+        $filters['exception_status'] ??= 'EXCEPTIONS';
+
+        return view('daily-images.exceptions', [
+            'groups' => $this->exceptionService->paginate($filters),
+            'summary' => $this->exceptionService->summary($filters),
+            'filters' => $filters,
+            'machines' => Machine::query()->whereHas('assignments')->orderBy('asset_code')->get(['id', 'asset_code']),
+            'commandCenters' => CommandCenter::query()->orderBy('name')->get(['id', 'name']),
+        ]);
     }
 }
