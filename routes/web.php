@@ -20,6 +20,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/machine-intakes/{machineIntake}/assign-code', [App\Http\Controllers\MachineIntakeController::class, 'assignCode'])->name('machine-intakes.assign-code');
     Route::post('/machine-intakes/{machineIntake}/requeue', [App\Http\Controllers\MachineIntakeController::class, 'requeue'])->name('machine-intakes.requeue');
     Route::get('/machine-intakes/{machineIntake}/documents/{document}', [App\Http\Controllers\MachineIntakeController::class, 'document'])->name('machine-intakes.documents.show');
+    Route::post('/machine-intakes/{machineIntake}/bch/prepare', [App\Http\Controllers\MachineIntakeController::class, 'prepareBch'])->name('machine-intakes.bch.prepare');
+    Route::post('/machine-intakes/{machineIntake}/bch/send', [App\Http\Controllers\MachineIntakeController::class, 'sendBch'])->name('machine-intakes.bch.send');
+    Route::get('/machine-intakes/{machineIntake}/bch/download', [App\Http\Controllers\MachineIntakeController::class, 'downloadBch'])->name('machine-intakes.bch.download');
 
     Route::get('/projects', [App\Http\Controllers\ProjectController::class, 'index'])
         ->name('projects.index');

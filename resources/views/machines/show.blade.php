@@ -138,11 +138,11 @@
                 <div class="detail-info-grid">
                     <div class="detail-info-item">
                         <span>Loại máy</span>
-                        <strong>{{ $machine->machine_type ?? '-' }}</strong>
+                        <strong>{{ app(\App\Services\MachineSpecificationNormalizer::class)->displayType($machine) ?: '-' }}</strong>
                     </div>
                     <div class="detail-info-item">
-                        <span>Biển số</span>
-                        <strong>{{ $machine->plate_no ?? '-' }}</strong>
+                        <span>Nhãn hiệu / Model / Biển số</span>
+                        <strong>{{ app(\App\Services\MachineSpecificationNormalizer::class)->displayIdentity($machine) ?: '-' }}</strong>
                     </div>
                     <div class="detail-info-item">
                         <span>Số khung</span>

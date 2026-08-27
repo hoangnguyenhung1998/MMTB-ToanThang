@@ -18,7 +18,11 @@ class MachineIntakeExtraction(BaseModel):
     chassis_no: str | None = None
     engine_no: str | None = None
     machine_type: str | None = None
+    brand: str | None = None
     model_name: str | None = None
+    plate_no: str | None = None
+    capacity_class: int | None = None
+    vehicle_axles: int | None = None
     manufacture_year: int | None = Field(default=None, ge=1900, le=2100)
     confidence: float = Field(default=0.0, ge=0, le=1)
     raw_text: str = ""
@@ -36,7 +40,7 @@ class MachineIntakeExtraction(BaseModel):
         value = clean_text(value)
         return re.sub(r"[^A-Z0-9-]", "", value.upper()) if value else None
 
-    @field_validator("machine_type", "model_name")
+    @field_validator("machine_type", "brand", "model_name", "plate_no")
     @classmethod
     def text_value(cls, value: str | None) -> str | None:
         return clean_text(value)
@@ -61,7 +65,11 @@ class MachineIntakeExtraction(BaseModel):
                 "chassis_no": self.chassis_no,
                 "engine_no": self.engine_no,
                 "machine_type": self.machine_type,
+                "brand": self.brand,
                 "model_name": self.model_name,
+                "plate_no": self.plate_no,
+                "capacity_class": self.capacity_class,
+                "vehicle_axles": self.vehicle_axles,
                 "manufacture_year": self.manufacture_year,
             },
             "review_flags": self.review_flags,

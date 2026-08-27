@@ -30,11 +30,12 @@ class MachineIntakeVisionClient:
         mime={".png":"image/png",".webp":"image/webp",".tif":"image/tiff",".tiff":"image/tiff"}.get(image_path.suffix.lower(),"image/jpeg")
         encoded=base64.b64encode(image_path.read_bytes()).decode("ascii")
         instruction=("Bạn là OCR kiểm soát hồ sơ máy công trình. Loại ảnh: "+document_type+". Chỉ đọc ký tự thực sự nhìn thấy, tuyệt đối không suy đoán. "
-            "Trích công ty VINCONS/VINALPHA nếu có, số khung, số máy/động cơ, loại máy, model và năm sản xuất. "
+            "Trích công ty VINCONS/VINALPHA nếu có, số khung, số máy/động cơ, loại máy, nhãn hiệu, model, biển số và năm sản xuất. "
+            "Loại máy nhận dạng vật lý: máy xúc bánh xích, máy xúc bánh lốp, lu rung hoặc xe ô tô. Đọc công suất/model number và số chân ô tô 2/3/4 nếu thấy. "
             "Số khung và số máy phải giữ đúng thứ tự ký tự. Đặc biệt kiểm tra cặp dễ nhầm 0/O, 1/I, 5/S, 2/Z, 8/B. "
             "Nếu không chắc, giữ giá trị đọc tốt nhất nhưng thêm cờ AMBIGUOUS_<FIELD>_<POSITION> vào review_flags. Không dùng mã tài sản vì hồ sơ chưa được cấp mã. "
             "confidence phản ánh độ chắc chắn 0..1; raw_text giữ nguyên văn chính. Trả duy nhất JSON: "
-            "{company,chassis_no,engine_no,machine_type,model_name,manufacture_year,confidence,raw_text,review_flags}.")
+            "{company,chassis_no,engine_no,machine_type,brand,model_name,plate_no,capacity_class,vehicle_axles,manufacture_year,confidence,raw_text,review_flags}.")
         return {"model":self.model,"messages":[{"role":"user","content":[{"type":"text","text":instruction},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{encoded}"}}]}],"temperature":0,"response_format":{"type":"json_object"}}
 
     @staticmethod
