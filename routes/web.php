@@ -11,6 +11,14 @@ Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'inde
     ->name('dashboard');
 
 Route::middleware('auth')->group(function () {
+    Route::get('/machine-intakes', [App\Http\Controllers\MachineIntakeController::class, 'index'])->name('machine-intakes.index');
+    Route::get('/machine-intakes/create', [App\Http\Controllers\MachineIntakeController::class, 'create'])->name('machine-intakes.create');
+    Route::post('/machine-intakes', [App\Http\Controllers\MachineIntakeController::class, 'store'])->name('machine-intakes.store');
+    Route::get('/machine-intakes/{machineIntake}', [App\Http\Controllers\MachineIntakeController::class, 'show'])->name('machine-intakes.show');
+    Route::put('/machine-intakes/{machineIntake}/confirm', [App\Http\Controllers\MachineIntakeController::class, 'confirm'])->name('machine-intakes.confirm');
+    Route::post('/machine-intakes/{machineIntake}/email-sent', [App\Http\Controllers\MachineIntakeController::class, 'markEmailSent'])->name('machine-intakes.email-sent');
+    Route::post('/machine-intakes/{machineIntake}/assign-code', [App\Http\Controllers\MachineIntakeController::class, 'assignCode'])->name('machine-intakes.assign-code');
+
     Route::get('/projects', [App\Http\Controllers\ProjectController::class, 'index'])
         ->name('projects.index');
     Route::get('/projects/create', [App\Http\Controllers\ProjectController::class, 'create'])
