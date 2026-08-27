@@ -60,6 +60,10 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('machine-intakes.*') ? 'active' : '' }}" href="{{ route('machine-intakes.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Zm3 4h10M7 13h6m4 0 2 2-2 2"/></svg></span>
+                <span>AI tiếp nhận máy</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('reconciliation-*') ? 'active' : '' }}" href="{{ route('reconciliation-periods.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v4H5V5Zm0 10h14v4H5v-4Zm2-8h4m-4 10h4m7-9 2 2 4-5m-6 12 2 2 4-5"/></svg></span>
                 <span>Đối chiếu</span>

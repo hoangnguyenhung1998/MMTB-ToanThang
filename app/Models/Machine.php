@@ -40,6 +40,11 @@ class Machine extends Model
         return $this->hasMany(AiReconciliationJob::class);
     }
 
+    public function intakeCase()
+    {
+        return $this->hasOne(MachineIntakeCase::class);
+    }
+
     public function currentAssignment()
     {
         return $this->hasOne(MachineAssignment::class, 'machine_id')
