@@ -12,13 +12,16 @@ use App\Services\MachineIntakeOcrService;
 use App\Models\MachineIntakeDocument;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use App\Services\MachineIntakeBchService;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use App\Models\Project;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class MachineIntakeController extends Controller
 {
-    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr) {}
+    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr, private readonly MachineIntakeBchService $bch) {}
 
     public function index(Request $request): View
     {
@@ -51,7 +54,7 @@ class MachineIntakeController extends Controller
 
     public function show(MachineIntakeCase $machineIntake): View
     {
-        return view('machine-intakes.show', ['case' => $machineIntake->load(['documents', 'events.user', 'machine'])]);
+        return view('machine-intakes.show', ['case' => $machineIntake->load(['documents', 'events.user', 'machine','project']), 'projects'=>Project::orderBy('name')->get(['id','name'])]);
     }
 
     public function confirm(ConfirmMachineIntakeRequest $request, MachineIntakeCase $machineIntake): RedirectResponse
@@ -82,6 +85,13 @@ class MachineIntakeController extends Controller
         abort_unless(Storage::disk($document->storage_disk)->exists($document->storage_path),404);
         return Storage::disk($document->storage_disk)->response($document->storage_path,$document->original_name,['Content-Type'=>$document->mime_type,'Content-Disposition'=>'inline']);
     }
+
+    public function prepareBch(Request $request, MachineIntakeCase $machineIntake): RedirectResponse
+    {
+        $data=$request->validate(['to'=>['required','string','max:1000'],'cc'=>['nullable','string','max:1000'],'subject'=>['required','string','max:255'],'body'=>['required','string','max:5000']]);$this->bch->prepare($machineIntake,$data);return back()->with('success','Đã tạo file Excel và bản xem trước email.');
+    }
+    public function sendBch(Request $request, MachineIntakeCase $machineIntake): RedirectResponse {return $this->run(fn()=>$this->bch->send($machineIntake,$request->user()),'Đã gửi hồ sơ BCH và chuyển sang chờ cấp mã.');}
+    public function downloadBch(MachineIntakeCase $machineIntake): BinaryFileResponse {abort_unless($machineIntake->bch_package_path,404);return response()->download(storage_path('app/public/'.$machineIntake->bch_package_path));}
 
     private function run(callable $action, string $message): RedirectResponse
     {

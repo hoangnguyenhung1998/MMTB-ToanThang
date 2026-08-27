@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class MachineIntakeOcrService
 {
-    private const FIELDS = ['company', 'chassis_no', 'engine_no', 'machine_type', 'model_name', 'manufacture_year'];
+    private const FIELDS = ['company', 'chassis_no', 'engine_no', 'machine_type', 'brand', 'model_name', 'plate_no', 'capacity_class', 'vehicle_axles', 'manufacture_year'];
 
     public function enqueueCase(MachineIntakeCase $case, bool $retry = false): int
     {
@@ -93,7 +93,7 @@ class MachineIntakeOcrService
         foreach (self::FIELDS as $field) if (! $case->confirmed_at && isset($summary[$field]['value'])) $updates[$field] = $summary[$field]['value'];
         if (isset($updates['chassis_no'])) { $updates['chassis_no_raw'] = $updates['chassis_no']; $updates['chassis_no'] = $this->normalizeIdentifier($updates['chassis_no']); }
         if (isset($updates['engine_no'])) { $updates['engine_no_raw'] = $updates['engine_no']; $updates['engine_no'] = $this->normalizeIdentifier($updates['engine_no']); }
-        $case->update($updates);
+        $case->update(app(MachineSpecificationNormalizer::class)->normalize($updates));
         MachineIntakeEvent::create(['machine_intake_case_id' => $case->id, 'event' => 'intake.ocr_aggregated', 'properties' => ['flags' => $updates['review_flags']], 'occurred_at' => now()]);
     }
 

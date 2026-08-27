@@ -19,6 +19,7 @@ class MachineIntakeService
         private readonly MachineService $machines,
         private readonly MachineIntakeAlertDispatcher $alerts,
         private readonly MachineIntakeOcrService $ocr,
+        private readonly MachineSpecificationNormalizer $normalizer,
     ) {}
 
     public function createDraft(array $data, array $files, User $user): MachineIntakeCase
@@ -46,7 +47,7 @@ class MachineIntakeService
             throw new BusinessRuleException('Hồ sơ đã tạo máy, không thể xác nhận lại dữ liệu nguồn.');
         }
 
-        $normalized = $this->normalizedMachineData($data);
+        $normalized = $this->normalizer->normalize($this->normalizedMachineData($data));
         if (blank($normalized['chassis_no'] ?? null) || blank($normalized['engine_no'] ?? null)) {
             throw new BusinessRuleException('Phải xác nhận chính xác cả số khung và số máy trước khi gửi BCH.');
         }
@@ -94,6 +95,7 @@ class MachineIntakeService
                 'asset_code' => $code, 'company' => $locked->company, 'chassis_no' => $chassis,
                 'engine_no' => $locked->engine_no, 'plate_no' => $locked->plate_no,
                 'machine_type' => $locked->machine_type, 'manufacture_year' => $locked->manufacture_year,
+                'brand' => $locked->brand, 'model_name' => $locked->model_name, 'capacity_class' => $locked->capacity_class, 'vehicle_axles' => $locked->vehicle_axles,
             ]);
             $locked->update([
                 'machine_id' => $machine->id, 'status' => 'WAIT_HANDOVER', 'asset_code' => $code,
@@ -122,7 +124,7 @@ class MachineIntakeService
 
     private function normalizedMachineData(array $data): array
     {
-        $fields = ['company', 'plate_no', 'machine_type', 'model_name', 'manufacture_year', 'project_id', 'command_center_id', 'driver_id', 'handover_at'];
+        $fields = ['company', 'plate_no', 'machine_type', 'brand', 'model_name', 'capacity_class', 'vehicle_axles', 'manufacture_year', 'project_id', 'command_center_id', 'driver_id', 'handover_at'];
         $result = array_intersect_key($data, array_flip($fields));
         foreach (['chassis_no', 'engine_no'] as $field) {
             if (array_key_exists($field, $data)) {
