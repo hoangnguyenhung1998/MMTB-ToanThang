@@ -1,5 +1,7 @@
 # MMTB Journal Worker
 
+Worker dùng chung Vision API cho hai hàng đợi tách biệt: nhật trình tuần và hồ sơ tiếp nhận máy. Nhật trình luôn được ưu tiên; khi rảnh worker nhận ảnh đăng kiểm, ảnh số khung/số máy để tự điền hồ sơ Phase 16.2. Hai loại dữ liệu dùng endpoint và bảng riêng, nhưng dùng chung cấu hình, retry, Scheduled Task và Health Agent.
+
 External Python worker for handwritten weekly journal images. Laravel remains the source of truth and owns durable jobs, private images, machine matching, journal documents, journal rows, status, and exceptions.
 
 The worker:

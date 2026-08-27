@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AiReconciliationController;
 use App\Http\Controllers\Api\OcrJobController;
+use App\Http\Controllers\Api\MachineIntakeOcrController;
 use App\Http\Controllers\Api\OpenClawCommandController;
 use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Controllers\Api\AutomationHeartbeatController;
@@ -65,4 +66,8 @@ Route::prefix('ocr/v1')
             ->name('api.ocr.jobs.complete-journal');
         Route::post('/jobs/{ocrJob}/fail', [OcrJobController::class, 'fail'])
             ->name('api.ocr.jobs.fail');
+        Route::post('/intake/jobs/claim', [MachineIntakeOcrController::class, 'claim'])->name('api.ocr.intake.claim');
+        Route::get('/intake/jobs/{machineIntakeOcrJob}/image', [MachineIntakeOcrController::class, 'image'])->name('api.ocr.intake.image');
+        Route::post('/intake/jobs/{machineIntakeOcrJob}/complete', [MachineIntakeOcrController::class, 'complete'])->name('api.ocr.intake.complete');
+        Route::post('/intake/jobs/{machineIntakeOcrJob}/fail', [MachineIntakeOcrController::class, 'fail'])->name('api.ocr.intake.fail');
     });

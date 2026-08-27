@@ -18,6 +18,7 @@ class MachineIntakeService
     public function __construct(
         private readonly MachineService $machines,
         private readonly MachineIntakeAlertDispatcher $alerts,
+        private readonly MachineIntakeOcrService $ocr,
     ) {}
 
     public function createDraft(array $data, array $files, User $user): MachineIntakeCase
@@ -34,6 +35,7 @@ class MachineIntakeService
             }
 
             $this->event($case, $user, 'intake.created', ['document_count' => count($files)]);
+            $this->ocr->enqueueCase($case->load('documents'));
             return $case->refresh();
         });
     }
