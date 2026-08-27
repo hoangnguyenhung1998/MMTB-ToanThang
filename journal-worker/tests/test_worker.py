@@ -32,6 +32,9 @@ class FakeLaravelClient:
     def fail(self, _job_id, _error, _retryable):
         raise AssertionError("A successful job must not be failed")
 
+    def claim_intake(self):
+        return None
+
 
 class FakeVisionClient:
     def extract(self, _image_path, machine_codes):

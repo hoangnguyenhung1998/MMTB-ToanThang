@@ -16,6 +16,7 @@ class MachineIntakeCase extends Model
     protected $casts = [
         'email_sent_at' => 'datetime', 'code_received_at' => 'datetime',
         'handover_at' => 'datetime', 'confirmed_at' => 'datetime',
+        'extraction_summary' => 'array', 'review_flags' => 'array',
     ];
 
     public function machine(): BelongsTo { return $this->belongsTo(Machine::class); }

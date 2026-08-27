@@ -16,7 +16,7 @@ class StoreMachineIntakeRequest extends FormRequest
             'model_name' => ['nullable', 'string', 'max:255'],
             'manufacture_year' => ['nullable', 'integer', 'min:1900', 'max:'.(now()->year + 1)],
             'document_type' => ['nullable', 'in:MACHINE_PHOTO,REGISTRATION_CERTIFICATE,CHASSIS_PLATE,ENGINE_PLATE,OTHER'],
-            'documents' => ['required', 'array', 'min:1'], 'documents.*' => ['file', 'max:204800'],
+            'documents' => ['required', 'array', 'min:1'], 'documents.*' => ['file', 'mimes:jpg,jpeg,png,webp,bmp,tif,tiff', 'max:204800'],
         ];
     }
 }

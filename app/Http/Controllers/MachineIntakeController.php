@@ -8,13 +8,17 @@ use App\Http\Requests\ConfirmMachineIntakeRequest;
 use App\Http\Requests\StoreMachineIntakeRequest;
 use App\Models\MachineIntakeCase;
 use App\Services\MachineIntakeService;
+use App\Services\MachineIntakeOcrService;
+use App\Models\MachineIntakeDocument;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class MachineIntakeController extends Controller
 {
-    public function __construct(private readonly MachineIntakeService $service) {}
+    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr) {}
 
     public function index(Request $request): View
     {
@@ -64,6 +68,19 @@ class MachineIntakeController extends Controller
     public function assignCode(AssignMachineIntakeCodeRequest $request, MachineIntakeCase $machineIntake): RedirectResponse
     {
         return $this->run(fn () => $this->service->assignAssetCode($machineIntake, $request->validated(), $request->user(), $request->file('evidence')), 'Đã cấp mã, tạo máy chờ bàn giao và gửi thông báo Telegram.');
+    }
+
+    public function requeue(Request $request, MachineIntakeCase $machineIntake): RedirectResponse
+    {
+        $count=$this->ocr->enqueueCase($machineIntake->load('documents'),true);
+        return back()->with('success',"Đã đưa {$count} tài liệu vào hàng đợi OCR.");
+    }
+
+    public function document(Request $request, MachineIntakeCase $machineIntake, MachineIntakeDocument $document): StreamedResponse
+    {
+        abort_unless($document->machine_intake_case_id===$machineIntake->id,404);
+        abort_unless(Storage::disk($document->storage_disk)->exists($document->storage_path),404);
+        return Storage::disk($document->storage_disk)->response($document->storage_path,$document->original_name,['Content-Type'=>$document->mime_type,'Content-Disposition'=>'inline']);
     }
 
     private function run(callable $action, string $message): RedirectResponse

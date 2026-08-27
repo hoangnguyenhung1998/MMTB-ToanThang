@@ -11,6 +11,7 @@ from .laravel_client import LaravelJournalClient, WorkerApiError
 from .process_lock import ProcessLock
 from .vision_client import JournalVisionClient, VisionError
 from .health import WorkerHealth
+from .intake_vision_client import MachineIntakeVisionClient
 
 
 LOGGER = logging.getLogger("mmtb_journal_worker")
@@ -43,6 +44,7 @@ class JournalWorker:
             model=settings.vision_model,
             timeout_seconds=settings.vision_timeout_seconds,
         )
+        self.intake_vision = MachineIntakeVisionClient(settings.vision_api_base_url, settings.vision_api_key, settings.vision_model, settings.vision_timeout_seconds)
         self.machine_codes: list[str] = []
         self.machine_catalog_loaded_at = 0.0
         self.health = WorkerHealth(settings.data_dir / "health.json")
@@ -52,8 +54,11 @@ class JournalWorker:
         self._refresh_machine_catalog()
         job = self.laravel.claim()
         if job is None:
-            self.health.api_success()
-            return False
+            job = self.laravel.claim_intake()
+            if job is None:
+                self.health.api_success()
+                return False
+            return self._process_intake(job)
 
         self.health.api_success()
         self.health.job_started(job["id"])
@@ -90,6 +95,26 @@ class JournalWorker:
             if image_path is not None:
                 image_path.unlink(missing_ok=True)
         return True
+
+    def _process_intake(self, job: dict) -> bool:
+        self.health.api_success(); self.health.job_started(job["id"]); image_path: Path | None = None
+        try:
+            image_path=self.laravel.download_image(job["image_url"],int(job["id"])); extraction=self.intake_vision.extract(image_path,job["document_type"])
+            saved=self.laravel.complete_intake(job["id"],extraction.api_payload()); self.health.job_succeeded()
+            LOGGER.info("Completed machine intake OCR job %s: case=%s confidence=%.2f status=%s",job["id"],job.get("case",{}).get("reference","?"),extraction.confidence,saved["status"])
+        except WorkerApiError: raise
+        except VisionError as exc:
+            LOGGER.warning("Machine intake OCR job %s failed: %s",job["id"],exc); self._report_intake_failure(job,str(exc),exc.retryable)
+        except Exception as exc:
+            LOGGER.exception("Machine intake OCR job %s failed locally",job["id"]); self._report_intake_failure(job,str(exc),int(job.get("attempts",1))<3)
+        finally:
+            self.health.job_finished()
+            if image_path is not None: image_path.unlink(missing_ok=True)
+        return True
+
+    def _report_intake_failure(self, job: dict, error: str, retryable: bool) -> None:
+        try: self.laravel.fail_intake(job["id"],error,retryable and int(job.get("attempts",1))<3)
+        except WorkerApiError as report_error: LOGGER.error("Could not report failure for machine intake job %s: %s",job["id"],report_error)
 
     def _refresh_machine_catalog(self) -> None:
         now = time.monotonic()
