@@ -48,8 +48,6 @@ class MachineIntakeExtraction(BaseModel):
             value = getattr(self, field)
             if not value:
                 flags.append(f"MISSING_{field.upper()}")
-            elif any(char in value for char in "OIS"):
-                flags.append(f"VERIFY_AMBIGUOUS_{field.upper()}")
         if self.confidence < 0.85:
             flags.append("LOW_CONFIDENCE")
         self.review_flags = list(dict.fromkeys(flags))
