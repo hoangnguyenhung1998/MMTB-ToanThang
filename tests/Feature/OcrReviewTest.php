@@ -104,6 +104,80 @@ class OcrReviewTest extends TestCase
             ->assertHeader('content-type', 'image/jpeg');
     }
 
+    public function test_complete_daily_image_is_auto_approved_even_when_ocr_reported_an_exception(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL9001',
+            'company' => 'VINALPHA',
+            'chassis_no' => 'AUTO-DAILY-CHASSIS',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('DAILY_TIMEMARK', 'PROCESSING');
+
+        $job->update([
+            'document_type' => 'DAILY_TIMEMARK',
+            'machine_id' => $machine->id,
+            'asset_code' => $machine->asset_code,
+            'extracted_date' => '2026-08-27',
+            'extracted_time' => '06:30:00',
+            'status' => 'EXCEPTION',
+            'exceptions' => ['LOW_CONFIDENCE'],
+        ]);
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id,
+            'status' => 'COMPLETED',
+            'review_status' => 'AUTO_APPROVED',
+            'exceptions' => null,
+        ]);
+    }
+
+    public function test_daily_image_without_a_known_machine_stays_pending_review(): void
+    {
+        $job = $this->createJob('DAILY_TIMEMARK', 'PROCESSING');
+        $job->update([
+            'document_type' => 'DAILY_TIMEMARK',
+            'asset_code' => 'UNKNOWN-01',
+            'extracted_date' => '2026-08-27',
+            'extracted_time' => '06:30:00',
+            'status' => 'EXCEPTION',
+            'exceptions' => ['UNKNOWN_ASSET_CODE'],
+        ]);
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id,
+            'status' => 'EXCEPTION',
+            'review_status' => 'PENDING',
+        ]);
+    }
+
+    public function test_existing_complete_daily_images_can_be_auto_approved_in_bulk(): void
+    {
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL9002', 'company' => 'VINALPHA',
+            'chassis_no' => 'AUTO-OLD-CHASSIS', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        OcrJob::query()->whereKey($job->id)->update([
+            'machine_id' => $machine->id,
+            'asset_code' => $machine->asset_code,
+            'extracted_date' => '2026-08-27',
+            'extracted_time' => '07:00:00',
+            'review_status' => 'PENDING',
+        ]);
+
+        $this->artisan('ocr:auto-approve-daily')
+            ->expectsOutput('Đã tự duyệt 1 ảnh hằng ngày đủ mã máy, ngày và giờ.')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('ocr_jobs', [
+            'id' => $job->id,
+            'status' => 'COMPLETED',
+            'review_status' => 'AUTO_APPROVED',
+            'exceptions' => null,
+        ]);
+    }
+
     public function test_daily_review_shows_editor_beside_rotatable_source_image(): void
     {
         $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
@@ -123,7 +197,7 @@ class OcrReviewTest extends TestCase
 
     public function test_user_can_approve_an_ocr_exception_and_audit_is_recorded(): void
     {
-        $job = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $job = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
         $user = User::factory()->create();
 
         $this->actingAs($user)->put("/ocr-reviews/{$job->id}", [
@@ -137,7 +211,7 @@ class OcrReviewTest extends TestCase
 
     public function test_user_can_bulk_approve_pending_jobs(): void
     {
-        $first = $this->createJob('DAILY_TIMEMARK', 'EXCEPTION');
+        $first = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
         $second = $this->createJob('WEEKLY_JOURNAL', 'EXCEPTION');
 
         $this->actingAs(User::factory()->create())->post('/ocr-reviews/bulk', [
@@ -163,7 +237,7 @@ class OcrReviewTest extends TestCase
             'machine_id' => $machine->id,
             'asset_code' => $machine->asset_code,
             'extracted_date' => '2026-08-22',
-            'extracted_time' => '07:00:00',
+            'extracted_time' => null,
             'review_status' => 'PENDING',
         ]);
         $automatic = $this->createJob('DAILY_TIMEMARK', 'COMPLETED');

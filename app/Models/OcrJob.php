@@ -29,15 +29,56 @@ class OcrJob extends Model
 
     protected static function booted(): void
     {
-        static::saved(function (self $job): void {
-            if (! $job->wasChanged('status') || $job->reviewed_at || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
-            $sample = max(0, min(100, (int) config('ocr.review_sample_percent', 3)));
-            $sampled = (abs(crc32((string) $job->id)) % 100) < $sample;
-            $job->newQuery()->whereKey($job->id)->update([
-                'review_status' => $job->status === 'COMPLETED' && ! $sampled ? 'AUTO_APPROVED' : 'PENDING',
-                'review_flags' => $sampled ? json_encode(['QUALITY_SAMPLE']) : null,
-            ]);
+        static::created(fn (self $job) => self::applyAutomaticReview($job));
+        static::updated(function (self $job): void {
+            if ($job->wasChanged([
+                'status',
+                'document_type',
+                'machine_id',
+                'extracted_date',
+                'extracted_time',
+            ])) {
+                self::applyAutomaticReview($job);
+            }
         });
+    }
+
+    private static function applyAutomaticReview(self $job): void
+    {
+        // Database defaults are not hydrated back into a model immediately
+        // after INSERT. Treat a missing in-memory value as the persisted
+        // PENDING default so newly-created OCR results are evaluated too.
+        $reviewStatus = $job->review_status ?? 'PENDING';
+
+        if ($job->reviewed_at
+            || ! in_array($reviewStatus, ['PENDING', 'AUTO_APPROVED'], true)
+            || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
+
+        if ($job->document_type === 'DAILY_TIMEMARK') {
+            $isComplete = $job->machine_id
+                && $job->extracted_date
+                && $job->extracted_time
+                && $job->machine()->exists();
+
+            $updates = [
+                'status' => $isComplete ? 'COMPLETED' : $job->status,
+                'review_status' => $isComplete ? 'AUTO_APPROVED' : 'PENDING',
+            ];
+            if ($isComplete) {
+                $updates['review_flags'] = null;
+                $updates['exceptions'] = null;
+            }
+            $job->newQuery()->whereKey($job->id)->update($updates);
+
+            return;
+        }
+
+        $sample = max(0, min(100, (int) config('ocr.review_sample_percent', 3)));
+        $sampled = (abs(crc32((string) $job->id)) % 100) < $sample;
+        $job->newQuery()->whereKey($job->id)->update([
+            'review_status' => $job->status === 'COMPLETED' && ! $sampled ? 'AUTO_APPROVED' : 'PENDING',
+            'review_flags' => $sampled ? json_encode(['QUALITY_SAMPLE']) : null,
+        ]);
     }
 
     public function reviewer(): BelongsTo { return $this->belongsTo(User::class, 'reviewed_by'); }
