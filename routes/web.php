@@ -7,6 +7,7 @@ Route::get('/', function () {
 });
 
 Route::view('/privacy', 'privacy')->name('privacy');
+Route::view('/gmail-agent', 'gmail-agent')->name('gmail-agent');
 
 Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])
     ->middleware(['auth', 'verified'])
