@@ -18,6 +18,7 @@ Route::middleware('auth')->group(function () {
     Route::put('/machine-intakes/{machineIntake}/confirm', [App\Http\Controllers\MachineIntakeController::class, 'confirm'])->name('machine-intakes.confirm');
     Route::post('/machine-intakes/{machineIntake}/email-sent', [App\Http\Controllers\MachineIntakeController::class, 'markEmailSent'])->name('machine-intakes.email-sent');
     Route::post('/machine-intakes/{machineIntake}/assign-code', [App\Http\Controllers\MachineIntakeController::class, 'assignCode'])->name('machine-intakes.assign-code');
+    Route::post('/machine-intakes/{machineIntake}/email-replies/{reply}/confirm', [App\Http\Controllers\MachineIntakeController::class, 'confirmEmailCode'])->name('machine-intakes.email-replies.confirm');
     Route::post('/machine-intakes/{machineIntake}/requeue', [App\Http\Controllers\MachineIntakeController::class, 'requeue'])->name('machine-intakes.requeue');
     Route::get('/machine-intakes/{machineIntake}/documents/{document}', [App\Http\Controllers\MachineIntakeController::class, 'document'])->name('machine-intakes.documents.show');
     Route::post('/machine-intakes/{machineIntake}/bch/prepare', [App\Http\Controllers\MachineIntakeController::class, 'prepareBch'])->name('machine-intakes.bch.prepare');

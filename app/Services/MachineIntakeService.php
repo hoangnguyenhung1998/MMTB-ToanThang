@@ -72,9 +72,9 @@ class MachineIntakeService
         return $case->refresh();
     }
 
-    public function assignAssetCode(MachineIntakeCase $case, array $data, User $user, ?UploadedFile $evidence = null): MachineIntakeCase
+    public function assignAssetCode(MachineIntakeCase $case, array $data, User $user, ?UploadedFile $evidence = null, ?string $existingEvidencePath = null): MachineIntakeCase
     {
-        $result = DB::transaction(function () use ($case, $data, $user, $evidence) {
+        $result = DB::transaction(function () use ($case, $data, $user, $evidence, $existingEvidencePath) {
             $locked = MachineIntakeCase::query()->lockForUpdate()->findOrFail($case->id);
             if ($locked->machine_id || ! in_array($locked->status, ['CONFIRMED', 'EMAIL_SENT', 'WAIT_ASSET_CODE'], true)) {
                 throw new BusinessRuleException('Hồ sơ này không còn ở trạng thái chờ cấp mã.');
@@ -90,7 +90,7 @@ class MachineIntakeService
                 throw new BusinessRuleException('Số khung đã tồn tại trong danh sách máy.');
             }
 
-            $evidencePath = $evidence?->store('machine-intakes/'.$locked->reference.'/asset-code', 'public');
+            $evidencePath = $evidence?->store('machine-intakes/'.$locked->reference.'/asset-code', 'public') ?: $existingEvidencePath;
             $machine = $this->machines->createMachine([
                 'asset_code' => $code, 'company' => $locked->company, 'chassis_no' => $chassis,
                 'engine_no' => $locked->engine_no, 'plate_no' => $locked->plate_no,

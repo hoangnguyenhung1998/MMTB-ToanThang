@@ -25,5 +25,6 @@ class MachineIntakeCase extends Model
     public function driver(): BelongsTo { return $this->belongsTo(Driver::class); }
     public function confirmer(): BelongsTo { return $this->belongsTo(User::class, 'confirmed_by'); }
     public function documents(): HasMany { return $this->hasMany(MachineIntakeDocument::class); }
+    public function emailReplies(): HasMany { return $this->hasMany(MachineIntakeEmailReply::class); }
     public function events(): HasMany { return $this->hasMany(MachineIntakeEvent::class)->orderByDesc('occurred_at'); }
 }

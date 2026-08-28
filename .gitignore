@@ -12,6 +12,13 @@
 /.vscode
 /.zed
 /auth.json
+/gmail-intake-worker/.env
+/gmail-intake-worker/credentials.json
+/gmail-intake-worker/token.json
+/gmail-intake-worker/data/
+/gmail-intake-worker/.venv/
+__pycache__/
+*.pyc
 /node_modules
 /public/build
 /public/hot

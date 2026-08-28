@@ -7,10 +7,12 @@ use App\Http\Controllers\Api\OpenClawCommandController;
 use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Controllers\Api\AutomationHeartbeatController;
 use App\Http\Controllers\Api\AutomationOperationalCommandController;
+use App\Http\Controllers\Api\MachineIntakeEmailReplyController;
 use App\Http\Middleware\AuthenticateAutomationAgent;
 use App\Http\Middleware\AuthenticateCollector;
 use App\Http\Middleware\AuthenticateOpenClaw;
 use App\Http\Middleware\AuthenticateOcrWorker;
+use App\Http\Middleware\AuthenticateGmailIntakeWorker;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/automation/v1/heartbeat', AutomationHeartbeatController::class)
@@ -28,6 +30,13 @@ Route::prefix('collector/v1')
     ->group(function (): void {
         Route::post('/zalo/messages', [ZaloMessageController::class, 'store'])
             ->name('api.collector.zalo-messages.store');
+    });
+
+Route::prefix('gmail-intake/v1')
+    ->middleware([AuthenticateGmailIntakeWorker::class, 'throttle:60,1'])
+    ->group(function (): void {
+        Route::post('/replies', [MachineIntakeEmailReplyController::class, 'store'])
+            ->name('api.gmail-intake.replies.store');
     });
 
 Route::prefix('openclaw/v1')
