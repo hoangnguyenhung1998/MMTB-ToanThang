@@ -13,3 +13,6 @@ def authorize(root: Path) -> None:
 
 def main() -> None:
     authorize(Path(__file__).resolve().parents[2])
+
+if __name__ == "__main__":
+    main()
