@@ -6,6 +6,8 @@ Route::get('/', function () {
     return redirect()->route('login');
 });
 
+Route::view('/privacy', 'privacy')->name('privacy');
+
 Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])
     ->middleware(['auth', 'verified'])
     ->name('dashboard');
