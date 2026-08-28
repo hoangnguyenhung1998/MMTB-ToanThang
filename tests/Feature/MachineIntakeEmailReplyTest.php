@@ -60,7 +60,7 @@ class MachineIntakeEmailReplyTest extends TestCase
 
         $this->assertSame('CONFIRMED', $reply->fresh()->status);
         $this->assertSame('WAIT_HANDOVER', $case->fresh()->status);
-        $this->assertDatabaseHas('machines', ['asset_code' => 'VTXL1503', 'chassis_no' => 'FRAME503', 'status' => 'WAIT_HANDOVER']);
+        $this->assertDatabaseHas('machines', ['asset_code' => 'VT-XL1503', 'chassis_no' => 'FRAME503', 'status' => 'WAIT_HANDOVER']);
     }
 
     public function test_unmatched_email_never_creates_machine(): void
