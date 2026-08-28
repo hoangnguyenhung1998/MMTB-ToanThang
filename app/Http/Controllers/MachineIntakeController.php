@@ -15,13 +15,15 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use App\Services\MachineIntakeBchService;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use App\Models\Project;
+use App\Models\MachineIntakeEmailReply;
+use App\Services\MachineIntakeEmailReplyService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class MachineIntakeController extends Controller
 {
-    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr, private readonly MachineIntakeBchService $bch) {}
+    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr, private readonly MachineIntakeBchService $bch, private readonly MachineIntakeEmailReplyService $emailReplies) {}
 
     public function index(Request $request): View
     {
@@ -54,7 +56,7 @@ class MachineIntakeController extends Controller
 
     public function show(MachineIntakeCase $machineIntake): View
     {
-        return view('machine-intakes.show', ['case' => $machineIntake->load(['documents', 'events.user', 'machine','project']), 'projects'=>Project::orderBy('name')->get(['id','name'])]);
+        return view('machine-intakes.show', ['case' => $machineIntake->load(['documents', 'events.user', 'machine','project','emailReplies']), 'projects'=>Project::orderBy('name')->get(['id','name'])]);
     }
 
     public function confirm(ConfirmMachineIntakeRequest $request, MachineIntakeCase $machineIntake): RedirectResponse
@@ -71,6 +73,12 @@ class MachineIntakeController extends Controller
     public function assignCode(AssignMachineIntakeCodeRequest $request, MachineIntakeCase $machineIntake): RedirectResponse
     {
         return $this->run(fn () => $this->service->assignAssetCode($machineIntake, $request->validated(), $request->user(), $request->file('evidence')), 'Đã cấp mã, tạo máy chờ bàn giao và gửi thông báo Telegram.');
+    }
+
+    public function confirmEmailCode(Request $request, MachineIntakeCase $machineIntake, MachineIntakeEmailReply $reply): RedirectResponse
+    {
+        abort_unless($reply->machine_intake_case_id === $machineIntake->id, 404);
+        return $this->run(fn () => $this->emailReplies->confirm($reply, $request->user()), 'Đã xác nhận mã từ Gmail và tạo máy chờ bàn giao.');
     }
 
     public function requeue(Request $request, MachineIntakeCase $machineIntake): RedirectResponse

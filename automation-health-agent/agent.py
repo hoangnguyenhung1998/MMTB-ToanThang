@@ -187,6 +187,7 @@ class HealthAgent:
             ServiceDefinition("ocr-worker", "OCR Worker", "OCR_WORKER", "MMTB-RapidOCRWorker", root / "ocr-worker/data/worker.log"),
             ServiceDefinition("journal-worker", "Journal Worker", "JOURNAL_WORKER", "MMTB-JournalWorker", root / "journal-worker/data/worker.log"),
             ServiceDefinition("reconciliation-worker", "Reconciliation Worker", "RECONCILIATION_WORKER", "MMTB-OpenClawReconciliationWorker", root / "reconciliation-worker/data/worker.log"),
+            ServiceDefinition("gmail-intake-worker", "Gmail Intake Worker", "GMAIL_INTAKE_WORKER", "MMTB-GmailIntakeWorker", root / "gmail-intake-worker/data/worker.log"),
             ServiceDefinition("openclaw-gateway", "OpenClaw Gateway", "OPENCLAW_GATEWAY", None, None),
         ]
 

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\MachineIntakeCase;
+use App\Models\MachineIntakeEmailReply;
 use Throwable;
 
 class MachineIntakeAlertDispatcher
@@ -21,6 +22,26 @@ class MachineIntakeAlertDispatcher
                 'Trạng thái: <b>WAIT_HANDOVER</b>',
             ]));
 
+            return null;
+        } catch (Throwable $exception) {
+            report($exception);
+            return $exception->getMessage();
+        }
+    }
+
+    public function codeCandidate(MachineIntakeEmailReply $reply): ?string
+    {
+        try {
+            $this->telegram->send(implode("\n", [
+                '📩 <b>GMAIL ĐÃ NHẬN MÃ ĐỀ XUẤT</b>',
+                'Hồ sơ: <b>'.e($reply->intakeCase?->reference).'</b>',
+                'Số khung: <code>'.e($reply->intakeCase?->chassis_no).'</code>',
+                'Mã đề xuất: <b>'.e($reply->candidate_asset_code).'</b>',
+                'Độ tin cậy: '.number_format(((float) $reply->confidence) * 100)."%",
+                'Nguồn: '.e($reply->sender),
+                '⚠️ Chưa tạo máy — cần xác nhận trên web.',
+                route('machine-intakes.show', $reply->intakeCase),
+            ]));
             return null;
         } catch (Throwable $exception) {
             report($exception);
