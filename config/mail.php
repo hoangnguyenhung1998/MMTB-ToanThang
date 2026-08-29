@@ -49,6 +49,28 @@ return [
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
         ],
 
+        'machine_intake_test' => [
+            'transport' => 'smtp',
+            'scheme' => env('MACHINE_INTAKE_TEST_SCHEME'),
+            'host' => env('MACHINE_INTAKE_TEST_HOST', 'smtp.gmail.com'),
+            'port' => env('MACHINE_INTAKE_TEST_PORT', 587),
+            'username' => env('MACHINE_INTAKE_TEST_USERNAME'),
+            'password' => env('MACHINE_INTAKE_TEST_PASSWORD'),
+            'timeout' => null,
+            'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
+        ],
+
+        'machine_intake_company' => [
+            'transport' => 'smtp',
+            'scheme' => env('MACHINE_INTAKE_COMPANY_SCHEME'),
+            'host' => env('MACHINE_INTAKE_COMPANY_HOST', 'smtp.gmail.com'),
+            'port' => env('MACHINE_INTAKE_COMPANY_PORT', 587),
+            'username' => env('MACHINE_INTAKE_COMPANY_USERNAME'),
+            'password' => env('MACHINE_INTAKE_COMPANY_PASSWORD'),
+            'timeout' => null,
+            'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
+        ],
+
         'ses' => [
             'transport' => 'ses',
         ],

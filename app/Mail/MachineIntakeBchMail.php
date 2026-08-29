@@ -1,17 +1,55 @@
 <?php
+
 namespace App\Mail;
+
 use App\Models\MachineIntakeCase;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
+
 class MachineIntakeBchMail extends Mailable
 {
- use Queueable,SerializesModels;
- public function __construct(public MachineIntakeCase $case){}
- public function envelope():Envelope{return new Envelope(subject:$this->case->bch_email_subject);}
- public function content():Content{return new Content(view:'emails.machine-intake-bch');}
- public function attachments():array{$a=[Attachment::fromStorageDisk('public',$this->case->bch_package_path)->as(basename($this->case->bch_package_path))];foreach($this->case->documents as $d)$a[]=Attachment::fromStorageDisk($d->storage_disk,$d->storage_path)->as($d->original_name);return $a;}
+    use Queueable, SerializesModels;
+
+    public function __construct(
+        public MachineIntakeCase $case,
+        public array $sender,
+        public array $replyTo = [],
+    ) {}
+
+    public function envelope(): Envelope
+    {
+        $replyTo = filled($this->replyTo['address'] ?? null)
+            ? [new Address($this->replyTo['address'], $this->replyTo['name'] ?? null)]
+            : [];
+
+        return new Envelope(
+            from: new Address($this->sender['address'], $this->sender['name'] ?? null),
+            replyTo: $replyTo,
+            subject: $this->case->bch_email_subject,
+        );
+    }
+
+    public function content(): Content
+    {
+        return new Content(view: 'emails.machine-intake-bch');
+    }
+
+    public function attachments(): array
+    {
+        $attachments = [
+            Attachment::fromStorageDisk('public', $this->case->bch_package_path)
+                ->as(basename($this->case->bch_package_path)),
+        ];
+        foreach ($this->case->documents as $document) {
+            $attachments[] = Attachment::fromStorageDisk($document->storage_disk, $document->storage_path)
+                ->as($document->original_name);
+        }
+
+        return $attachments;
+    }
 }

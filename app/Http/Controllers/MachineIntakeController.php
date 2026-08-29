@@ -56,7 +56,12 @@ class MachineIntakeController extends Controller
 
     public function show(MachineIntakeCase $machineIntake): View
     {
-        return view('machine-intakes.show', ['case' => $machineIntake->load(['documents', 'events.user', 'machine','project','emailReplies']), 'projects'=>Project::orderBy('name')->get(['id','name'])]);
+        return view('machine-intakes.show', [
+            'case' => $machineIntake->load(['documents', 'events.user', 'machine', 'project', 'emailReplies']),
+            'projects' => Project::orderBy('name')->get(['id', 'name']),
+            'bchSenderOptions' => $this->bch->senderOptions(),
+            'defaultBchSender' => $this->bch->defaultSender(),
+        ]);
     }
 
     public function confirm(ConfirmMachineIntakeRequest $request, MachineIntakeCase $machineIntake): RedirectResponse
@@ -96,7 +101,16 @@ class MachineIntakeController extends Controller
 
     public function prepareBch(Request $request, MachineIntakeCase $machineIntake): RedirectResponse
     {
-        $data=$request->validate(['to'=>['required','string','max:1000'],'cc'=>['nullable','string','max:1000'],'subject'=>['required','string','max:255'],'body'=>['required','string','max:5000']]);$this->bch->prepare($machineIntake,$data);return back()->with('success','Đã tạo file Excel và bản xem trước email.');
+        $data = $request->validate([
+            'sender_profile' => ['required', 'string', 'in:test,company'],
+            'to' => ['required', 'string', 'max:1000'],
+            'cc' => ['nullable', 'string', 'max:1000'],
+            'subject' => ['required', 'string', 'max:255'],
+            'body' => ['required', 'string', 'max:5000'],
+        ]);
+        $this->bch->prepare($machineIntake, $data);
+
+        return back()->with('success', 'Đã tạo file Excel và bản xem trước email.');
     }
     public function sendBch(Request $request, MachineIntakeCase $machineIntake): RedirectResponse {return $this->run(fn()=>$this->bch->send($machineIntake,$request->user()),'Đã gửi hồ sơ BCH và chuyển sang chờ cấp mã.');}
     public function downloadBch(MachineIntakeCase $machineIntake): BinaryFileResponse {abort_unless($machineIntake->bch_package_path,404);return response()->download(storage_path('app/public/'.$machineIntake->bch_package_path));}
