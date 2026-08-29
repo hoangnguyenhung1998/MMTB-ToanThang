@@ -18,13 +18,13 @@ class MachineIntakeBchMail extends Mailable
     public function __construct(
         public MachineIntakeCase $case,
         public array $sender,
-        public array $replyTo = [],
+        public array $replyToConfig = [],
     ) {}
 
     public function envelope(): Envelope
     {
-        $replyTo = filled($this->replyTo['address'] ?? null)
-            ? [new Address($this->replyTo['address'], $this->replyTo['name'] ?? null)]
+        $replyTo = filled($this->replyToConfig['address'] ?? null)
+            ? [new Address($this->replyToConfig['address'], $this->replyToConfig['name'] ?? null)]
             : [];
 
         return new Envelope(
