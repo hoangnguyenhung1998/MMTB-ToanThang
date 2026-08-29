@@ -98,7 +98,7 @@
                         <select name="status" class="form-select" required>
                             @foreach ([
                                 'WAIT_HANDOVER' => 'Chờ bàn giao',
-                                'HANDED_OVER' => 'Đã bàn giao',
+                                'HANDED_OVER' => 'Chờ kích hoạt',
                                 'ACTIVE' => 'Đang hoạt động',
                                 'RETURNED' => 'Đã trả'
                             ] as $value => $label)

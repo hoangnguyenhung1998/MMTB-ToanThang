@@ -60,6 +60,12 @@ class LaravelJournalClient:
             return None
         return response.json()["job"]
 
+    def claim_handover(self) -> dict | None:
+        response = self._request("POST", "/handovers/jobs/claim", json={"worker_id": self.worker_id})
+        if response.status_code == 204:
+            return None
+        return response.json()["job"]
+
     def download_image(self, image_url: str, job_id: int) -> Path:
         url = self._resolve_image_url(image_url)
         try:
@@ -92,6 +98,10 @@ class LaravelJournalClient:
         response = self._request("POST", f"/intake/jobs/{job_id}/complete", json={"worker_id": self.worker_id, **payload})
         return response.json()["job"]
 
+    def complete_handover(self, job_id: int, payload: dict) -> dict:
+        response = self._request("POST", f"/handovers/jobs/{job_id}/complete", json={"worker_id": self.worker_id, **payload})
+        return response.json()["job"]
+
     def fail(self, job_id: int, error: str, retryable: bool) -> dict:
         response = self._request(
             "POST",
@@ -106,6 +116,10 @@ class LaravelJournalClient:
 
     def fail_intake(self, job_id: int, error: str, retryable: bool) -> dict:
         response = self._request("POST", f"/intake/jobs/{job_id}/fail", json={"worker_id": self.worker_id, "error": error[:2000], "retryable": retryable})
+        return response.json()["job"]
+
+    def fail_handover(self, job_id: int, error: str, retryable: bool) -> dict:
+        response = self._request("POST", f"/handovers/jobs/{job_id}/fail", json={"worker_id": self.worker_id, "error": error[:2000], "retryable": retryable})
         return response.json()["job"]
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:

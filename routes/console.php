@@ -51,6 +51,10 @@ Schedule::command('automation:dispatch-alerts')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('machine-handovers:dispatch-reminders')
+    ->hourly()
+    ->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

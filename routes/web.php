@@ -135,6 +135,14 @@ Route::middleware('auth')->group(function () {
         ->name('ops.handover.form');
     Route::post('/machines/{machine}/handover', [App\Http\Controllers\MachineOpsController::class, 'handoverSubmit'])
         ->name('ops.handover.submit');
+    Route::post('/machines/{machine}/handover-ocr', [App\Http\Controllers\MachineHandoverController::class, 'store'])
+        ->name('machine-handovers.store');
+    Route::get('/machine-handovers/{machineHandover}', [App\Http\Controllers\MachineHandoverController::class, 'show'])
+        ->name('machine-handovers.show');
+    Route::post('/machine-handovers/{machineHandover}/confirm', [App\Http\Controllers\MachineHandoverController::class, 'confirm'])
+        ->name('machine-handovers.confirm');
+    Route::get('/machine-handovers/{machineHandover}/documents/{document}', [App\Http\Controllers\MachineHandoverController::class, 'document'])
+        ->name('machine-handovers.documents.show');
 
     Route::post('/machines/{machine}/activate', [App\Http\Controllers\MachineOpsController::class, 'activateSubmit'])
         ->name('ops.activate.submit');

@@ -34,7 +34,7 @@
             'icon' => '⌛',
         ],
         'HANDED_OVER' => [
-            'label' => 'Đã bàn giao',
+            'label' => 'Chờ kích hoạt',
             'class' => 'primary',
             'icon' => '↗',
         ],

@@ -11,6 +11,7 @@ class MachineAssignment extends Model
     protected $casts = [
         'time_in' => 'datetime',
         'time_out' => 'datetime',
+        'handover_date' => 'date',
     ];
 
     public function machine(): BelongsTo

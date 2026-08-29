@@ -45,6 +45,11 @@ class Machine extends Model
         return $this->hasOne(MachineIntakeCase::class);
     }
 
+    public function handoverCases(): HasMany
+    {
+        return $this->hasMany(MachineHandoverCase::class);
+    }
+
     public function currentAssignment()
     {
         return $this->hasOne(MachineAssignment::class, 'machine_id')

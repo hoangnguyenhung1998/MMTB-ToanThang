@@ -47,10 +47,10 @@ class MachineService
         int $machineId,
         int $projectId,
         int $commandCenterId,
-        string $timeIn,
+        string $handoverDate,
         string $proofFilePath
     ): Machine {
-        return DB::transaction(function () use ($machineId, $projectId, $commandCenterId, $timeIn, $proofFilePath) {
+        return DB::transaction(function () use ($machineId, $projectId, $commandCenterId, $handoverDate, $proofFilePath) {
             if (trim($proofFilePath) === '') {
                 throw new BusinessRuleException('Bắt buộc có file chứng từ bàn giao.');
             }
@@ -58,6 +58,7 @@ class MachineService
             $machine = Machine::findOrFail($machineId);
             Project::findOrFail($projectId);
             CommandCenter::findOrFail($commandCenterId);
+            $date = Carbon::parse($handoverDate)->toDateString();
 
             if (!in_array($machine->status, ['WAIT_HANDOVER', 'RETURNED'], true)) {
                 throw new BusinessRuleException('Chỉ được bàn giao khi máy đang chờ bàn giao hoặc đã trả về.');
@@ -68,7 +69,8 @@ class MachineService
                 'machine_id' => $machine->id,
                 'project_id' => $projectId,
                 'command_center_id' => $commandCenterId,
-                'time_in' => Carbon::parse($timeIn),
+                'time_in' => Carbon::parse($date)->startOfDay(),
+                'handover_date' => $date,
                 'proof_file_path' => $proofFilePath,
             ]);
 
@@ -77,7 +79,8 @@ class MachineService
                 'machine_id' => $machine->id,
                 'project_id' => $projectId,
                 'type' => 'HANDOVER',
-                'occurred_at' => Carbon::parse($timeIn),
+                'occurred_at' => Carbon::parse($date)->startOfDay(),
+                'event_date' => $date,
                 'proof_file_path' => $proofFilePath,
                 'to_project_id' => $projectId,
                 'to_command_center_id' => $commandCenterId,

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class MachineEvent extends Model
 {
     protected $guarded = [];
+    protected $casts = ['occurred_at' => 'datetime', 'event_date' => 'date'];
 
     public function machine(): BelongsTo
     {
