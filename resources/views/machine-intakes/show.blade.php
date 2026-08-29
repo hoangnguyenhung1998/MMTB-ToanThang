@@ -6,6 +6,29 @@
     </x-page-header>
     @if(session('success'))<div class="alert alert-success">{{ session('success') }}</div>@endif
     @if($errors->any())<div class="alert alert-danger">{{ $errors->first() }}</div>@endif
+    @if($case->status==='DUPLICATE')
+        <div class="alert alert-secondary">
+            <strong>Hồ sơ đã đóng do trùng.</strong> {{ $case->duplicate_reason }}
+            @if($case->duplicate_machine_id)
+                · <a class="alert-link" href="{{ route('machines.show',$case->duplicate_machine_id) }}">Mở máy đã tồn tại</a>
+            @endif
+        </div>
+    @elseif($duplicateConflict)
+        <div class="alert alert-danger d-flex justify-content-between align-items-center gap-3">
+            <div>
+                <strong>Phát hiện trùng số khung.</strong>
+                @if($duplicateConflict['type']==='machine')
+                    Số khung này đã thuộc máy <a class="alert-link" href="{{ route('machines.show',$duplicateConflict['machine']) }}">{{ $duplicateConflict['machine']->asset_code }}</a>.
+                @else
+                    Số khung này đang nằm trong hồ sơ <a class="alert-link" href="{{ route('machine-intakes.show',$duplicateConflict['intake']) }}">{{ $duplicateConflict['intake']->reference }}</a>.
+                @endif
+                Không được gửi BCH hoặc tạo thêm máy.
+            </div>
+            @if(!$case->machine_id)
+                <form method="POST" action="{{ route('machine-intakes.close-duplicate',$case) }}" onsubmit="return confirm('Đóng hồ sơ này vì trùng số khung?')">@csrf<button class="btn btn-danger text-nowrap">Đóng hồ sơ trùng</button></form>
+            @endif
+        </div>
+    @endif
     <div class="row g-4"><div class="col-lg-8">
         <div class="app-card p-4 mb-4"><div class="d-flex justify-content-between mb-3"><h3 class="mb-0">Xác nhận định danh</h3><span class="badge bg-secondary">{{ $case->status }}</span></div>
         <form method="POST" action="{{ route('machine-intakes.confirm', $case) }}">@csrf @method('PUT')<div class="row g-3">
@@ -21,9 +44,9 @@
             <div class="col-md-4"><label class="form-label required-label">Năm sản xuất</label><input required type="number" name="manufacture_year" class="form-control" value="{{ old('manufacture_year',$case->manufacture_year) }}"></div>
             <div class="col-md-6"><label class="form-label">Dự án dự kiến</label><select name="project_id" class="form-select"><option value="">Chưa xác định</option>@foreach($projects as $project)<option value="{{ $project->id }}" @selected((int)$case->project_id===$project->id)>{{ $project->name }}</option>@endforeach</select></div>
             <div class="col-md-6"><label class="form-label">Ngày dự kiến về</label><input type="date" name="handover_at" class="form-control" value="{{ old('handover_at',$case->handover_at?->format('Y-m-d')) }}"></div>
-            <div class="col-12"><button class="btn btn-primary" @disabled($case->machine_id)>Xác nhận chính xác</button></div>
+            <div class="col-12"><button class="btn btn-primary" @disabled($case->machine_id || $case->status==='DUPLICATE')>Xác nhận chính xác</button></div>
         </div></form></div>
-        @if($case->status==='CONFIRMED')
+        @if($case->status==='CONFIRMED' && !$duplicateConflict)
             <div class="app-card p-4 mb-4">
                 <h3>Tạo Excel và email gửi BCH</h3>
                 <form method="POST" action="{{ route('machine-intakes.bch.prepare',$case) }}">@csrf
@@ -55,9 +78,9 @@
                 @endif
             </div>
         @endif
-        @if($case->status === 'CONFIRMED')<div class="app-card p-4 mb-4"><h3>Đã gửi BCH?</h3><p class="text-muted">Giai đoạn này ghi nhận thủ công; email watcher sẽ tự cập nhật thread ở Phase 16.2.</p><form method="POST" action="{{ route('machine-intakes.email-sent',$case) }}">@csrf<div class="row g-2"><div class="col-md-5"><input class="form-control" name="email_thread_id" placeholder="Email thread ID (nếu có)"></div><div class="col-md-5"><input class="form-control" name="email_message_id" placeholder="Email message ID (nếu có)"></div><div class="col-md-2"><button class="btn btn-outline-primary w-100">Đã gửi</button></div></div></form></div>@endif
-        @if(in_array($case->status,['CONFIRMED','EMAIL_SENT','WAIT_ASSET_CODE']))<div class="app-card p-4 mb-4"><h3>Ghi nhận mã máy</h3><p class="text-muted">Chọn đúng hồ sơ; mã từ email và nguồn ngoài dùng chung kiểm tra trùng.</p><form method="POST" enctype="multipart/form-data" action="{{ route('machine-intakes.assign-code',$case) }}">@csrf<div class="row g-3"><div class="col-md-4"><label class="form-label required-label">Mã máy</label><input required name="asset_code" class="form-control"></div><div class="col-md-4"><label class="form-label required-label">Nguồn</label><select required name="asset_code_source" class="form-select"><option value="EMAIL_REPLY">Email phản hồi</option><option value="ZALO_BCH">Zalo BCH</option><option value="PHONE">Điện thoại</option><option value="EXCEL">Excel</option><option value="OTHER">Nguồn khác</option></select></div><div class="col-md-4"><label class="form-label">Ảnh/file bằng chứng</label><input type="file" name="evidence" class="form-control"></div><div class="col-12"><textarea name="asset_code_source_note" class="form-control" placeholder="Ghi chú nguồn nhận mã"></textarea></div><div class="col-12"><button class="btn btn-success">Xác nhận mã và tạo máy</button></div></div></form></div>@endif
-        @if($case->emailReplies->isNotEmpty())<div class="app-card p-4 mb-4"><h3>Phản hồi Gmail</h3>@foreach($case->emailReplies->sortByDesc('received_at') as $reply)<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>{{ $reply->candidate_asset_code ?: 'Chưa đọc được mã' }}</strong><span class="badge {{ $reply->status==='PENDING' ? 'bg-warning text-dark' : ($reply->status==='CONFIRMED' ? 'bg-success' : 'bg-secondary') }}">{{ $reply->status }}</span></div><div class="small text-muted mt-1">{{ $reply->sender }} · {{ $reply->received_at?->format('d/m/Y H:i') }}</div><div class="mt-2">{{ $reply->subject }}</div>@if($reply->confidence!==null)<div class="small">Tin cậy: {{ number_format($reply->confidence*100) }}% · Ghép theo {{ $reply->match_method }}</div>@endif @if($reply->status==='PENDING' && !$case->machine_id)<form method="POST" class="mt-3" action="{{ route('machine-intakes.email-replies.confirm',[$case,$reply]) }}" onsubmit="return confirm('Xác nhận mã {{ $reply->candidate_asset_code }} và tạo máy WAIT_HANDOVER?')">@csrf<button class="btn btn-success">Xác nhận mã {{ $reply->candidate_asset_code }}</button></form>@endif</div>@endforeach</div>@endif
+        @if($case->status === 'CONFIRMED' && !$duplicateConflict)<div class="app-card p-4 mb-4"><h3>Đã gửi BCH?</h3><p class="text-muted">Giai đoạn này ghi nhận thủ công; email watcher sẽ tự cập nhật thread ở Phase 16.2.</p><form method="POST" action="{{ route('machine-intakes.email-sent',$case) }}">@csrf<div class="row g-2"><div class="col-md-5"><input class="form-control" name="email_thread_id" placeholder="Email thread ID (nếu có)"></div><div class="col-md-5"><input class="form-control" name="email_message_id" placeholder="Email message ID (nếu có)"></div><div class="col-md-2"><button class="btn btn-outline-primary w-100">Đã gửi</button></div></div></form></div>@endif
+        @if(in_array($case->status,['CONFIRMED','EMAIL_SENT','WAIT_ASSET_CODE']) && !$duplicateConflict)<div class="app-card p-4 mb-4"><h3>Ghi nhận mã máy</h3><p class="text-muted">Chọn đúng hồ sơ; mã từ email và nguồn ngoài dùng chung kiểm tra trùng.</p><form method="POST" enctype="multipart/form-data" action="{{ route('machine-intakes.assign-code',$case) }}">@csrf<div class="row g-3"><div class="col-md-4"><label class="form-label required-label">Mã máy</label><input required name="asset_code" class="form-control"></div><div class="col-md-4"><label class="form-label required-label">Nguồn</label><select required name="asset_code_source" class="form-select"><option value="EMAIL_REPLY">Email phản hồi</option><option value="ZALO_BCH">Zalo BCH</option><option value="PHONE">Điện thoại</option><option value="EXCEL">Excel</option><option value="OTHER">Nguồn khác</option></select></div><div class="col-md-4"><label class="form-label">Ảnh/file bằng chứng</label><input type="file" name="evidence" class="form-control"></div><div class="col-12"><textarea name="asset_code_source_note" class="form-control" placeholder="Ghi chú nguồn nhận mã"></textarea></div><div class="col-12"><button class="btn btn-success">Xác nhận mã và tạo máy</button></div></div></form></div>@endif
+        @if($case->emailReplies->isNotEmpty())<div class="app-card p-4 mb-4"><h3>Phản hồi Gmail</h3>@foreach($case->emailReplies->sortByDesc('received_at') as $reply)<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>{{ $reply->candidate_asset_code ?: 'Chưa đọc được mã' }}</strong><span class="badge {{ $reply->status==='PENDING' ? 'bg-warning text-dark' : ($reply->status==='CONFIRMED' ? 'bg-success' : 'bg-secondary') }}">{{ $reply->status }}</span></div><div class="small text-muted mt-1">{{ $reply->sender }} · {{ $reply->received_at?->format('d/m/Y H:i') }}</div><div class="mt-2">{{ $reply->subject }}</div>@if($reply->confidence!==null)<div class="small">Tin cậy: {{ number_format($reply->confidence*100) }}% · Ghép theo {{ $reply->match_method }}</div>@endif @if($reply->status==='PENDING' && !$case->machine_id && !$duplicateConflict)<form method="POST" class="mt-3" action="{{ route('machine-intakes.email-replies.confirm',[$case,$reply]) }}" onsubmit="return confirm('Xác nhận mã {{ $reply->candidate_asset_code }} và tạo máy WAIT_HANDOVER?')">@csrf<button class="btn btn-success">Xác nhận mã {{ $reply->candidate_asset_code }}</button></form>@endif</div>@endforeach</div>@endif
     </div><div class="col-lg-4">
         <div class="app-card p-4 mb-4"><div class="d-flex justify-content-between align-items-center mb-3"><h3 class="mb-0">Tài liệu nguồn ({{ $case->documents->count() }})</h3><form method="POST" action="{{ route('machine-intakes.requeue',$case) }}">@csrf<button class="btn btn-sm btn-outline-primary">OCR lại</button></form></div>
         @if($case->review_flags)<div class="alert alert-warning py-2"><strong>Cần kiểm tra:</strong> {{ implode(', ',$case->review_flags) }}</div>@endif

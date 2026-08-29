@@ -20,6 +20,7 @@ class MachineIntakeService
         private readonly MachineIntakeAlertDispatcher $alerts,
         private readonly MachineIntakeOcrService $ocr,
         private readonly MachineSpecificationNormalizer $normalizer,
+        private readonly MachineIntakeDuplicateService $duplicates,
     ) {}
 
     public function createDraft(array $data, array $files, User $user): MachineIntakeCase
@@ -51,6 +52,7 @@ class MachineIntakeService
         if (blank($normalized['chassis_no'] ?? null) || blank($normalized['engine_no'] ?? null)) {
             throw new BusinessRuleException('Phải xác nhận chính xác cả số khung và số máy trước khi gửi BCH.');
         }
+        $this->duplicates->assertAvailable($case, $normalized['chassis_no']);
 
         $case->update($normalized + [
             'status' => 'CONFIRMED', 'confirmed_by' => $user->id, 'confirmed_at' => now(), 'last_error' => null,
@@ -64,6 +66,7 @@ class MachineIntakeService
         if ($case->status !== 'CONFIRMED') {
             throw new BusinessRuleException('Chỉ gửi BCH sau khi số khung và số máy đã được xác nhận.');
         }
+        $this->duplicates->assertAvailable($case);
         $case->update([
             'status' => 'WAIT_ASSET_CODE', 'email_thread_id' => $data['email_thread_id'] ?? null,
             'email_message_id' => $data['email_message_id'] ?? null, 'email_sent_at' => now(),
@@ -86,9 +89,7 @@ class MachineIntakeService
             if (Machine::where('asset_code', $code)->exists() || MachineIntakeCase::where('asset_code', $code)->whereKeyNot($locked->id)->exists()) {
                 throw new BusinessRuleException('Mã máy đã tồn tại ở máy hoặc hồ sơ khác.');
             }
-            if (Machine::where('chassis_no', $chassis)->exists()) {
-                throw new BusinessRuleException('Số khung đã tồn tại trong danh sách máy.');
-            }
+            $this->duplicates->assertAvailable($locked, $chassis);
 
             $evidencePath = $evidence?->store('machine-intakes/'.$locked->reference.'/asset-code', 'public') ?: $existingEvidencePath;
             $machine = $this->machines->createMachine([

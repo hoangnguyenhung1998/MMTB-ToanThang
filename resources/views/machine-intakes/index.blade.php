@@ -23,7 +23,7 @@
             <td><strong>{{ $case->reference }}</strong><div class="text-muted small">{{ $case->created_at->format('d/m/Y H:i') }}</div></td>
             <td><div>Khung: <strong>{{ $case->chassis_no ?: 'Chưa xác định' }}</strong></div><div class="small text-muted">Máy: {{ $case->engine_no ?: 'Chưa xác định' }}</div></td>
             <td>{{ $case->machine_type ?: '—' }}<div class="small text-muted">{{ $case->model_name }}</div></td>
-            <td><span class="badge {{ $case->status === 'WAIT_ASSET_CODE' ? 'bg-warning text-dark' : ($case->status === 'WAIT_HANDOVER' ? 'bg-success' : 'bg-secondary') }}">{{ $case->status }}</span></td>
+            <td><span class="badge {{ $case->status === 'WAIT_ASSET_CODE' ? 'bg-warning text-dark' : ($case->status === 'WAIT_HANDOVER' ? 'bg-success' : ($case->status === 'DUPLICATE' ? 'bg-danger' : 'bg-secondary')) }}">{{ $case->status }}</span></td>
             <td>{{ $case->asset_code ?: '—' }}<div class="small text-muted">{{ $case->asset_code_source }}</div></td>
             <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="{{ route('machine-intakes.show', $case) }}">Mở hồ sơ</a></td>
         </tr>@empty<tr><td colspan="6" class="text-center text-muted py-5">Chưa có hồ sơ tiếp nhận.</td></tr>@endforelse
