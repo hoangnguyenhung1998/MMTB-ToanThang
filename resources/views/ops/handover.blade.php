@@ -14,40 +14,22 @@
             </div>
         @endif
 
-        <form method="POST" action="{{ route('ops.handover.submit', $machine) }}" enctype="multipart/form-data" class="card p-3">
+        <div class="alert alert-info">Tải ảnh biên bản lên để OCR đọc trước. Hệ thống giữ nguyên ảnh gốc và yêu cầu anh xác nhận trước khi chuyển sang Chờ kích hoạt.</div>
+        @php($pendingHandover = $machine->handoverCases()->where('status', '!=', 'HANDED_OVER')->latest()->first())
+        @if($pendingHandover)
+            <div class="card p-3 mb-3"><div>Máy đang có biên bản OCR chờ xử lý.</div><a class="btn btn-primary mt-2" href="{{ route('machine-handovers.show', $pendingHandover) }}">Mở hồ sơ bàn giao</a></div>
+        @else
+        <form method="POST" action="{{ route('machine-handovers.store', $machine) }}" enctype="multipart/form-data" class="card p-3">
             @csrf
             <div class="mb-3">
-                <label class="form-label">Dự án</label>
-                <select name="project_id" class="form-select" required>
-                    <option value="">-- Chọn dự án --</option>
-                    @foreach ($projects as $project)
-                        <option value="{{ $project->id }}" @selected(old('project_id') == $project->id)>{{ $project->name }}</option>
-                    @endforeach
-                </select>
-            </div>
-            <div class="mb-3">
-                <label class="form-label">Ban chỉ huy</label>
-                <select name="command_center_id" class="form-select" required>
-                    <option value="">-- Chọn BCH --</option>
-                    @foreach ($commandCenters as $commandCenter)
-                        <option value="{{ $commandCenter->id }}" @selected(old('command_center_id') == $commandCenter->id)>
-                            {{ $commandCenter->name }}
-                        </option>
-                    @endforeach
-                </select>
-            </div>
-            <div class="mb-3">
-                <label class="form-label">Thời gian vào</label>
-                <input type="datetime-local" name="time_in" class="form-control" value="{{ old('time_in') }}" required>
-            </div>
-            <div class="mb-3">
-                <label class="form-label">File chứng từ</label>
-                <input type="file" name="proof_file" class="form-control" required>
+                <label class="form-label">Ảnh biên bản (có thể nhiều trang)</label>
+                <input type="file" name="documents[]" class="form-control" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff" multiple required>
             </div>
             <div class="d-flex gap-2">
-                <button class="btn btn-primary" type="submit">Xác nhận</button>
+                <button class="btn btn-primary" type="submit">Lưu ảnh và chạy OCR</button>
                 <a class="btn btn-outline-secondary" href="{{ route('machines.show', $machine) }}">Hủy</a>
             </div>
         </form>
+        @endif
     </div>
 @endsection

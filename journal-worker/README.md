@@ -13,7 +13,7 @@ The worker:
 5. Sends one document and multiple rows to Laravel.
 6. Deletes its temporary image and retries safely on network/model failures.
 
-RapidOCR continues to handle `DAILY_TIMEMARK`. The existing Telegram PDF bot remains independent and unchanged.
+RapidOCR continues to handle `DAILY_TIMEMARK`. The same worker also claims machine-intake documents and `HANDOVER_REPORT` images; handover OCR is advisory and Laravel requires a human confirmation before changing machine status. The existing Telegram PDF bot remains independent and unchanged.
 
 ## Windows setup
 

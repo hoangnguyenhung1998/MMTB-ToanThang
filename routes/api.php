@@ -79,4 +79,8 @@ Route::prefix('ocr/v1')
         Route::get('/intake/jobs/{machineIntakeOcrJob}/image', [MachineIntakeOcrController::class, 'image'])->name('api.ocr.intake.image');
         Route::post('/intake/jobs/{machineIntakeOcrJob}/complete', [MachineIntakeOcrController::class, 'complete'])->name('api.ocr.intake.complete');
         Route::post('/intake/jobs/{machineIntakeOcrJob}/fail', [MachineIntakeOcrController::class, 'fail'])->name('api.ocr.intake.fail');
+        Route::post('/handovers/jobs/claim', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'claim'])->name('api.ocr.handovers.claim');
+        Route::get('/handovers/jobs/{machineHandoverOcrJob}/image', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'image'])->name('api.ocr.handovers.image');
+        Route::post('/handovers/jobs/{machineHandoverOcrJob}/complete', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'complete'])->name('api.ocr.handovers.complete');
+        Route::post('/handovers/jobs/{machineHandoverOcrJob}/fail', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'fail'])->name('api.ocr.handovers.fail');
     });
