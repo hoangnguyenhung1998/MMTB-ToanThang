@@ -8,10 +8,14 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('machine_assignments', fn (Blueprint $table) => $table->date('handover_date')->nullable()->after('time_in'));
-        Schema::table('machine_events', fn (Blueprint $table) => $table->date('event_date')->nullable()->after('occurred_at'));
+        if (! Schema::hasColumn('machine_assignments', 'handover_date')) {
+            Schema::table('machine_assignments', fn (Blueprint $table) => $table->date('handover_date')->nullable()->after('time_in'));
+        }
+        if (! Schema::hasColumn('machine_events', 'event_date')) {
+            Schema::table('machine_events', fn (Blueprint $table) => $table->date('event_date')->nullable()->after('occurred_at'));
+        }
 
-        Schema::create('machine_handover_cases', function (Blueprint $table) {
+        if (! Schema::hasTable('machine_handover_cases')) Schema::create('machine_handover_cases', function (Blueprint $table) {
             $table->id();
             $table->foreignId('machine_id')->constrained()->cascadeOnDelete();
             $table->foreignId('machine_intake_case_id')->nullable()->constrained()->nullOnDelete();
@@ -35,7 +39,7 @@ return new class extends Migration
             $table->index(['machine_id', 'status']);
         });
 
-        Schema::create('machine_handover_documents', function (Blueprint $table) {
+        if (! Schema::hasTable('machine_handover_documents')) Schema::create('machine_handover_documents', function (Blueprint $table) {
             $table->id();
             $table->foreignId('machine_handover_case_id')->constrained()->cascadeOnDelete();
             $table->string('storage_disk', 30)->default('public');
@@ -48,10 +52,16 @@ return new class extends Migration
             $table->json('extraction_json')->nullable();
             $table->decimal('confidence', 5, 4)->nullable();
             $table->timestamps();
-            $table->unique(['machine_handover_case_id', 'sha256']);
+            $table->unique(['machine_handover_case_id', 'sha256'], 'handover_case_sha256_unique');
         });
 
-        Schema::create('machine_handover_ocr_jobs', function (Blueprint $table) {
+        if (! $this->hasIndex('machine_handover_documents', 'handover_case_sha256_unique')) {
+            Schema::table('machine_handover_documents', fn (Blueprint $table) =>
+                $table->unique(['machine_handover_case_id', 'sha256'], 'handover_case_sha256_unique')
+            );
+        }
+
+        if (! Schema::hasTable('machine_handover_ocr_jobs')) Schema::create('machine_handover_ocr_jobs', function (Blueprint $table) {
             $table->id();
             $table->foreignId('machine_handover_document_id')->unique()->constrained()->cascadeOnDelete();
             $table->string('status', 30)->default('PENDING')->index();
@@ -74,7 +84,18 @@ return new class extends Migration
         Schema::dropIfExists('machine_handover_ocr_jobs');
         Schema::dropIfExists('machine_handover_documents');
         Schema::dropIfExists('machine_handover_cases');
-        Schema::table('machine_events', fn (Blueprint $table) => $table->dropColumn('event_date'));
-        Schema::table('machine_assignments', fn (Blueprint $table) => $table->dropColumn('handover_date'));
+        if (Schema::hasColumn('machine_events', 'event_date')) {
+            Schema::table('machine_events', fn (Blueprint $table) => $table->dropColumn('event_date'));
+        }
+        if (Schema::hasColumn('machine_assignments', 'handover_date')) {
+            Schema::table('machine_assignments', fn (Blueprint $table) => $table->dropColumn('handover_date'));
+        }
+    }
+
+    private function hasIndex(string $table, string $name): bool
+    {
+        return collect(Schema::getIndexes($table))->contains(
+            fn (array $index): bool => ($index['name'] ?? null) === $name
+        );
     }
 };
