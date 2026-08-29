@@ -17,13 +17,14 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use App\Models\Project;
 use App\Models\MachineIntakeEmailReply;
 use App\Services\MachineIntakeEmailReplyService;
+use App\Services\MachineIntakeDuplicateService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class MachineIntakeController extends Controller
 {
-    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr, private readonly MachineIntakeBchService $bch, private readonly MachineIntakeEmailReplyService $emailReplies) {}
+    public function __construct(private readonly MachineIntakeService $service, private readonly MachineIntakeOcrService $ocr, private readonly MachineIntakeBchService $bch, private readonly MachineIntakeEmailReplyService $emailReplies, private readonly MachineIntakeDuplicateService $duplicates) {}
 
     public function index(Request $request): View
     {
@@ -61,6 +62,7 @@ class MachineIntakeController extends Controller
             'projects' => Project::orderBy('name')->get(['id', 'name']),
             'bchSenderOptions' => $this->bch->senderOptions(),
             'defaultBchSender' => $this->bch->defaultSender(),
+            'duplicateConflict' => $this->duplicates->conflict($machineIntake),
         ]);
     }
 
@@ -86,6 +88,14 @@ class MachineIntakeController extends Controller
         return $this->run(fn () => $this->emailReplies->confirm($reply, $request->user()), 'Đã xác nhận mã từ Gmail và tạo máy chờ bàn giao.');
     }
 
+    public function closeDuplicate(Request $request, MachineIntakeCase $machineIntake): RedirectResponse
+    {
+        return $this->run(
+            fn () => $this->duplicates->closeAsDuplicate($machineIntake, $request->user()),
+            'Đã đóng hồ sơ trùng và loại phản hồi mã khỏi hàng chờ.',
+        );
+    }
+
     public function requeue(Request $request, MachineIntakeCase $machineIntake): RedirectResponse
     {
         $count=$this->ocr->enqueueCase($machineIntake->load('documents'),true);
@@ -108,9 +118,10 @@ class MachineIntakeController extends Controller
             'subject' => ['required', 'string', 'max:255'],
             'body' => ['required', 'string', 'max:5000'],
         ]);
-        $this->bch->prepare($machineIntake, $data);
-
-        return back()->with('success', 'Đã tạo file Excel và bản xem trước email.');
+        return $this->run(
+            fn () => $this->bch->prepare($machineIntake, $data),
+            'Đã tạo file Excel và bản xem trước email.',
+        );
     }
     public function sendBch(Request $request, MachineIntakeCase $machineIntake): RedirectResponse {return $this->run(fn()=>$this->bch->send($machineIntake,$request->user()),'Đã gửi hồ sơ BCH và chuyển sang chờ cấp mã.');}
     public function downloadBch(MachineIntakeCase $machineIntake): BinaryFileResponse {abort_unless($machineIntake->bch_package_path,404);return response()->download(storage_path('app/public/'.$machineIntake->bch_package_path));}

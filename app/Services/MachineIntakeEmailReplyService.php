@@ -15,6 +15,7 @@ class MachineIntakeEmailReplyService
     public function __construct(
         private readonly MachineIntakeAlertDispatcher $alerts,
         private readonly MachineIntakeService $intakes,
+        private readonly MachineIntakeDuplicateService $duplicates,
     ) {}
 
     public function ingest(array $data): MachineIntakeEmailReply
@@ -26,7 +27,14 @@ class MachineIntakeEmailReplyService
         $code = $this->normalizeCode($data['candidate_asset_code'] ?? null);
         $confidence = isset($data['confidence']) ? (float) $data['confidence'] : null;
         $minimum = (float) config('gmail_intake.minimum_confidence', 0.85);
-        $status = $ambiguous ? 'AMBIGUOUS_CASE' : (! $case ? 'UNMATCHED' : (! $code ? 'NO_CODE' : ($confidence !== null && $confidence < $minimum ? 'LOW_CONFIDENCE' : 'PENDING')));
+        $duplicate = $case ? $this->duplicates->conflict($case) : null;
+        $status = $ambiguous
+            ? 'AMBIGUOUS_CASE'
+            : (! $case
+                ? 'UNMATCHED'
+                : ($duplicate
+                    ? 'REJECTED_DUPLICATE'
+                    : (! $code ? 'NO_CODE' : ($confidence !== null && $confidence < $minimum ? 'LOW_CONFIDENCE' : 'PENDING'))));
         [$disk, $path] = $this->storeEvidence($case, $data);
 
         $reply = DB::transaction(function () use ($data, $case, $method, $code, $confidence, $status, $disk, $path) {

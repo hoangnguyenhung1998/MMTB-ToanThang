@@ -13,6 +13,8 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class MachineIntakeBchService
 {
+    public function __construct(private readonly MachineIntakeDuplicateService $duplicates) {}
+
     public function senderOptions(): array
     {
         return collect(config('machine_intake_mail.senders', []))
@@ -34,6 +36,7 @@ class MachineIntakeBchService
     public function prepare(MachineIntakeCase $case, array $data): MachineIntakeCase
     {
         abort_unless($case->status === 'CONFIRMED', 422, 'Hồ sơ phải được xác nhận trước khi tạo email.');
+        $this->duplicates->assertAvailable($case);
         $this->sender($data['sender_profile']);
 
         $path = 'machine-intakes/'.$case->reference.'/bch/'.$case->reference.'-tao-ma.xlsx';
@@ -53,6 +56,7 @@ class MachineIntakeBchService
     public function send(MachineIntakeCase $case, User $user): MachineIntakeCase
     {
         abort_unless($case->status === 'CONFIRMED' && $case->bch_package_path, 422, 'Hãy tạo và xem trước gói BCH trước khi gửi.');
+        $this->duplicates->assertAvailable($case);
 
         $profileKey = $case->bch_sender_profile ?: $this->defaultSender();
         $sender = $this->sender($profileKey);
