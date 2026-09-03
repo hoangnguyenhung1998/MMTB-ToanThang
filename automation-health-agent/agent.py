@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.1.1"
 TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 JOB_PATTERN = re.compile(r"(?:job|command)\s+#?(\d+)", re.IGNORECASE)
 SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", re.IGNORECASE)
@@ -299,13 +299,47 @@ def post_heartbeat(url: str, token: str, payload: dict[str, Any], timeout: int =
     return post_json(url, token, payload, timeout)
 
 
+class NoApiRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # API redirects are unexpected; never forward a bearer token to another URL.
+        return None
+
+
 def post_json(url: str, token: str, payload: dict[str, Any], timeout: int = 20) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": f"mmtb-health-agent/{AGENT_VERSION}"},
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "User-Agent": f"mmtb-health-agent/{AGENT_VERSION}"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.build_opener(NoApiRedirect()).open(request, timeout=timeout) as response:
+            status = response.status
+            content_type = response.headers.get("Content-Type", "unknown")
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        # Do not log response bodies, URLs, or credentials. Validation field names
+        # identify a schema mismatch without exposing submitted data.
+        detail = ""
+        if exc.code == 422:
+            try:
+                error_data = json.loads(exc.read().decode("utf-8"))
+                errors = error_data.get("errors", {}) if isinstance(error_data, dict) else {}
+                if isinstance(errors, dict):
+                    fields = [key for key in errors if re.fullmatch(r"[A-Za-z0-9_.-]+", key)]
+                    detail = "; validation fields: " + ", ".join(fields[:20])
+            except (ValueError, UnicodeError):
+                pass
+        raise RuntimeError(f"Automation API HTTP {exc.code}{detail}") from None
+    if not body.strip():
+        raise RuntimeError(f"Automation API HTTP {status}: empty response; expected JSON")
+    if "application/json" not in content_type.lower() and "+json" not in content_type.lower():
+        raise RuntimeError(f"Automation API HTTP {status}: non-JSON Content-Type; expected JSON")
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise RuntimeError(f"Automation API HTTP {status}: invalid JSON response") from None
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Automation API HTTP {status}: expected JSON object")
+    return data
 
 
 def match_action(action: str, task_name: str, gateway_port: int | None = None) -> str:
@@ -361,19 +395,19 @@ def main() -> int:
     logging.info("MMTB Automation Health Agent started; root=%s", root)
     command_base_url = url.rsplit("/heartbeat", 1)[0]
     while True:
-        payload = {
-            "agent_version": AGENT_VERSION,
-            "metadata": {"computer_name": os.environ.get("COMPUTERNAME"), "platform": sys.platform},
-            "services": agent.snapshot(),
-        }
         try:
+            payload = {
+                "agent_version": AGENT_VERSION,
+                "metadata": {"computer_name": os.environ.get("COMPUTERNAME"), "platform": sys.platform},
+                "services": agent.snapshot(),
+            }
             response = post_heartbeat(url, token, payload)
             logging.info("Heartbeat sent: %s service(s).", len(response.get("services", [])))
             completed = process_commands(command_base_url, token, agent)
             if completed:
                 logging.info("Completed %s remote command(s).", completed)
         except Exception as exc:
-            logging.warning("Heartbeat failed: %s", exc)
+            logging.warning("Agent cycle failed: %s", exc)
         time.sleep(interval)
 
 

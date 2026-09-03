@@ -17,7 +17,7 @@ class AutomationHeartbeatRequest extends FormRequest
             'services.*.name' => ['required', 'string', 'max:255'],
             'services.*.service_type' => ['required', Rule::in([
                 'ZALO_COLLECTOR', 'OCR_WORKER', 'JOURNAL_WORKER',
-                'RECONCILIATION_WORKER', 'OPENCLAW_GATEWAY', 'OTHER',
+                'RECONCILIATION_WORKER', 'OPENCLAW_GATEWAY', 'GMAIL_INTAKE_WORKER', 'OTHER',
             ])],
             'services.*.status' => ['required', Rule::in(['HEALTHY', 'DEGRADED', 'PAUSED'])],
             'services.*.version' => ['nullable', 'string', 'max:50'],
