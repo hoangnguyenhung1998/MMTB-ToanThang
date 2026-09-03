@@ -19,6 +19,30 @@ class AutomationHealthTest extends TestCase
         $this->postJson('/api/automation/v1/heartbeat', ['services' => []])->assertUnauthorized();
     }
 
+    public function test_heartbeat_accepts_all_six_agent_service_types_including_gmail(): void
+    {
+        $this->node('secret-token');
+        $types = ['ZALO_COLLECTOR', 'OCR_WORKER', 'JOURNAL_WORKER', 'RECONCILIATION_WORKER', 'GMAIL_INTAKE_WORKER', 'OPENCLAW_GATEWAY'];
+        $services = array_map(fn ($type) => [
+            'service_key' => strtolower(str_replace('_', '-', $type)),
+            'name' => $type, 'service_type' => $type, 'status' => 'HEALTHY',
+        ], $types);
+        $this->withToken('secret-token')->postJson('/api/automation/v1/heartbeat', ['services' => $services])
+            ->assertOk()->assertJsonCount(6, 'services');
+        $this->assertDatabaseCount('automation_services', 6);
+        $this->assertDatabaseHas('automation_services', ['service_type' => 'GMAIL_INTAKE_WORKER']);
+    }
+
+    public function test_unknown_service_type_returns_json_validation_error(): void
+    {
+        $this->node('secret-token');
+        $payload = $this->payload('HEALTHY');
+        $payload['services'][0]['service_type'] = 'UNSUPPORTED_WORKER';
+        $this->withToken('secret-token')->postJson('/api/automation/v1/heartbeat', $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('services.0.service_type');
+        $this->assertDatabaseCount('automation_services', 0);
+    }
+
     public function test_heartbeat_updates_service_snapshot_without_growing_history(): void
     {
         $this->node('secret-token');

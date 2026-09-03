@@ -1,11 +1,14 @@
 import importlib.util
+import io
+import json
+import logging
 import os
 import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "agent.py"
 SPEC = importlib.util.spec_from_file_location("health_agent", MODULE_PATH)
@@ -16,6 +19,69 @@ SPEC.loader.exec_module(agent)
 
 
 class HealthAgentTest(unittest.TestCase):
+    def api_response(self, body=b'{"services": []}', content_type="application/json"):
+        response = Mock(status=200, headers={"Content-Type": content_type})
+        response.read.return_value = body
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        return context
+
+    def test_api_requests_json_and_keeps_authorization(self):
+        with patch.object(agent.urllib.request, "build_opener") as factory:
+            factory.return_value.open.return_value = self.api_response()
+            self.assertEqual({"services": []}, agent.post_json("https://example.test/api", "secret", {}))
+            request = factory.return_value.open.call_args.args[0]
+            self.assertEqual("application/json", request.get_header("Accept"))
+            self.assertEqual("Bearer secret", request.get_header("Authorization"))
+
+    def test_api_reports_empty_html_invalid_and_nonobject_json(self):
+        for body, content_type, expected in [
+            (b"", "application/json", "empty response"),
+            (b"<html>private-secret</html>", "text/html", "non-JSON Content-Type"),
+            (b"not-json-private-secret", "application/json", "invalid JSON"),
+            (b"[]", "application/json", "expected JSON object"),
+        ]:
+            with self.subTest(expected=expected), patch.object(agent.urllib.request, "build_opener") as factory:
+                factory.return_value.open.return_value = self.api_response(body, content_type)
+                with self.assertRaisesRegex(RuntimeError, expected) as raised:
+                    agent.post_json("https://example.test/api", "private-secret", {})
+                self.assertNotIn("private-secret", str(raised.exception))
+
+    def test_api_validation_error_names_field_without_logging_body(self):
+        body = json.dumps({"errors": {"services.4.service_type": ["private-secret"]}}).encode()
+        error = agent.urllib.error.HTTPError("https://example.test", 422, "Unprocessable", {}, io.BytesIO(body))
+        with patch.object(agent.urllib.request, "build_opener") as factory:
+            factory.return_value.open.side_effect = error
+            with self.assertRaisesRegex(RuntimeError, "HTTP 422.*services.4.service_type") as raised:
+                agent.post_json("https://example.test/api", "private-secret", {})
+            self.assertNotIn("private-secret", str(raised.exception))
+
+    def test_api_http_errors_are_explicit(self):
+        for code in (302, 401, 403, 500):
+            with self.subTest(code=code), patch.object(agent.urllib.request, "build_opener") as factory:
+                factory.return_value.open.side_effect = agent.urllib.error.HTTPError("https://example.test", code, "error", {}, io.BytesIO(b"private-secret"))
+                with self.assertRaisesRegex(RuntimeError, f"HTTP {code}"):
+                    agent.post_json("https://example.test/api", "private-secret", {})
+
+    def test_api_never_forwards_token_through_redirect(self):
+        request = agent.urllib.request.Request("https://example.test/api", headers={"Authorization": "Bearer secret"})
+        self.assertIsNone(agent.NoApiRedirect().redirect_request(request, None, 302, "redirect", {}, "https://other.test"))
+
+    def test_snapshot_failure_does_not_exit_agent_loop(self):
+        with patch.dict(os.environ, {"AUTOMATION_HEALTH_API_URL": "https://example.test/api/heartbeat", "AUTOMATION_HEALTH_TOKEN": "secret"}), \
+             patch.object(agent, "load_dotenv"), patch.object(agent, "HealthAgent") as health, \
+             patch.object(agent.logging, "FileHandler", return_value=logging.NullHandler()), \
+             patch.object(agent.logging, "basicConfig"), patch.object(agent.logging, "warning"), \
+             patch.object(agent, "post_heartbeat", return_value={"services": []}) as heartbeat, \
+             patch.object(agent, "process_commands", return_value=0), \
+             patch.object(agent.time, "sleep", side_effect=[None, KeyboardInterrupt]):
+            health.return_value.snapshot.side_effect = [RuntimeError("Task query failed"), []]
+            with self.assertRaises(KeyboardInterrupt):
+                agent.main()
+            self.assertEqual(2, health.return_value.snapshot.call_count)
+            heartbeat.assert_called_once()
+
     def test_load_dotenv_preserves_existing_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".env"
