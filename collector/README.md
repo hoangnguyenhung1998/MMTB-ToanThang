@@ -41,6 +41,48 @@ npm start
 
 On first run, scan `collector/data/qr.png` with the secondary Zalo account. Credentials are saved locally under `collector/data/` and never committed. Do not open Zalo Web with the same account while the collector is running.
 
+## Multiple local Zalo accounts
+
+The legacy `data/credentials.json` and `ZALO_ALLOWED_GROUP_IDS` continue to work
+until a managed account is explicitly activated. Account credentials always stay
+on the laptop under `data/accounts/<account-id>/credentials.json`.
+
+Stop the scheduled Collector before login or account maintenance. Import the
+current legacy session without deleting the original:
+
+```powershell
+Stop-ScheduledTask -TaskName "MMTB-ZaloCollector"
+npm run accounts -- import-legacy --id zalo-test --name "Zalo kiểm thử"
+npm run accounts -- activate --id zalo-test
+Start-ScheduledTask -TaskName "MMTB-ZaloCollector"
+```
+
+Create and log in to another account. Group IDs are specific to that account:
+
+```powershell
+npm run accounts -- add --id zalo-company --name "Zalo công ty" --groups "GROUP_ID_1,GROUP_ID_2"
+npm run accounts -- login --id zalo-company
+```
+
+Update the name or allowed groups without changing the saved session:
+
+```powershell
+npm run accounts -- update --id zalo-company --groups "GROUP_ID_1,GROUP_ID_2,GROUP_ID_3"
+```
+
+The login command saves the QR image at
+`data/accounts/zalo-company/qr.png`. It never prints cookies or session values.
+List profiles and switch the scheduled Collector safely:
+
+```powershell
+npm run accounts -- list
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/switch-account.ps1 -AccountId zalo-company
+```
+
+Only one profile can be active at a time. The existing shared durable image
+queue is preserved when accounts are switched. Phase 16.7.2A is laptop-local;
+it does not upload Zalo cookies, IMEI, or user-agent values to Laravel.
+
 ## Durable queue
 
 Every accepted Zalo image becomes a SQLite queue job under `collector/data/queue.sqlite`. The worker downloads the original image to `collector/data/queue-images/` before it depends on Laravel being online.

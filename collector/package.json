@@ -9,10 +9,11 @@
   "scripts": {
     "start": "node src/index.js",
     "groups": "node src/list-groups.js",
+    "accounts": "node src/accounts.js",
     "autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-autostart.ps1",
     "autostart:remove": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-autostart.ps1",
     "autostart:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/autostart-status.ps1",
-    "check": "node --check src/index.js && node --test --test-concurrency=1"
+    "check": "node --check src/index.js && node --check src/accounts.js && node --test --test-concurrency=1"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
