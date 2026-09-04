@@ -64,6 +64,28 @@
                                 @endforeach
                             </form></td>
                         </tr>
+                        @if($service->service_type === 'ZALO_COLLECTOR')
+                            @php($zaloAccounts = data_get($service->metrics, 'zalo_accounts', []))
+                            <tr style="border-top:1px solid #edf1f6;background:#f8fafc">
+                                <td colspan="10" style="padding:14px 16px">
+                                    <form method="POST" action="{{ route('automation-health.commands.store', $service) }}" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">@csrf
+                                        <input type="hidden" name="action" value="ZALO_ACCOUNT_SWITCH">
+                                        <strong style="font-size:13px;color:#334155">Tài khoản Zalo đang chạy:</strong>
+                                        <span style="font-size:13px;color:#0369a1;font-weight:750">{{ data_get($service->metrics, 'active_account_name', data_get($service->metrics, 'active_account_id', 'Chưa xác định')) }}</span>
+                                        <select name="account_id" required style="border:1px solid #cbd5e1;border-radius:8px;padding:7px 10px;background:#fff;min-width:220px">
+                                            <option value="">Chọn tài khoản cần chuyển</option>
+                                            @foreach($zaloAccounts as $account)
+                                                <option value="{{ $account['id'] }}" @disabled(!($account['ready'] ?? false))>
+                                                    {{ $account['name'] }} · {{ $account['group_count'] }} nhóm{{ ($account['ready'] ?? false) ? '' : ' · chưa sẵn sàng' }}
+                                                </option>
+                                            @endforeach
+                                        </select>
+                                        <button type="submit" onclick="return confirm('Xác nhận chuyển tài khoản Zalo Collector?')" style="border:0;background:#2563eb;color:#fff;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer">Chuyển tài khoản</button>
+                                        <small style="color:#64748b">Web chỉ nhận trạng thái phiên; cookie và IMEI vẫn nằm trên laptop.</small>
+                                    </form>
+                                </td>
+                            </tr>
+                        @endif
                     @empty
                         <tr><td colspan="10" style="padding:28px;text-align:center;color:#94a3b8">Node chưa gửi danh sách dịch vụ.</td></tr>
                     @endforelse

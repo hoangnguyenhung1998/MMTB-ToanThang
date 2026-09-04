@@ -193,6 +193,50 @@ class HealthAgentTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             agent.match_action("RUN_POWERSHELL", "MMTB-RapidOCRWorker")
 
+    def test_zalo_snapshot_exposes_metadata_without_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            account = root / "collector/data/accounts/zalo-test"
+            account.mkdir(parents=True)
+            (account / "profile.json").write_text(json.dumps({
+                "id": "zalo-test", "name": "Zalo kiểm thử", "group_ids": ["g1", "g2"],
+            }), encoding="utf-8")
+            (account / "credentials.json").write_text(json.dumps({
+                "cookie": ["private-cookie"], "imei": "private-imei", "userAgent": "private-agent",
+            }), encoding="utf-8")
+            (root / "collector/data/active-account.json").write_text(
+                json.dumps({"account_id": "zalo-test"}), encoding="utf-8",
+            )
+
+            snapshot = agent.zalo_account_snapshot(root)
+            serialized = json.dumps(snapshot)
+            self.assertEqual("zalo-test", snapshot["active_account_id"])
+            self.assertEqual(2, snapshot["zalo_accounts"][0]["group_count"])
+            self.assertTrue(snapshot["zalo_accounts"][0]["ready"])
+            self.assertNotIn("private-cookie", serialized)
+            self.assertNotIn("private-imei", serialized)
+
+    def test_zalo_switch_executes_only_safe_local_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "collector/scripts/switch-account.ps1"
+            script.parent.mkdir(parents=True)
+            script.write_text("# test", encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789)
+            command = {
+                "action": "ZALO_ACCOUNT_SWITCH", "payload": {"account_id": "zalo-company"},
+                "service": {"service_key": "zalo-collector"},
+            }
+            with patch.object(agent.subprocess, "run", return_value=Mock(returncode=0, stdout="", stderr="")) as run:
+                result = health.execute_command(command)
+            self.assertEqual("zalo-company", result["account_id"])
+            self.assertIn(str(script), run.call_args.args[0])
+            self.assertIn("zalo-company", run.call_args.args[0])
+
+            command["payload"]["account_id"] = "../credentials"
+            with self.assertRaisesRegex(RuntimeError, "không hợp lệ"):
+                health.execute_command(command)
+
     def test_ready_task_is_started_once_per_recovery_cooldown(self):
         health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789, recovery_cooldown_seconds=300)
         health.task_reader.start = Mock()

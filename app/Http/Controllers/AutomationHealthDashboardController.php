@@ -44,7 +44,12 @@ class AutomationHealthDashboardController extends Controller
         AutomationService $automationService,
         AutomationOperationalCommandService $commands,
     ): RedirectResponse {
-        $commands->create($automationService, (int) $request->user()->id, $request->validated('action'));
+        $commands->create(
+            $automationService,
+            (int) $request->user()->id,
+            $request->validated('action'),
+            ['account_id' => $request->validated('account_id')],
+        );
         return back()->with('success', 'Đã xếp lệnh vận hành; agent sẽ nhận trong tối đa 60 giây.');
     }
 }
