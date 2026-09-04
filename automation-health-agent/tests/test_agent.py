@@ -107,6 +107,45 @@ class HealthAgentTest(unittest.TestCase):
             self.assertIn("API unavailable", snapshot.last_error())
             self.assertIsNotNone(snapshot.last_success_at())
 
+    def test_business_exception_outcomes_are_not_worker_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker.log"
+            current = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            path.write_text(
+                f"{current} INFO Completed TimeMark OCR job 107: status=EXCEPTION\n"
+                f"{current} INFO Completed journal OCR job 100: status=EXCEPTION\n"
+                f"{current} INFO Completed reconciliation job 101: outcome=WARNING\n",
+                encoding="utf-8",
+            )
+            snapshot = agent.LogSnapshot(path)
+            self.assertEqual(0, snapshot.consecutive_errors())
+            self.assertIsNone(snapshot.last_error())
+            self.assertIsNotNone(snapshot.last_success_at())
+
+    def test_warning_and_traceback_remain_worker_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "worker.log"
+            current = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            path.write_text(
+                f"{current} WARNING API timeout\n"
+                "Traceback (most recent call last):\n",
+                encoding="utf-8",
+            )
+            snapshot = agent.LogSnapshot(path)
+            self.assertEqual(2, snapshot.consecutive_errors())
+            self.assertIn("Traceback", snapshot.last_error())
+
+    def test_unstructured_node_error_remains_a_worker_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "collector.log"
+            current = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            path.write_text(
+                f"{current} Zalo listener error: connection closed\n",
+                encoding="utf-8",
+            )
+            snapshot = agent.LogSnapshot(path)
+            self.assertEqual(1, snapshot.consecutive_errors())
+
     def test_missing_task_is_degraded(self):
         health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789)
         definition = health.definitions[0]

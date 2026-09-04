@@ -5,14 +5,11 @@ namespace App\Services;
 use App\Models\JournalDocument;
 use App\Models\Machine;
 use App\Models\OcrJob;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class OcrJobService
 {
-    private const DAILY_SUBMISSION_DELAY_DAYS = 1;
-
     public function enqueue(int $attachmentId): OcrJob
     {
         return OcrJob::query()->firstOrCreate(
@@ -252,22 +249,6 @@ class OcrJobService
             $exceptions[] = 'MISSING_ASSET_CODE';
         } elseif (! $machine) {
             $exceptions[] = 'UNKNOWN_ASSET_CODE';
-        }
-
-        if (! empty($data['date'])) {
-            $messageDate = CarbonImmutable::parse($job->attachment->message->sent_at)
-                ->setTimezone((string) config('app.timezone'))
-                ->startOfDay();
-            $imageDate = CarbonImmutable::createFromFormat(
-                'Y-m-d',
-                $data['date'],
-                (string) config('app.timezone'),
-            )->startOfDay();
-            $earliestAllowedDate = $messageDate->subDays(self::DAILY_SUBMISSION_DELAY_DAYS);
-
-            if ($imageDate->lt($earliestAllowedDate) || $imageDate->gt($messageDate)) {
-                $exceptions[] = 'WRONG_DATE';
-            }
         }
 
         return $exceptions;

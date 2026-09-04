@@ -47,6 +47,12 @@ The worker:
 - deletes only its temporary copy;
 - waits and retries when the office Laravel server is unavailable;
 - prevents two worker processes on the same machine.
+- rests between jobs and after each batch to limit sustained CPU load on the 24/7 laptop.
+
+Load control defaults to a 3-second rest after each image and a 60-second rest
+after every 10 images. Override `OCR_DELAY_BETWEEN_JOBS_SECONDS`,
+`OCR_BATCH_SIZE`, and `OCR_BATCH_COOLDOWN_SECONDS` in `.env` when needed. Set
+the delay or cooldown to `0` to disable that rest without changing code.
 
 Logs are stored at `ocr-worker/data/worker.log` and rotate daily for 14 days.
 

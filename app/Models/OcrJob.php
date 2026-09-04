@@ -55,12 +55,10 @@ class OcrJob extends Model
             || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
 
         if ($job->document_type === 'DAILY_TIMEMARK') {
-            $exceptions = $job->exceptions ?? [];
             $isComplete = $job->machine_id
                 && $job->extracted_date
                 && $job->extracted_time
-                && $job->machine()->exists()
-                && ! in_array('WRONG_DATE', $exceptions, true);
+                && $job->machine()->exists();
 
             $updates = [
                 'status' => $isComplete ? 'COMPLETED' : $job->status,

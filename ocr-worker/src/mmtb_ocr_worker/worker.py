@@ -13,6 +13,7 @@ from .config import Settings
 from .process_lock import ProcessLock
 from .timemark import TimeMarkRecognizer
 from .health import WorkerHealth
+from .load_control import processing_delay
 
 
 LOGGER = logging.getLogger("mmtb_ocr_worker")
@@ -146,12 +147,24 @@ def run() -> None:
     with ProcessLock(settings.data_dir / "worker.lock"):
         worker = OcrWorker(settings)
         failure_streak = 0
+        processed_jobs = 0
         LOGGER.info("MMTB RapidOCR worker started as %s", settings.worker_id)
         while True:
             try:
                 processed = worker.step()
                 failure_streak = 0
-                if not processed:
+                if processed:
+                    processed_jobs += 1
+                    delay = processing_delay(settings, processed_jobs)
+                    if delay > 0:
+                        LOGGER.info(
+                            "OCR load control: resting %.0f second(s) after %d processed job(s).",
+                            delay,
+                            processed_jobs,
+                        )
+                        time.sleep(delay)
+                else:
+                    processed_jobs = 0
                     time.sleep(settings.poll_seconds)
             except WorkerApiError as exc:
                 failure_streak += 1
