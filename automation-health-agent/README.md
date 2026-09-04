@@ -8,8 +8,14 @@ Agent Windows chạy trên laptop 24/24, gửi một heartbeat mỗi 60 giây v�
 - `MMTB-OpenClawReconciliationWorker`
 - cổng TCP OpenClaw Gateway (mặc định `127.0.0.1:18789`)
 
-Agent chỉ đọc trạng thái Scheduled Task và log; không khởi động, dừng hoặc sửa dữ liệu worker.
+Agent đọc trạng thái Scheduled Task và log, đồng thời chỉ thực thi các lệnh vận hành
+nằm trong allowlist do Laravel gửi xuống.
 Chỉ các lỗi xuất hiện trong 10 phút gần nhất mới được tính là lỗi liên tiếp.
+
+Với Zalo Collector, heartbeat chỉ gửi mã hồ sơ, tên hiển thị, số nhóm và trạng
+thái sẵn sàng. Cookie, IMEI, User-Agent và QR luôn nằm trên laptop. Lệnh chuyển
+tài khoản từ web chỉ nhận một `account_id` an toàn, gọi script cục bộ rồi khởi
+động lại đúng một Scheduled Task Collector.
 
 ## Cài đặt
 

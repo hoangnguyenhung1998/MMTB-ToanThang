@@ -3,19 +3,19 @@ $TaskName = "MMTB-ZaloCollector"
 $CollectorRoot = Split-Path -Parent $PSScriptRoot
 $RunnerPath = Join-Path $PSScriptRoot "run-forever.ps1"
 $EnvironmentPath = Join-Path $CollectorRoot ".env"
-$CredentialsPath = Join-Path $CollectorRoot "data\credentials.json"
 
 if (-not (Test-Path $EnvironmentPath)) {
     throw "Missing $EnvironmentPath. Configure the Collector before installing auto-start."
 }
-if (-not (Test-Path $CredentialsPath)) {
-    throw "Missing Zalo credentials. Run npm start and scan the QR code before installing auto-start."
-}
-
 $NodePath = (Get-Command node -ErrorAction Stop).Source
 $NodeVersion = [version](& $NodePath -p "process.versions.node")
 if ($NodeVersion -lt [version]"22.13.0") {
     throw "Node.js 22.13 or newer is required. Found $NodeVersion."
+}
+
+& $NodePath (Join-Path $CollectorRoot "src\accounts.js") ready
+if ($LASTEXITCODE -ne 0) {
+    throw "The active Zalo account is not ready. Configure its session and allowed groups first."
 }
 
 $PowerShellPath = Join-Path $PSHOME "powershell.exe"

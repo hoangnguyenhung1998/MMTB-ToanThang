@@ -11,33 +11,35 @@ import { acquireProcessLock } from "./process-lock.js";
 import { QueueStore } from "./queue-store.js";
 import { QueueWorker } from "./queue-worker.js";
 import { HealthReporter } from "./health-reporter.js";
+import { AccountStore } from "./account-store.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const credentialsPath = path.join(root, "data", "credentials.json");
-const qrPath = path.join(root, "data", "qr.png");
 const config = loadConfig();
-const releaseProcessLock = acquireProcessLock(path.join(root, "data", "collector.lock"));
-const queue = new QueueStore(path.join(root, "data"), config);
-const health = new HealthReporter(path.join(root, "data", "health.json"));
+const dataDirectory = path.join(root, "data");
+const account = new AccountStore(dataDirectory).resolve(config.allowedGroupIds);
+const allowedGroupIds = new Set(account.groupIds);
+const releaseProcessLock = acquireProcessLock(path.join(dataDirectory, "collector.lock"));
+const queue = new QueueStore(dataDirectory, config);
+const health = new HealthReporter(path.join(dataDirectory, "health.json"));
 
-if (config.allowedGroupIds.size === 0) {
-  console.error("ZALO_ALLOWED_GROUP_IDS is empty. Collector stops safely without collecting messages.");
+if (allowedGroupIds.size === 0) {
+  console.error(`No allowed Zalo groups are configured for account ${account.id}. Collector stops safely.`);
   process.exit(1);
 }
 
 const zalo = new Zalo({ logging: true });
-const savedCredentials = readCredentials(credentialsPath);
+const savedCredentials = readCredentials(account.credentialsPath);
 let api;
 
 try {
-  api = savedCredentials ? await zalo.login(savedCredentials) : await zalo.loginQR({ qrPath });
+  api = savedCredentials ? await zalo.login(savedCredentials) : await zalo.loginQR({ qrPath: account.qrPath });
 } catch (error) {
   if (!savedCredentials) throw error;
-  console.warn("Saved Zalo session is invalid. Scan the new QR code:", qrPath);
-  api = await zalo.loginQR({ qrPath });
+  console.warn(`Saved Zalo session for ${account.id} is invalid. Scan the new QR code:`, account.qrPath);
+  api = await zalo.loginQR({ qrPath: account.qrPath });
 }
 
-writeCredentials(credentialsPath, api);
+writeCredentials(account.credentialsPath, api);
 const client = new LaravelCollectorClient(config);
 const worker = new QueueWorker(queue, client, console, health);
 worker.start(config.queuePollMs);
@@ -46,7 +48,7 @@ health.alive();
 const healthTimer = setInterval(() => health.alive(), 60 * 1000);
 
 api.listener.on("message", (message) => {
-  if (message.type !== ThreadType.Group || !config.allowedGroupIds.has(String(message.threadId))) return;
+  if (message.type !== ThreadType.Group || !allowedGroupIds.has(String(message.threadId))) return;
   const urls = extractImageUrls(message);
   if (urls.length === 0) return;
 
@@ -64,7 +66,7 @@ api.listener.on("message", (message) => {
 
 api.listener.on("error", (error) => console.error("Zalo listener error:", error));
 api.listener.start();
-console.log(`Collector started. Watching ${config.allowedGroupIds.size} allowed group(s).`);
+console.log(`Collector started with account ${account.id} (${account.name}). Watching ${allowedGroupIds.size} allowed group(s).`);
 console.log("Durable queue status:", queue.stats());
 
 const cleanupTimer = setInterval(() => {

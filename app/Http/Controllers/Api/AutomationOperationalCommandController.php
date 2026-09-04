@@ -21,7 +21,7 @@ class AutomationOperationalCommandController extends Controller
         $node = $request->attributes->get('automation_node'); $data = $request->validated();
         $commands = $this->commands->claim($node, $data['agent_id'], $data['limit'] ?? 5);
         return response()->json(['commands' => $commands->map(fn ($command) => [
-            'id' => $command->id, 'action' => $command->action,
+            'id' => $command->id, 'action' => $command->action, 'payload' => $command->payload ?? [],
             'service' => ['service_key' => $command->service->service_key, 'service_type' => $command->service->service_type],
         ])->values()]);
     }

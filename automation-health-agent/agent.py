@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.1.2"
+AGENT_VERSION = "0.1.3"
 TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 JOB_PATTERN = re.compile(r"(?:job|command)\s+#?(\d+)", re.IGNORECASE)
 SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", re.IGNORECASE)
@@ -25,6 +25,7 @@ SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", r
 LOG_LEVEL_PATTERN = re.compile(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", re.IGNORECASE)
 UNSTRUCTURED_ERROR_PATTERN = re.compile(r"\b(?:error|failed|failure)\b", re.IGNORECASE)
 TRACEBACK_PATTERN = re.compile(r"^\s*Traceback\b", re.IGNORECASE)
+ZALO_ACCOUNT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
 
 
 def is_operational_error(line: str) -> bool:
@@ -146,6 +147,43 @@ def iso_age_seconds(value: str | None) -> float | None:
         return None
 
 
+def zalo_account_snapshot(root: Path) -> dict[str, Any]:
+    data_path = root / "collector" / "data"
+    active = read_json_file(data_path / "active-account.json")
+    active_id = active.get("account_id") if isinstance(active, dict) else None
+    accounts = []
+    accounts_path = data_path / "accounts"
+    if accounts_path.exists():
+        for directory in sorted(accounts_path.iterdir()):
+            profile = read_json_file(directory / "profile.json")
+            if not directory.is_dir() or not isinstance(profile, dict):
+                continue
+            account_id = str(profile.get("id", ""))
+            if not ZALO_ACCOUNT_ID_PATTERN.fullmatch(account_id) or directory.name != account_id:
+                continue
+            credentials = read_json_file(directory / "credentials.json")
+            has_session = isinstance(credentials, dict) and all(credentials.get(key) is not None for key in ("cookie", "imei", "userAgent"))
+            groups = profile.get("group_ids") if isinstance(profile.get("group_ids"), list) else []
+            name = str(profile.get("name") or account_id)[:100]
+            accounts.append({
+                "id": account_id, "name": name, "group_count": len(set(map(str, groups))),
+                "has_session": has_session, "ready": has_session and len(groups) > 0,
+            })
+    active_profile = next((item for item in accounts if item["id"] == active_id), None)
+    return {
+        "active_account_id": active_id or "legacy",
+        "active_account_name": active_profile["name"] if active_profile else "Tài khoản Zalo cũ",
+        "zalo_accounts": accounts,
+    }
+
+
+def read_json_file(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
 class WindowsTaskReader:
     def read(self, names: list[str]) -> dict[str, dict[str, Any]]:
         if os.name != "nt" or not names:
@@ -254,6 +292,14 @@ class HealthAgent:
             error = f"Worker không xác nhận API/loop thành công trong {int(api_age // 60)} phút."
         if status == "HEALTHY" and errors == 0:
             error = None
+        metrics = {
+            "task_state": state,
+            "last_task_result": task.get("last_result") if task else None,
+            "latest_error_at": log.latest_error_at().astimezone(timezone.utc).isoformat() if log.latest_error_at() else None,
+            "api_age_seconds": api_age,
+        }
+        if definition.service_type == "ZALO_COLLECTOR":
+            metrics.update(zalo_account_snapshot(self.root))
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": status,
@@ -264,12 +310,7 @@ class HealthAgent:
             "last_api_success_at": health.get("last_api_success_at"),
             "last_job_success_at": health.get("last_job_success_at"),
             "error_code": None if status == "HEALTHY" else f"TASK_{state}",
-            "error_message": error, "metrics": {
-                "task_state": state,
-                "last_task_result": task.get("last_result") if task else None,
-                "latest_error_at": log.latest_error_at().astimezone(timezone.utc).isoformat() if log.latest_error_at() else None,
-                "api_age_seconds": api_age,
-            },
+            "error_message": error, "metrics": metrics,
         }
 
     def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -278,6 +319,22 @@ class HealthAgent:
         if definition is None:
             raise RuntimeError(f"Dịch vụ không thuộc allowlist: {service_key}")
         action = command["action"]
+        if action == "ZALO_ACCOUNT_SWITCH":
+            if definition.service_type != "ZALO_COLLECTOR":
+                raise RuntimeError("Lệnh chuyển tài khoản chỉ dành cho Zalo Collector.")
+            account_id = str(command.get("payload", {}).get("account_id", ""))
+            if not ZALO_ACCOUNT_ID_PATTERN.fullmatch(account_id):
+                raise RuntimeError("Mã tài khoản Zalo không hợp lệ.")
+            script_path = self.root / "collector" / "scripts" / "switch-account.ps1"
+            if not script_path.exists():
+                raise RuntimeError("Không tìm thấy script chuyển tài khoản Zalo.")
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path), "-AccountId", account_id],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or f"PowerShell exit {result.returncode}").strip())
+            return {"message": f"Đã chuyển Zalo Collector sang {account_id}.", "account_id": account_id}
         if action == "HEALTH_CHECK":
             service = next(item for item in self.snapshot() if item["service_key"] == service_key)
             return {"message": f"Health check: {service['status']}", "service": service}

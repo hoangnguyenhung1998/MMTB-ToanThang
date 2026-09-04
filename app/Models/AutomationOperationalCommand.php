@@ -12,7 +12,7 @@ class AutomationOperationalCommand extends Model
     protected function casts(): array
     {
         return [
-            'result' => 'array', 'claimed_at' => 'datetime', 'lease_expires_at' => 'datetime',
+            'payload' => 'array', 'result' => 'array', 'claimed_at' => 'datetime', 'lease_expires_at' => 'datetime',
             'completed_at' => 'datetime', 'failed_at' => 'datetime',
         ];
     }
