@@ -120,7 +120,7 @@
         }
         overlay.classList.add('show'); progress.textContent = form.dataset.label || 'Đang gửi lệnh tới laptop…';
         try {
-            const response = await fetch(form.action, { method: 'POST', body: new FormData(form), headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+            const response = await fetch(form.getAttribute('action'), { method: 'POST', body: new FormData(form), headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
             const data = await response.json();
             if (!response.ok) throw new Error(firstError(data));
             progress.textContent = data.message; poll(data.status_url, Date.now());

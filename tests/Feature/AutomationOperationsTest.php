@@ -89,6 +89,9 @@ class AutomationOperationsTest extends TestCase
         $this->actingAs($user)->get('/zalo-accounts')->assertOk()
             ->assertSee('Zalo nhật trình')->assertSee('Nhóm nhật trình')
             ->assertSee('Bàn giao MMTB')->assertSee('101')->assertSee('202')
+            ->assertSee("fetch(form.getAttribute('action')", false)
+            ->assertDontSee('fetch(form.action', false)
+            ->assertSee('GMT+7')
             ->assertDontSee('cookie')->assertDontSee('imei');
     }
 
