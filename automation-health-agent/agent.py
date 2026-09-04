@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.1.3"
+AGENT_VERSION = "0.1.4"
 TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 JOB_PATTERN = re.compile(r"(?:job|command)\s+#?(\d+)", re.IGNORECASE)
 SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", re.IGNORECASE)
@@ -26,6 +27,7 @@ LOG_LEVEL_PATTERN = re.compile(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", re.IG
 UNSTRUCTURED_ERROR_PATTERN = re.compile(r"\b(?:error|failed|failure)\b", re.IGNORECASE)
 TRACEBACK_PATTERN = re.compile(r"^\s*Traceback\b", re.IGNORECASE)
 ZALO_ACCOUNT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
+ZALO_GROUP_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def is_operational_error(line: str) -> bool:
@@ -164,9 +166,24 @@ def zalo_account_snapshot(root: Path) -> dict[str, Any]:
             credentials = read_json_file(directory / "credentials.json")
             has_session = isinstance(credentials, dict) and all(credentials.get(key) is not None for key in ("cookie", "imei", "userAgent"))
             groups = profile.get("group_ids") if isinstance(profile.get("group_ids"), list) else []
+            allowed_ids = list(dict.fromkeys(str(value) for value in groups if ZALO_GROUP_ID_PATTERN.fullmatch(str(value))))
+            catalog = read_json_file(directory / "groups.json")
+            available: dict[str, str] = {}
+            for group in catalog if isinstance(catalog, list) else []:
+                group_id = str(group.get("id", "")) if isinstance(group, dict) else ""
+                if not ZALO_GROUP_ID_PATTERN.fullmatch(group_id):
+                    continue
+                available[group_id] = str(group.get("name") or f"Nhóm {group_id}")[:200]
+            for group_id in allowed_ids:
+                available.setdefault(group_id, f"Nhóm {group_id}")
+            group_rows = [
+                {"id": group_id, "name": name, "enabled": group_id in allowed_ids}
+                for group_id, name in sorted(available.items(), key=lambda item: item[1].casefold())
+            ]
             name = str(profile.get("name") or account_id)[:100]
             accounts.append({
-                "id": account_id, "name": name, "group_count": len(set(map(str, groups))),
+                "id": account_id, "name": name, "group_count": len(allowed_ids),
+                "available_group_count": len(group_rows), "groups": group_rows,
                 "has_session": has_session, "ready": has_session and len(groups) > 0,
             })
     active_profile = next((item for item in accounts if item["id"] == active_id), None)
@@ -335,6 +352,46 @@ class HealthAgent:
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or result.stdout or f"PowerShell exit {result.returncode}").strip())
             return {"message": f"Đã chuyển Zalo Collector sang {account_id}.", "account_id": account_id}
+        if action == "ZALO_GROUPS_UPDATE":
+            if definition.service_type != "ZALO_COLLECTOR":
+                raise RuntimeError("Lệnh cấu hình nhóm chỉ dành cho Zalo Collector.")
+            payload = command.get("payload", {})
+            account_id = str(payload.get("account_id", ""))
+            raw_group_ids = payload.get("group_ids", [])
+            if not ZALO_ACCOUNT_ID_PATTERN.fullmatch(account_id):
+                raise RuntimeError("Mã tài khoản Zalo không hợp lệ.")
+            if not isinstance(raw_group_ids, list) or not 1 <= len(raw_group_ids) <= 200:
+                raise RuntimeError("Phải chọn từ 1 đến 200 nhóm Zalo.")
+            group_ids = list(dict.fromkeys(map(str, raw_group_ids)))
+            if len(group_ids) != len(raw_group_ids) or any(not ZALO_GROUP_ID_PATTERN.fullmatch(value) for value in group_ids):
+                raise RuntimeError("Danh sách nhóm Zalo không hợp lệ.")
+            snapshot = zalo_account_snapshot(self.root)
+            account = next((item for item in snapshot["zalo_accounts"] if item["id"] == account_id), None)
+            available_ids = {item["id"] for item in (account or {}).get("groups", [])}
+            if account is None or not set(group_ids).issubset(available_ids):
+                raise RuntimeError("Tài khoản hoặc nhóm Zalo không tồn tại trong danh mục cục bộ.")
+            node_path = shutil.which("node")
+            accounts_path = self.root / "collector" / "src" / "accounts.js"
+            if not node_path or not accounts_path.exists():
+                raise RuntimeError("Không tìm thấy Node.js hoặc trình quản lý tài khoản Zalo.")
+            result = subprocess.run(
+                [node_path, str(accounts_path), "update", "--id", account_id, "--groups", ",".join(group_ids)],
+                capture_output=True, text=True, timeout=45, check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or f"Node exit {result.returncode}").strip())
+            if snapshot["active_account_id"] == account_id:
+                script_path = self.root / "collector" / "scripts" / "switch-account.ps1"
+                restart = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path), "-AccountId", account_id],
+                    capture_output=True, text=True, timeout=60, check=False,
+                )
+                if restart.returncode != 0:
+                    raise RuntimeError((restart.stderr or restart.stdout or f"PowerShell exit {restart.returncode}").strip())
+            return {
+                "message": f"Đã lưu {len(group_ids)} nhóm cho {account_id}.",
+                "account_id": account_id, "group_count": len(group_ids), "group_ids": group_ids,
+            }
         if action == "HEALTH_CHECK":
             service = next(item for item in self.snapshot() if item["service_key"] == service_key)
             return {"message": f"Health check: {service['status']}", "service": service}

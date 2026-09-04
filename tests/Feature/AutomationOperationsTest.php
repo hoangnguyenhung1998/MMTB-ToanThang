@@ -68,7 +68,79 @@ class AutomationOperationsTest extends TestCase
         ]]);
 
         $this->actingAs($user)->get('/automation-health')->assertOk()
-            ->assertSee('Zalo kiểm thử')->assertSee('Zalo công ty')->assertSee('chưa sẵn sàng');
+            ->assertSee('Zalo kiểm thử')->assertSee('Quản lý tài khoản và nhóm');
+    }
+
+    public function test_zalo_account_page_lists_accounts_and_safe_group_checkboxes(): void
+    {
+        [, $service] = $this->service('ZALO_COLLECTOR'); $user = User::factory()->create();
+        $service->update(['metrics' => [
+            'active_account_id' => 'zalo-company', 'active_account_name' => 'Zalo nhật trình',
+            'zalo_accounts' => [[
+                'id' => 'zalo-company', 'name' => 'Zalo nhật trình', 'group_count' => 1,
+                'available_group_count' => 2, 'has_session' => true, 'ready' => true,
+                'groups' => [
+                    ['id' => '101', 'name' => 'Nhóm nhật trình', 'enabled' => true],
+                    ['id' => '202', 'name' => 'Bàn giao MMTB', 'enabled' => false],
+                ],
+            ]],
+        ]]);
+
+        $this->actingAs($user)->get('/zalo-accounts')->assertOk()
+            ->assertSee('Zalo nhật trình')->assertSee('Nhóm nhật trình')
+            ->assertSee('Bàn giao MMTB')->assertSee('101')->assertSee('202')
+            ->assertDontSee('cookie')->assertDontSee('imei');
+    }
+
+    public function test_user_can_queue_catalogued_zalo_group_settings(): void
+    {
+        [, $service] = $this->service('ZALO_COLLECTOR'); $user = User::factory()->create();
+        $service->update(['metrics' => ['zalo_accounts' => [[
+            'id' => 'zalo-company', 'name' => 'Zalo công ty', 'group_count' => 1,
+            'has_session' => true, 'ready' => true,
+            'groups' => [
+                ['id' => '101', 'name' => 'Nhóm một', 'enabled' => true],
+                ['id' => '202', 'name' => 'Nhóm hai', 'enabled' => false],
+            ],
+        ]]]]);
+
+        $response = $this->actingAs($user)->postJson('/zalo-accounts/commands', [
+            'action' => 'ZALO_GROUPS_UPDATE', 'account_id' => 'zalo-company', 'group_ids' => ['101', '202'],
+        ])->assertAccepted();
+
+        $command = $service->commands()->sole();
+        $this->assertSame(['account_id' => 'zalo-company', 'group_ids' => ['101', '202']], $command->payload);
+        $response->assertJsonPath('command_id', $command->id);
+
+        $this->actingAs($user)->postJson('/zalo-accounts/commands', [
+            'action' => 'ZALO_GROUPS_UPDATE', 'account_id' => 'zalo-company', 'group_ids' => ['999'],
+        ])->assertUnprocessable()->assertJsonValidationErrors('group_ids');
+    }
+
+    public function test_zalo_switch_status_waits_for_heartbeat_confirmation(): void
+    {
+        [, $service] = $this->service('ZALO_COLLECTOR'); $user = User::factory()->create();
+        $service->update(['metrics' => [
+            'active_account_id' => 'zalo-test', 'active_account_name' => 'Zalo kiểm thử',
+            'zalo_accounts' => [[
+                'id' => 'zalo-company', 'name' => 'Zalo công ty', 'group_count' => 1,
+                'has_session' => true, 'ready' => true,
+            ]],
+        ]]);
+        $this->actingAs($user)->postJson('/zalo-accounts/commands', [
+            'action' => 'ZALO_ACCOUNT_SWITCH', 'account_id' => 'zalo-company',
+        ])->assertAccepted();
+        $command = $service->commands()->sole();
+        $command->update(['status' => 'COMPLETED', 'result' => ['message' => 'Switched'], 'completed_at' => now()]);
+
+        $this->actingAs($user)->getJson("/zalo-accounts/commands/{$command->id}")
+            ->assertOk()->assertJsonPath('command.done', false)->assertJsonPath('command.confirmed', false);
+
+        $service->update(['metrics' => array_merge($service->metrics, [
+            'active_account_id' => 'zalo-company', 'active_account_name' => 'Zalo công ty',
+        ])]);
+        $this->actingAs($user)->getJson("/zalo-accounts/commands/{$command->id}")
+            ->assertOk()->assertJsonPath('command.done', true)->assertJsonPath('command.successful', true);
     }
 
     public function test_successful_zalo_switch_sends_telegram_without_session_data(): void

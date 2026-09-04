@@ -56,6 +56,10 @@
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 18h3v-5H4v5Zm6 0h4V6h-4v12Zm7 0h3V9h-3v9ZM3 21h18M5 10l5-5 4 3 5-5"/></svg></span>
                 <span>Giám sát tự động</span>
             </a>
+            <a class="sidebar-link {{ request()->routeIs('zalo-accounts.*') ? 'active' : '' }}" href="{{ route('zalo-accounts.index') }}">
+                <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v11H9l-4 3V5Zm4 4h6m-6 3h4"/></svg></span>
+                <span>Tài khoản Zalo</span>
+            </a>
             <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}">
                 <span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span>
                 <span>Thiết bị</span>

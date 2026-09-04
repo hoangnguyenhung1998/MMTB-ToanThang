@@ -204,6 +204,10 @@ class HealthAgentTest(unittest.TestCase):
             (account / "credentials.json").write_text(json.dumps({
                 "cookie": ["private-cookie"], "imei": "private-imei", "userAgent": "private-agent",
             }), encoding="utf-8")
+            (account / "groups.json").write_text(json.dumps([
+                {"id": "g1", "name": "Nhóm một"}, {"id": "g2", "name": "Nhóm hai"},
+                {"id": "g3", "name": "Nhóm ba"},
+            ]), encoding="utf-8")
             (root / "collector/data/active-account.json").write_text(
                 json.dumps({"account_id": "zalo-test"}), encoding="utf-8",
             )
@@ -213,6 +217,9 @@ class HealthAgentTest(unittest.TestCase):
             self.assertEqual("zalo-test", snapshot["active_account_id"])
             self.assertEqual(2, snapshot["zalo_accounts"][0]["group_count"])
             self.assertTrue(snapshot["zalo_accounts"][0]["ready"])
+            self.assertEqual(3, snapshot["zalo_accounts"][0]["available_group_count"])
+            enabled = {item["id"]: item["enabled"] for item in snapshot["zalo_accounts"][0]["groups"]}
+            self.assertEqual({"g1": True, "g2": True, "g3": False}, enabled)
             self.assertNotIn("private-cookie", serialized)
             self.assertNotIn("private-imei", serialized)
 
@@ -235,6 +242,43 @@ class HealthAgentTest(unittest.TestCase):
 
             command["payload"]["account_id"] = "../credentials"
             with self.assertRaisesRegex(RuntimeError, "không hợp lệ"):
+                health.execute_command(command)
+
+    def test_zalo_group_update_uses_only_catalogued_groups_and_restarts_active_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            account = root / "collector/data/accounts/zalo-company"
+            account.mkdir(parents=True)
+            (account / "profile.json").write_text(json.dumps({
+                "id": "zalo-company", "name": "Zalo công ty", "group_ids": ["1"],
+            }), encoding="utf-8")
+            (account / "credentials.json").write_text(json.dumps({
+                "cookie": [], "imei": "imei", "userAgent": "agent",
+            }), encoding="utf-8")
+            (account / "groups.json").write_text(json.dumps([
+                {"id": "1", "name": "Nhóm một"}, {"id": "2", "name": "Nhóm hai"},
+            ]), encoding="utf-8")
+            (root / "collector/data/active-account.json").write_text(
+                json.dumps({"account_id": "zalo-company"}), encoding="utf-8",
+            )
+            accounts = root / "collector/src/accounts.js"; accounts.parent.mkdir(parents=True, exist_ok=True)
+            accounts.write_text("// test", encoding="utf-8")
+            script = root / "collector/scripts/switch-account.ps1"; script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("# test", encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789)
+            command = {
+                "action": "ZALO_GROUPS_UPDATE", "payload": {"account_id": "zalo-company", "group_ids": ["1", "2"]},
+                "service": {"service_key": "zalo-collector"},
+            }
+            with patch.object(agent.shutil, "which", return_value="node.exe"), \
+                 patch.object(agent.subprocess, "run", side_effect=[Mock(returncode=0, stdout="", stderr=""), Mock(returncode=0, stdout="", stderr="")]) as run:
+                result = health.execute_command(command)
+            self.assertEqual(2, result["group_count"])
+            self.assertEqual(2, run.call_count)
+            self.assertIn("1,2", run.call_args_list[0].args[0])
+
+            command["payload"]["group_ids"] = ["999"]
+            with self.assertRaisesRegex(RuntimeError, "không tồn tại"):
                 health.execute_command(command)
 
     def test_ready_task_is_started_once_per_recovery_cooldown(self):
