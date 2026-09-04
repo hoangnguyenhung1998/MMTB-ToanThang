@@ -15,17 +15,26 @@ class AutomationOperationalCommandService
 
     public function create(AutomationService $service, int $userId, string $action, array $payload = []): AutomationOperationalCommand
     {
-        if ($action === 'ZALO_ACCOUNT_SWITCH' && $service->service_type !== 'ZALO_COLLECTOR') {
-            throw ValidationException::withMessages(['action' => 'Chỉ Zalo Collector mới nhận lệnh chuyển tài khoản.']);
+        if (in_array($action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true) && $service->service_type !== 'ZALO_COLLECTOR') {
+            throw ValidationException::withMessages(['action' => 'Lệnh quản lý Zalo chỉ dành cho Zalo Collector.']);
         }
-        if ($action === 'ZALO_ACCOUNT_SWITCH' && ! preg_match('/^[a-z0-9][a-z0-9_-]{0,49}$/', (string) ($payload['account_id'] ?? ''))) {
+        if (in_array($action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true)
+            && ! preg_match('/^[a-z0-9][a-z0-9_-]{0,49}$/', (string) ($payload['account_id'] ?? ''))) {
             throw ValidationException::withMessages(['account_id' => 'Mã tài khoản Zalo không hợp lệ.']);
         }
-        if ($action === 'ZALO_ACCOUNT_SWITCH') {
+        if (in_array($action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true)) {
             $account = collect(data_get($service->metrics, 'zalo_accounts', []))
                 ->firstWhere('id', $payload['account_id']);
-            if (! $account || ! ($account['ready'] ?? false)) {
+            if (! $account || ($action === 'ZALO_ACCOUNT_SWITCH' && ! ($account['ready'] ?? false))) {
                 throw ValidationException::withMessages(['account_id' => 'Tài khoản chưa tồn tại hoặc chưa đủ phiên đăng nhập và nhóm Zalo.']);
+            }
+            if ($action === 'ZALO_GROUPS_UPDATE') {
+                $groupIds = collect($payload['group_ids'] ?? [])->map(fn ($id) => (string) $id)->unique()->values();
+                $availableIds = collect($account['groups'] ?? [])->pluck('id')->map(fn ($id) => (string) $id);
+                if ($groupIds->isEmpty() || $groupIds->count() > 200 || $groupIds->diff($availableIds)->isNotEmpty()) {
+                    throw ValidationException::withMessages(['group_ids' => 'Danh sách nhóm không hợp lệ hoặc chưa được Collector xác nhận.']);
+                }
+                $payload['group_ids'] = $groupIds->all();
             }
         }
         if ($service->commands()->whereIn('status', ['PENDING', 'PROCESSING'])->exists()) {
@@ -34,7 +43,7 @@ class AutomationOperationalCommandService
         return $service->commands()->create([
             'automation_node_id' => $service->automation_node_id,
             'user_id' => $userId, 'action' => $action, 'status' => 'PENDING',
-            'payload' => $action === 'ZALO_ACCOUNT_SWITCH' ? ['account_id' => $payload['account_id']] : null,
+            'payload' => in_array($action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true) ? $payload : null,
         ]);
     }
 
@@ -63,7 +72,7 @@ class AutomationOperationalCommandService
     {
         $this->assertOwned($command, $node);
         $command->update(['status' => 'COMPLETED', 'result' => $result, 'completed_at' => now(), 'lease_expires_at' => null, 'error_message' => null]);
-        $this->notifyZaloSwitch($command, true);
+        $this->notifyZaloCommand($command, true);
         return $command->fresh();
     }
 
@@ -71,7 +80,7 @@ class AutomationOperationalCommandService
     {
         $this->assertOwned($command, $node);
         $command->update(['status' => 'FAILED', 'error_message' => $error, 'failed_at' => now(), 'lease_expires_at' => null]);
-        $this->notifyZaloSwitch($command, false);
+        $this->notifyZaloCommand($command, false);
         return $command->fresh();
     }
 
@@ -80,16 +89,20 @@ class AutomationOperationalCommandService
         abort_unless($command->automation_node_id === $node->id && $command->status === 'PROCESSING', 409, 'Command is not owned by this node.');
     }
 
-    private function notifyZaloSwitch(AutomationOperationalCommand $command, bool $successful): void
+    private function notifyZaloCommand(AutomationOperationalCommand $command, bool $successful): void
     {
-        if ($command->action !== 'ZALO_ACCOUNT_SWITCH' || ! $this->telegram->enabled()) return;
+        if (! in_array($command->action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true) || ! $this->telegram->enabled()) return;
         try {
-            $this->telegram->send(implode("\n", [
-                $successful ? '✅ Đã chuyển tài khoản Zalo Collector' : '❌ Chuyển tài khoản Zalo Collector thất bại',
+            $switching = $command->action === 'ZALO_ACCOUNT_SWITCH';
+            $this->telegram->send(implode("\n", array_filter([
+                $successful
+                    ? ($switching ? '✅ Đã chuyển tài khoản Zalo Collector' : '✅ Đã lưu nhóm Zalo Collector')
+                    : ($switching ? '❌ Chuyển tài khoản Zalo Collector thất bại' : '❌ Lưu nhóm Zalo Collector thất bại'),
                 'Tài khoản: '.data_get($command->payload, 'account_id'),
+                $switching ? null : 'Số nhóm: '.count(data_get($command->payload, 'group_ids', [])),
                 'Node: '.$command->node()->value('name'),
-                $successful ? 'Collector đã được khởi động lại.' : 'Lỗi: '.$command->error_message,
-            ]));
+                $successful ? ($switching ? 'Collector đã được khởi động lại.' : 'Cấu hình đã được lưu trên laptop.') : 'Lỗi: '.$command->error_message,
+            ], fn ($line) => $line !== null)));
         } catch (\Throwable $exception) {
             report($exception);
         }

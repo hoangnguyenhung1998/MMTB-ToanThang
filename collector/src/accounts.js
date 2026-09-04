@@ -6,6 +6,7 @@ import { Zalo } from "zca-js";
 import { AccountStore } from "./account-store.js";
 import { readCredentials, writeCredentials } from "./credentials.js";
 import { acquireProcessLock } from "./process-lock.js";
+import { refreshGroupCatalog } from "./group-catalog.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = path.join(root, "data");
@@ -44,7 +45,9 @@ async function login(accountId) {
       api = await zalo.loginQR({ qrPath });
     }
     writeCredentials(credentialsPath, api);
+    const catalog = await refreshGroupCatalog(api, store, profile.id);
     console.log(`Zalo session saved for ${profile.id}. Credentials were not displayed.`);
+    console.log(`Saved ${catalog.length} safe group name/ID record(s) for ${profile.id}.`);
   } finally {
     release();
   }

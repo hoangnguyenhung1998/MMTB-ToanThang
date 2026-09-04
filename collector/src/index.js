@@ -12,6 +12,7 @@ import { QueueStore } from "./queue-store.js";
 import { QueueWorker } from "./queue-worker.js";
 import { HealthReporter } from "./health-reporter.js";
 import { AccountStore } from "./account-store.js";
+import { refreshGroupCatalog } from "./group-catalog.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const config = loadConfig();
@@ -40,6 +41,14 @@ try {
 }
 
 writeCredentials(account.credentialsPath, api);
+if (account.managed) {
+  try {
+    const catalog = await refreshGroupCatalog(api, new AccountStore(dataDirectory), account.id);
+    console.log(`Refreshed ${catalog.length} safe Zalo group record(s) for ${account.id}.`);
+  } catch (error) {
+    console.warn(`Could not refresh Zalo group catalog for ${account.id}:`, error.message);
+  }
+}
 const client = new LaravelCollectorClient(config);
 const worker = new QueueWorker(queue, client, console, health);
 worker.start(config.queuePollMs);

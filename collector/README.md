@@ -64,6 +64,15 @@ npm run accounts -- add --id zalo-company --name "Zalo công ty" --groups "GROUP
 npm run accounts -- login --id zalo-company
 ```
 
+Login and Collector startup cache only safe group names/IDs under
+`data/accounts/<account-id>/groups.json`. Cookies, IMEI, user-agent and QR data
+are never included in this catalog or sent to Laravel. Refresh a specific
+account's catalog while the scheduled Collector is stopped:
+
+```powershell
+npm run groups -- --id zalo-company
+```
+
 Update the name or allowed groups without changing the saved session:
 
 ```powershell
@@ -82,6 +91,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/switch-account.ps1 -
 Only one profile can be active at a time. The existing shared durable image
 queue is preserved when accounts are switched. Phase 16.7.2A is laptop-local;
 it does not upload Zalo cookies, IMEI, or user-agent values to Laravel.
+
+Phase 16.7.3 adds a dedicated Laravel account page. It receives only safe
+account/group metadata and sends allowlisted account-switch or group-update
+commands back to the Health Agent. Updating the active account's groups restarts
+the Collector so the new allowlist takes effect immediately.
 
 ## Durable queue
 

@@ -41,6 +41,17 @@ export function normalizeGroupIds(values) {
   return [...new Set(groups.map((value) => String(value).trim()).filter(Boolean))];
 }
 
+export function normalizeGroupCatalog(groups) {
+  const unique = new Map();
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const id = String(group?.id ?? "").trim();
+    if (!id) continue;
+    const name = String(group?.name ?? "").trim() || `Group ${id}`;
+    unique.set(id, { id, name: name.slice(0, 200) });
+  }
+  return [...unique.values()].sort((left, right) => left.name.localeCompare(right.name, "vi"));
+}
+
 export class AccountStore {
   constructor(dataDirectory) {
     this.dataDirectory = dataDirectory;
@@ -62,6 +73,20 @@ export class AccountStore {
 
   qrPath(accountId) {
     return path.join(this.accountDirectory(accountId), "qr.png");
+  }
+
+  groupCatalogPath(accountId) {
+    return path.join(this.accountDirectory(accountId), "groups.json");
+  }
+
+  readGroupCatalog(accountId) {
+    return normalizeGroupCatalog(readJson(this.groupCatalogPath(accountId)));
+  }
+
+  writeGroupCatalog(accountId, groups) {
+    const catalog = normalizeGroupCatalog(groups);
+    writeJsonAtomic(this.groupCatalogPath(accountId), catalog);
+    return catalog;
   }
 
   create(accountId, name, groupIds) {
@@ -159,6 +184,7 @@ export class AccountStore {
       groupIds: profile.group_ids,
       credentialsPath: this.credentialsPath(profile.id),
       qrPath: this.qrPath(profile.id),
+      groupCatalogPath: this.groupCatalogPath(profile.id),
       managed: true,
     };
   }

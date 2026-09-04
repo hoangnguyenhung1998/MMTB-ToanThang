@@ -240,6 +240,12 @@ Route::middleware('auth')->group(function () {
         ->name('automation-health.index');
     Route::post('/automation-health/services/{automationService}/commands', [App\Http\Controllers\AutomationHealthDashboardController::class, 'storeCommand'])
         ->name('automation-health.commands.store');
+    Route::get('/zalo-accounts', [App\Http\Controllers\ZaloAccountController::class, 'index'])
+        ->name('zalo-accounts.index');
+    Route::post('/zalo-accounts/commands', [App\Http\Controllers\ZaloAccountController::class, 'store'])
+        ->name('zalo-accounts.commands.store');
+    Route::get('/zalo-accounts/commands/{command}', [App\Http\Controllers\ZaloAccountController::class, 'status'])
+        ->name('zalo-accounts.commands.status');
     Route::get('/ai-reconciliation/{aiReconciliationJob}', [App\Http\Controllers\AiReconciliationDashboardController::class, 'show'])
         ->name('ai-reconciliation.show');
     Route::post('/ai-reconciliation/{aiReconciliationJob}/commands', [App\Http\Controllers\AiReconciliationDashboardController::class, 'storeCommand'])

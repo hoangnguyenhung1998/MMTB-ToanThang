@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AccountStore, normalizeAccountId, normalizeGroupIds } from "../src/account-store.js";
+import { AccountStore, normalizeAccountId, normalizeGroupCatalog, normalizeGroupIds } from "../src/account-store.js";
 
 function temporaryStore(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mmtb-zalo-accounts-"));
@@ -15,6 +15,18 @@ test("normalizes safe account IDs and unique group IDs", () => {
   assert.equal(normalizeAccountId("zalo-test"), "zalo-test");
   assert.deepEqual(normalizeGroupIds("group-1, group-1,group-2"), ["group-1", "group-2"]);
   assert.throws(() => normalizeAccountId("../secret"), /Account ID/);
+});
+
+test("stores only safe group names and IDs in the account catalog", (t) => {
+  const { directory, store } = temporaryStore(t);
+  store.create("zalo-company", "Zalo công ty", []);
+  const catalog = store.writeGroupCatalog("zalo-company", [
+    { id: "2", name: "Nhóm B" }, { id: "1", name: "Nhóm A" }, { id: "1", name: "Tên mới" },
+  ]);
+  assert.deepEqual(catalog, normalizeGroupCatalog([{ id: "1", name: "Tên mới" }, { id: "2", name: "Nhóm B" }]));
+  assert.deepEqual(store.readGroupCatalog("zalo-company"), catalog);
+  assert.equal(JSON.stringify(catalog).includes("cookie"), false);
+  assert.ok(fs.existsSync(path.join(directory, "accounts", "zalo-company", "groups.json")));
 });
 
 test("creates profiles without credentials and never exposes session data", (t) => {
