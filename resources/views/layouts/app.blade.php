@@ -146,7 +146,9 @@
 
             <div class="topbar-copy">
                 <span>MMTB TOÀN THẮNG</span>
-                <strong>{{ now()->format('d/m/Y') }}</strong>
+                <time id="vietnamClock" datetime="{{ now('Asia/Ho_Chi_Minh')->toIso8601String() }}">
+                    GMT+7 · {{ now('Asia/Ho_Chi_Minh')->format('H:i · d/m/Y') }}
+                </time>
             </div>
             <div>
                 @auth
@@ -177,7 +179,7 @@
 </div>
 
 <style>
-.app-topbar{gap:18px}.global-search{position:relative;width:min(620px,55vw);margin-right:auto}.global-search-form{display:flex;align-items:center;gap:10px;height:42px;padding:0 12px;border:1px solid #dbe3ee;border-radius:12px;background:#f8fafc}.global-search-form:focus-within{border-color:#8bb2ff;background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,.1)}.global-search-form svg{width:19px;height:19px;fill:none;stroke:#64748b;stroke-width:2}.global-search-form input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#0f172a;font-size:13px}.global-search-shortcut{padding:3px 7px;border:1px solid #dbe3ee;border-radius:6px;background:#fff;color:#64748b;font-size:10px;font-weight:700;white-space:nowrap}.global-search-dropdown{position:absolute;top:49px;right:0;left:0;z-index:1000;max-height:min(70vh,620px);overflow:auto;border:1px solid #dbe3ee;border-radius:15px;background:#fff;box-shadow:0 20px 50px rgba(15,23,42,.18)}.global-search-loading,.global-search-message{padding:22px;color:#64748b;font-size:13px;text-align:center}.global-search-group{padding:8px}.global-search-group+.global-search-group{border-top:1px solid #eef2f7}.global-search-group-title{padding:7px 9px;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.global-search-item{display:grid;grid-template-columns:36px minmax(0,1fr) 18px;align-items:center;gap:10px;padding:9px;border-radius:10px;color:#0f172a;text-decoration:none}.global-search-item:hover,.global-search-item.is-active{background:#f1f5f9;color:#0f172a}.global-search-item-mark{display:inline-flex;width:34px;height:34px;align-items:center;justify-content:center;border-radius:9px;background:#e8efff;color:#2558c7;font-size:12px;font-weight:800}.global-search-item-copy{display:flex;min-width:0;flex-direction:column}.global-search-item-copy strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.global-search-item-copy small{margin-top:2px;overflow:hidden;color:#64748b;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.global-search-item-arrow{color:#94a3b8}.global-search-all{display:block;padding:12px;border-top:1px solid #eef2f7;color:#2563eb;font-size:12px;font-weight:800;text-align:center;text-decoration:none}@media(max-width:991.98px){.global-search{width:auto;flex:1}.global-search-shortcut{display:none}.topbar-copy span{display:none}}@media(max-width:575.98px){.app-topbar{padding-right:10px;padding-left:10px}.global-search-form{height:39px}.global-search-form input{font-size:12px}.topbar-copy{display:none}}
+:root{--sidebar-width:248px}.app-sidebar{padding:14px 12px}.sidebar-brand{min-height:56px;padding:4px 7px 12px}.brand-mark{width:38px;height:38px}.sidebar-section-label{padding:14px 10px 6px}.sidebar-nav{gap:2px}.sidebar-link{min-height:38px;gap:9px;padding:7px 10px;border-radius:9px}.sidebar-icon{width:20px;height:20px}.sidebar-footer{padding-top:11px}.sidebar-user{padding:6px 7px 10px}.logout-button{min-height:36px}.app-topbar{gap:18px}.topbar-copy time{color:var(--text);font-size:12px;font-weight:750;white-space:nowrap}.global-search{position:relative;width:min(620px,55vw);margin-right:auto}.global-search-form{display:flex;align-items:center;gap:10px;height:42px;padding:0 12px;border:1px solid #dbe3ee;border-radius:12px;background:#f8fafc}.global-search-form:focus-within{border-color:#8bb2ff;background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,.1)}.global-search-form svg{width:19px;height:19px;fill:none;stroke:#64748b;stroke-width:2}.global-search-form input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#0f172a;font-size:13px}.global-search-shortcut{padding:3px 7px;border:1px solid #dbe3ee;border-radius:6px;background:#fff;color:#64748b;font-size:10px;font-weight:700;white-space:nowrap}.global-search-dropdown{position:absolute;top:49px;right:0;left:0;z-index:1000;max-height:min(70vh,620px);overflow:auto;border:1px solid #dbe3ee;border-radius:15px;background:#fff;box-shadow:0 20px 50px rgba(15,23,42,.18)}.global-search-loading,.global-search-message{padding:22px;color:#64748b;font-size:13px;text-align:center}.global-search-group{padding:8px}.global-search-group+.global-search-group{border-top:1px solid #eef2f7}.global-search-group-title{padding:7px 9px;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.global-search-item{display:grid;grid-template-columns:36px minmax(0,1fr) 18px;align-items:center;gap:10px;padding:9px;border-radius:10px;color:#0f172a;text-decoration:none}.global-search-item:hover,.global-search-item.is-active{background:#f1f5f9;color:#0f172a}.global-search-item-mark{display:inline-flex;width:34px;height:34px;align-items:center;justify-content:center;border-radius:9px;background:#e8efff;color:#2558c7;font-size:12px;font-weight:800}.global-search-item-copy{display:flex;min-width:0;flex-direction:column}.global-search-item-copy strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.global-search-item-copy small{margin-top:2px;overflow:hidden;color:#64748b;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.global-search-item-arrow{color:#94a3b8}.global-search-all{display:block;padding:12px;border-top:1px solid #eef2f7;color:#2563eb;font-size:12px;font-weight:800;text-align:center;text-decoration:none}@media(max-width:991.98px){.global-search{width:auto;flex:1}.global-search-shortcut{display:none}.topbar-copy span{display:none}}@media(max-width:575.98px){.app-topbar{padding-right:10px;padding-left:10px}.global-search-form{height:39px}.global-search-form input{font-size:12px}.topbar-copy{display:none}}
 </style>
 
 <script>
@@ -189,6 +191,19 @@ document.addEventListener('DOMContentLoaded', function () {
     const search = document.getElementById('globalSearch');
     const input = document.getElementById('globalSearchInput');
     const dropdown = document.getElementById('globalSearchDropdown');
+    const vietnamClock = document.getElementById('vietnamClock');
+
+    const updateVietnamClock = () => {
+        if (!vietnamClock) return;
+        const parts = Object.fromEntries(new Intl.DateTimeFormat('vi-VN', {
+            timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit',
+            day: '2-digit', month: '2-digit', year: 'numeric', hourCycle: 'h23',
+        }).formatToParts(new Date()).map(({type, value}) => [type, value]));
+        vietnamClock.textContent = `GMT+7 · ${parts.hour}:${parts.minute} · ${parts.day}/${parts.month}/${parts.year}`;
+        vietnamClock.dateTime = new Date().toISOString();
+    };
+    updateVietnamClock();
+    setInterval(updateVietnamClock, 30000);
 
     const openSidebar = () => shell?.classList.add('sidebar-open');
     const closeSidebar = () => shell?.classList.remove('sidebar-open');
