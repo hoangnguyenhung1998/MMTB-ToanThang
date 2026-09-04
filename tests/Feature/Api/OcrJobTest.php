@@ -114,7 +114,7 @@ class OcrJobTest extends TestCase
             ->assertJsonPath('job.exceptions', null);
     }
 
-    public function test_daily_image_submitted_two_days_late_becomes_exception(): void
+    public function test_daily_image_can_be_submitted_for_any_past_date(): void
     {
         Machine::query()->create([
             'asset_code' => 'VT-XL5024',
@@ -134,12 +134,11 @@ class OcrJobTest extends TestCase
                 'confidence' => 0.95,
             ])
             ->assertOk()
-            ->assertJsonPath('job.status', 'EXCEPTION');
-
-        $this->assertSame(['WRONG_DATE'], $response->json('job.exceptions'));
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonPath('job.exceptions', null);
     }
 
-    public function test_daily_image_with_a_future_date_becomes_exception(): void
+    public function test_daily_image_can_be_submitted_for_any_future_date(): void
     {
         Machine::query()->create([
             'asset_code' => 'VT-XL5024',
@@ -159,9 +158,8 @@ class OcrJobTest extends TestCase
                 'confidence' => 0.95,
             ])
             ->assertOk()
-            ->assertJsonPath('job.status', 'EXCEPTION');
-
-        $this->assertSame(['WRONG_DATE'], $response->json('job.exceptions'));
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonPath('job.exceptions', null);
     }
 
     public function test_uncertain_or_invalid_result_becomes_exception(): void
@@ -184,7 +182,6 @@ class OcrJobTest extends TestCase
             'LOW_CONFIDENCE',
             'UNCLASSIFIED_TIME',
             'UNKNOWN_ASSET_CODE',
-            'WRONG_DATE',
         ], $response->json('job.exceptions'));
     }
 

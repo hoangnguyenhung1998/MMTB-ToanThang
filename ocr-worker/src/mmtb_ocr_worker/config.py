@@ -27,6 +27,13 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _nonnegative_float(name: str, default: float) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater.")
+    return value
+
+
 def _confidence(name: str, default: float) -> float:
     value = float(os.environ.get(name, str(default)))
     if not 0 <= value <= 1:
@@ -43,6 +50,9 @@ class Settings:
     request_timeout_seconds: int = 30
     classification_min_confidence: float = 0.70
     machine_refresh_seconds: int = 3600
+    delay_between_jobs_seconds: float = 3.0
+    batch_size: int = 10
+    batch_cooldown_seconds: float = 60.0
     data_dir: Path = Path("data")
 
     @classmethod
@@ -71,5 +81,8 @@ class Settings:
                 0.70,
             ),
             machine_refresh_seconds=_positive_int("OCR_MACHINE_REFRESH_SECONDS", 3600),
+            delay_between_jobs_seconds=_nonnegative_float("OCR_DELAY_BETWEEN_JOBS_SECONDS", 3.0),
+            batch_size=_positive_int("OCR_BATCH_SIZE", 10),
+            batch_cooldown_seconds=_nonnegative_float("OCR_BATCH_COOLDOWN_SECONDS", 60.0),
             data_dir=root / "data",
         )

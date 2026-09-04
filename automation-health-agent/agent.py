@@ -15,11 +15,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.1.1"
+AGENT_VERSION = "0.1.2"
 TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 JOB_PATTERN = re.compile(r"(?:job|command)\s+#?(\d+)", re.IGNORECASE)
 SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", re.IGNORECASE)
-ERROR_PATTERN = re.compile(r"\b(warning|error|failed|exception|traceback)\b", re.IGNORECASE)
+# Job outcomes such as "INFO ... status=EXCEPTION" require business review but
+# do not mean that the worker process failed. Only operational log levels and
+# Python tracebacks count as worker errors.
+LOG_LEVEL_PATTERN = re.compile(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", re.IGNORECASE)
+UNSTRUCTURED_ERROR_PATTERN = re.compile(r"\b(?:error|failed|failure)\b", re.IGNORECASE)
+TRACEBACK_PATTERN = re.compile(r"^\s*Traceback\b", re.IGNORECASE)
+
+
+def is_operational_error(line: str) -> bool:
+    level = LOG_LEVEL_PATTERN.search(line)
+    if level:
+        return level.group(1).upper() in {"WARNING", "ERROR", "CRITICAL"}
+    return bool(TRACEBACK_PATTERN.search(line) or UNSTRUCTURED_ERROR_PATTERN.search(line))
 
 
 def load_dotenv(path: Path) -> None:
@@ -71,14 +83,16 @@ class LogSnapshot:
 
     def last_error(self) -> str | None:
         for line in reversed(self.lines):
-            if ERROR_PATTERN.search(line):
+            if is_operational_error(line):
                 return line.strip()[-1800:]
         return None
 
     def latest_error_at(self) -> datetime | None:
         for line in reversed(self.lines):
-            if ERROR_PATTERN.search(line):
-                return self._datetime(line)
+            if is_operational_error(line):
+                value = self._datetime(line)
+                if value is not None:
+                    return value
         return None
 
     def consecutive_errors(self, fresh_seconds: int = 600) -> int:
@@ -90,7 +104,7 @@ class LogSnapshot:
             return 0
         count = 0
         for line in reversed(self.lines):
-            if ERROR_PATTERN.search(line):
+            if is_operational_error(line):
                 count += 1
             elif SUCCESS_PATTERN.search(line):
                 break
