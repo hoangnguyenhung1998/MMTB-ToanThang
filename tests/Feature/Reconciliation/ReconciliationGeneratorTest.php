@@ -185,7 +185,7 @@ class ReconciliationGeneratorTest extends TestCase
         ]);
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Không thể tạo lại kỳ đã có dữ liệu được duyệt hoặc xác nhận.');
+        $this->expectExceptionMessage('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
 
         app(ReconciliationGenerator::class)->generate($period->fresh());
     }
