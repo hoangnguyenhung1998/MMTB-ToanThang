@@ -217,6 +217,10 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/ocr-reviews', [App\Http\Controllers\OcrReviewController::class, 'index'])
         ->name('ocr-reviews.index');
+    Route::get('/ocr-monitoring', [App\Http\Controllers\OcrMonitoringController::class, 'index'])
+        ->name('ocr-monitoring.index');
+    Route::get('/ocr-monitoring/status', [App\Http\Controllers\OcrMonitoringController::class, 'status'])
+        ->name('ocr-monitoring.status');
     Route::get('/daily-images', [App\Http\Controllers\DailyImageArchiveController::class, 'index'])
         ->name('daily-images.index');
     Route::get('/daily-images/export', [App\Http\Controllers\DailyImageArchiveController::class, 'export'])

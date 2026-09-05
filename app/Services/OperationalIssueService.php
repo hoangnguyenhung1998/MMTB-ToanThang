@@ -11,6 +11,10 @@ use Illuminate\Support\Collection;
 
 class OperationalIssueService
 {
+    public function __construct(private readonly OcrMonitoringService $ocrMonitoring)
+    {
+    }
+
     public function expiryDays(): int
     {
         return max(1, (int) config('mmtb.operation_center.expiry_days', 30));
@@ -160,6 +164,10 @@ class OperationalIssueService
     public function notificationAlerts(): array
     {
         $alerts = [];
+
+        if ($ocrAlert = $this->ocrMonitoring->notificationAlert()) {
+            $alerts[] = $ocrAlert;
+        }
 
         $this->waitingHandoverQuery()
             ->orderBy('asset_code')

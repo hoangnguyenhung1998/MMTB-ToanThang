@@ -10,6 +10,10 @@ use Illuminate\Validation\ValidationException;
 
 class OcrJobService
 {
+    public function __construct(private readonly OcrProcessingRunService $processingRuns)
+    {
+    }
+
     public function enqueue(int $attachmentId): OcrJob
     {
         return OcrJob::query()->firstOrCreate(
@@ -49,6 +53,8 @@ class OcrJobService
                 'attempts' => $job->attempts + 1,
                 'error_message' => null,
             ]);
+
+            $this->processingRuns->start($job, $workerId);
 
             return $job->load('attachment.message');
         }, 3);
@@ -92,6 +98,8 @@ class OcrJobService
             'lease_expires_at' => null,
         ]);
 
+        $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
+
         return $job->fresh(['attachment.message', 'machine']);
     }
 
@@ -120,6 +128,8 @@ class OcrJobService
             'exceptions' => $isUnknown ? ['UNCLASSIFIED_DOCUMENT'] : null,
             'processed_at' => $isUnknown ? now() : null,
         ]);
+
+        $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
 
         return $job->fresh();
     }
@@ -194,6 +204,8 @@ class OcrJobService
                 'lease_expires_at' => null,
             ]);
 
+            $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
+
             return $job->fresh(['attachment.message', 'machine', 'journalDocument.rows']);
         }, 3);
     }
@@ -208,6 +220,8 @@ class OcrJobService
             'lease_expires_at' => null,
             'processed_at' => $data['retryable'] ? null : now(),
         ]);
+
+        $this->processingRuns->finish($job, $data['worker_id'], 'FAILED', $data['error']);
 
         return $job->fresh();
     }

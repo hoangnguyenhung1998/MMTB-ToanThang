@@ -34,6 +34,17 @@ class AutomationHealthAlertDispatcher
     private function message(AutomationHealthAlert $alert): string
     {
         $payload = $alert->payload;
+        if ($alert->kind === 'OCR_CAPACITY') {
+            return implode("\n", [
+                '🔴 <b>OCR có nguy cơ không kịp ngày</b>', '',
+                '<b>Ảnh còn chờ:</b> '.(int) ($payload['backlog'] ?? 0),
+                '<b>Tốc độ hiện tại:</b> '.$this->escape((string) ($payload['hourly_rate'] ?? 0)).' ảnh/giờ',
+                '<b>Tốc độ cần thiết:</b> '.$this->escape((string) ($payload['required_hourly_rate'] ?? 0)).' ảnh/giờ',
+                '<b>Chi tiết:</b> '.$this->escape($payload['message'] ?? ''), '',
+                '<a href="'.$this->escape($payload['dashboard_url'] ?? '').'">Mở Giám sát OCR</a>',
+            ]);
+        }
+
         $recovered = $alert->kind === 'RECOVERED';
         $icon = $recovered ? '✅' : (($payload['type'] ?? '') === 'OFFLINE' ? '🔴' : '🟠');
         $title = $recovered ? 'Dịch vụ đã phục hồi' : match ($payload['type'] ?? '') {

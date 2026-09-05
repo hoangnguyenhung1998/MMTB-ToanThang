@@ -51,6 +51,11 @@ Schedule::command('automation:dispatch-alerts')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::call(fn () => app(App\Services\OcrCapacityAlertRecorder::class)->evaluate())
+    ->name('ocr:monitor-capacity')
+    ->everyFiveMinutes()
+    ->withoutOverlapping();
+
 Schedule::command('machine-handovers:dispatch-reminders')
     ->hourly()
     ->withoutOverlapping();

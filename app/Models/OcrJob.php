@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class OcrJob extends Model
@@ -97,5 +98,10 @@ class OcrJob extends Model
     public function journalDocument(): HasOne
     {
         return $this->hasOne(JournalDocument::class);
+    }
+
+    public function processingRuns(): HasMany
+    {
+        return $this->hasMany(OcrProcessingRun::class);
     }
 }

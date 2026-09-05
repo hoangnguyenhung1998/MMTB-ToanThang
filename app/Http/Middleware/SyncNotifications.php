@@ -13,7 +13,7 @@ class SyncNotifications
 
     public function handle($request, Closure $next)
     {
-        if ($request->user()) {
+        if ($request->user() && ! $request->routeIs('ocr-monitoring.*')) {
             $this->service->syncForUser($request->user());
         }
 
