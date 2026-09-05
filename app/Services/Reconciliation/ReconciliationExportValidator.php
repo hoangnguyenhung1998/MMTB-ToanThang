@@ -11,7 +11,7 @@ class ReconciliationExportValidator
     public function validate(ReconciliationPeriod $period): array
     {
         $rows = $period->rows()
-            ->with(['machine:id,asset_code', 'commandCenter:id,name', 'assignment'])
+            ->with(['machine:id,asset_code', 'commandCenter:id,name', 'assignment.bchResolution'])
             ->orderBy('machine_id')
             ->orderBy('work_date')
             ->orderBy('segment_start')
@@ -50,6 +50,7 @@ class ReconciliationExportValidator
                 $blocking->push($label.': không tìm thấy phân công nguồn.');
             }
             if ($assignment = $row->assignment) {
+                $sourceBchId = $assignment->command_center_id ?: $assignment->bchResolution?->command_center_id;
                 $date = $row->work_date;
                 $outsideAssignment = $assignment->time_in->copy()->startOfDay()->gt($date)
                     || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($date));
@@ -58,7 +59,7 @@ class ReconciliationExportValidator
                 if ($outsideAssignment || $outsideSegment
                     || (int) $row->machine_id !== $assignment->machine_id
                     || (int) $row->project_id !== (int) $assignment->project_id
-                    || (int) $row->command_center_id !== (int) $assignment->command_center_id) {
+                    || (int) $row->command_center_id !== (int) $sourceBchId) {
                     $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn; cần kiểm tra lịch điều chuyển/trả máy.');
                 }
             }

@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Support\Carbon;
 
@@ -39,5 +40,10 @@ class MachineAssignment extends Model
     public function commandCenter(): BelongsTo
     {
         return $this->belongsTo(CommandCenter::class, 'command_center_id');
+    }
+
+    public function bchResolution(): HasOne
+    {
+        return $this->hasOne(MachineAssignmentBchResolution::class, 'machine_assignment_id');
     }
 }
