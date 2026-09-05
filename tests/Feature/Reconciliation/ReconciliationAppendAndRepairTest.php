@@ -156,6 +156,44 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $this->assertSame(1, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
     }
 
+    public function test_repair_removes_stale_evidence_row_when_current_row_has_identical_evidence(): void
+    {
+        $expired = $this->assignment('2026-08-01');
+        $expired->update(['time_out' => '2026-08-31 17:30:00']);
+        $current = MachineAssignment::create([
+            'machine_id' => $expired->machine_id,
+            'project_id' => $expired->project_id,
+            'command_center_id' => CommandCenter::create(['name' => 'BCH hiện tại'])->id,
+            'time_in' => '2026-09-01 00:00:00',
+        ]);
+        $period = app(ReconciliationPeriodService::class)->ensureMonthly('2026-09');
+        $common = [
+            'machine_id' => $expired->machine_id,
+            'work_date' => '2026-09-04',
+            'segment_start' => '00:00:00',
+            'segment_end' => '23:59:59',
+            'status' => 'DRAFT',
+            'daily_ocr_job_ids' => [12, 13],
+            'journal_row_ids' => [21],
+            'ai_reconciliation_job_id' => 31,
+        ];
+        $stale = $period->rows()->create($common + [
+            'machine_assignment_id' => $expired->id,
+            'project_id' => $expired->project_id,
+            'command_center_id' => $expired->command_center_id,
+        ]);
+        $currentRow = $period->rows()->create($common + [
+            'machine_assignment_id' => $current->id,
+            'project_id' => $current->project_id,
+            'command_center_id' => $current->command_center_id,
+        ]);
+
+        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertNull($stale->fresh());
+        $this->assertNotNull($currentRow->fresh());
+        $this->assertSame([12, 13], $currentRow->fresh()->daily_ocr_job_ids);
+    }
+
     private function assignment(string $date): MachineAssignment
     {
         $key = uniqid();

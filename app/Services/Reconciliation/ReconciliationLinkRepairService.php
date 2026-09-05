@@ -33,11 +33,30 @@ class ReconciliationLinkRepairService
                     || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($row->work_date))
                 );
                 if ($outsideAssignment) {
-                    $hasProtectedData = in_array($row->status, ['REVIEWED', 'CONFIRMED'], true)
-                        || $row->manually_edited_at
-                        || !empty($row->daily_ocr_job_ids)
+                    $hasHumanChanges = in_array($row->status, ['REVIEWED', 'CONFIRMED'], true)
+                        || $row->manually_edited_at;
+                    $hasEvidence = !empty($row->daily_ocr_job_ids)
                         || !empty($row->journal_row_ids)
                         || $row->ai_reconciliation_job_id;
+                    $evidenceIsPreserved = !$hasEvidence || $rows->contains(function ($candidate) use ($row, $assignments) {
+                        if ($candidate->id === $row->id
+                            || (int) $candidate->machine_id !== (int) $row->machine_id
+                            || !$candidate->work_date->isSameDay($row->work_date)
+                            || $candidate->segment_start !== $row->segment_start
+                            || $candidate->segment_end !== $row->segment_end) {
+                            return false;
+                        }
+                        $candidateAssignment = $assignments->get($candidate->machine_assignment_id);
+                        if (!$candidateAssignment || !$candidateAssignment->project || !$candidateAssignment->commandCenter
+                            || $candidateAssignment->time_in->copy()->startOfDay()->gt($candidate->work_date)
+                            || ($candidateAssignment->time_out && $candidateAssignment->time_out->copy()->endOfDay()->lt($candidate->work_date))) {
+                            return false;
+                        }
+                        return collect($candidate->daily_ocr_job_ids)->sort()->values()->all() === collect($row->daily_ocr_job_ids)->sort()->values()->all()
+                            && collect($candidate->journal_row_ids)->sort()->values()->all() === collect($row->journal_row_ids)->sort()->values()->all()
+                            && (int) $candidate->ai_reconciliation_job_id === (int) $row->ai_reconciliation_job_id;
+                    });
+                    $hasProtectedData = $hasHumanChanges || !$evidenceIsPreserved;
                     if ($hasProtectedData) {
                         $unresolved++;
                         continue;
