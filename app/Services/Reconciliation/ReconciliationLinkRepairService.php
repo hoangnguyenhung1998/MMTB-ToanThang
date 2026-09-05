@@ -19,23 +19,28 @@ class ReconciliationLinkRepairService
             }
             $repaired = 0;
             $unresolved = 0;
-            $rows = $period->rows()->where(fn ($q) => $q->whereNull('command_center_id')->orWhereNull('project_id'))->lockForUpdate()->get();
+            $rows = $period->rows()->lockForUpdate()->get();
+            $assignments = MachineAssignment::query()
+                ->with(['project', 'commandCenter'])
+                ->whereIn('id', $rows->pluck('machine_assignment_id')->filter()->unique())
+                ->get()
+                ->keyBy('id');
             foreach ($rows as $row) {
+                $assignment = $assignments->get($row->machine_assignment_id);
+                $needsRepair = !$assignment
+                    || (int) $row->project_id !== (int) $assignment->project_id
+                    || (int) $row->command_center_id !== (int) $assignment->command_center_id;
+                if (!$needsRepair) {
+                    continue;
+                }
                 if (in_array($row->status, ['REVIEWED', 'CONFIRMED'], true)) {
                     $unresolved++;
                     continue;
                 }
-                $assignment = MachineAssignment::with(['project', 'commandCenter'])->find($row->machine_assignment_id);
                 if (!$assignment || (int) $assignment->machine_id !== (int) $row->machine_id
                     || !$assignment->project || !$assignment->commandCenter
                     || $assignment->time_in->copy()->startOfDay()->gt($row->work_date)
                     || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($row->work_date))) {
-                    $unresolved++;
-                    continue;
-                }
-                // Do not overwrite a conflicting non-null link or infer history from today's assignment.
-                if (($row->project_id && (int) $row->project_id !== $assignment->project_id)
-                    || ($row->command_center_id && (int) $row->command_center_id !== $assignment->command_center_id)) {
                     $unresolved++;
                     continue;
                 }

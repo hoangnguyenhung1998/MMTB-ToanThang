@@ -113,6 +113,28 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $this->assertNull($row->fresh()->command_center_id);
     }
 
+    public function test_repair_replaces_stale_catalog_links_from_exact_source_assignment(): void
+    {
+        $assignment = $this->assignment('2026-09-30');
+        $otherProject = Project::create(['name' => 'Dự án cũ']);
+        $otherBch = CommandCenter::create(['name' => 'BCH cũ']);
+        $service = app(ReconciliationPeriodService::class);
+        $period = $service->ensureMonthly('2026-09');
+        $service->syncMonthly($period);
+        $row = $period->rows()->first();
+        $row->update([
+            'project_id' => $otherProject->id,
+            'command_center_id' => $otherBch->id,
+            'regular_minutes' => 321,
+            'manually_edited_at' => now(),
+        ]);
+
+        $this->assertSame(['repaired' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame($assignment->project_id, $row->fresh()->project_id);
+        $this->assertSame($assignment->command_center_id, $row->fresh()->command_center_id);
+        $this->assertEquals(321, $row->fresh()->regular_minutes);
+    }
+
     private function assignment(string $date): MachineAssignment
     {
         $key = uniqid();
