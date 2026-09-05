@@ -56,9 +56,10 @@
                 </div>
             </details>
 
-            <details class="sidebar-group" data-sidebar-group="equipment" @if(request()->routeIs('machines.*', 'reconciliation-*', 'projects.*', 'command-centers.*', 'drivers.*', 'expiries.*')) open @endif>
+            <details class="sidebar-group" data-sidebar-group="equipment" @if(request()->routeIs('companies.*', 'machines.*', 'reconciliation-*', 'projects.*', 'command-centers.*', 'drivers.*', 'expiries.*')) open @endif>
                 <summary title="Quản lý MMTB"><span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span><span class="sidebar-group-title">Quản lý MMTB</span><span class="sidebar-chevron">⌄</span></summary>
                 <div class="sidebar-group-links">
+                    <a class="sidebar-link {{ request()->routeIs('companies.*') ? 'active' : '' }}" href="{{ route('companies.index') }}"><span>Công ty</span></a>
                     <a class="sidebar-link {{ request()->routeIs('machines.*') ? 'active' : '' }}" href="{{ route('machines.index') }}"><span>Thiết bị</span></a>
                     <a class="sidebar-link {{ request()->routeIs('reconciliation-*') ? 'active' : '' }}" href="{{ route('reconciliation-periods.index') }}"><span>Đối chiếu</span></a>
                     <a class="sidebar-link {{ request()->routeIs('projects.*') ? 'active' : '' }}" href="{{ route('projects.index') }}"><span>Dự án</span></a>

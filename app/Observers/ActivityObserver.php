@@ -153,6 +153,7 @@ class ActivityObserver
         }
 
         $map = [
+            \App\Models\Company::class => ['company', 'công ty'],
             Machine::class => ['machine', 'thiết bị'],
             MachineDocument::class => ['machine.document', 'hồ sơ máy'],
             Driver::class => ['driver', 'tài xế'],

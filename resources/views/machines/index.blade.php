@@ -51,8 +51,7 @@
 
                 <select class="form-select" name="company">
                     <option value="">Tất cả công ty</option>
-                    <option value="VINCONS" @selected(($filters['company'] ?? '') === 'VINCONS')>VINCONS</option>
-                    <option value="VINALPHA" @selected(($filters['company'] ?? '') === 'VINALPHA')>VINALPHA</option>
+                    <x-company-options :selected="$filters['company'] ?? null" :include-inactive="true" />
                 </select>
 
                 <select class="form-select" name="status">
@@ -165,7 +164,7 @@
                                     @endforeach
                                 </div>
                             </td>
-                            <td>{{ $machine->company }}</td>
+                            <td>{{ $machine->company_name }}</td>
                             <td>{{ $machine->chassis_no ?: '-' }}</td>
                             <td>{{ $machine->engine_no ?: '-' }}</td>
                             <td>{{ $machine->plate_no ?: '-' }}</td>

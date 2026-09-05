@@ -57,6 +57,7 @@ class AppServiceProvider extends ServiceProvider
         DriverDocument::observe(ActivityObserver::class);
         Project::observe(ActivityObserver::class);
         CommandCenter::observe(ActivityObserver::class);
+        \App\Models\Company::observe(ActivityObserver::class);
 
         AiReconciliationSubmission::observe(AiReconciliationSubmissionObserver::class);
         AiReconciliationJob::observe(AiReconciliationJobObserver::class);

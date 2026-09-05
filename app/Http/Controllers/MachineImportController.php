@@ -25,8 +25,6 @@ class MachineImportController extends Controller
         'company',
     ];
 
-    private const ALLOWED_COMPANIES = ['VINCONS', 'VINALPHA'];
-
     public function form(): View
     {
         return view('machines.import');
@@ -47,6 +45,7 @@ class MachineImportController extends Controller
     {
         $request->validate([
             'file' => ['required', 'file', 'mimes:xlsx,xls', 'max:10240'],
+            'company' => ['nullable', new \App\Rules\AvailableCompany()],
         ]);
 
         $rows = Excel::toArray([], $request->file('file'))[0] ?? [];
@@ -72,6 +71,7 @@ class MachineImportController extends Controller
             }
         }
 
+        $allowedCompanies = \App\Models\Company::where('is_active', true)->pluck('code')->all();
         $seenAssetCodes = [];
         $seenChassis = [];
         $parsedRows = [];
@@ -89,6 +89,9 @@ class MachineImportController extends Controller
 
             if ($this->isRowEmpty($mapped)) {
                 continue;
+            }
+            if (trim((string) $mapped['company']) === '' && $request->filled('company')) {
+                $mapped['company'] = $request->string('company')->toString();
             }
 
             $rowNumber = $index + 1;
@@ -134,14 +137,14 @@ class MachineImportController extends Controller
                 $this->addError($displayErrors, $rowErrors, $index, $rowNumber, 'company', 'Bắt buộc');
             } else {
                 $normalizedCompany = Str::upper($company);
-                if (!in_array($normalizedCompany, self::ALLOWED_COMPANIES, true)) {
+                if (!in_array($normalizedCompany, $allowedCompanies, true)) {
                     $this->addError(
                         $displayErrors,
                         $rowErrors,
                         $index,
                         $rowNumber,
                         'company',
-                        'Chỉ chấp nhận VINCONS hoặc VINALPHA'
+                        'Công ty chưa tồn tại hoặc đã ngừng sử dụng. Kiểm tra danh mục công ty.'
                     );
                 }
                 $mapped['company'] = $normalizedCompany;

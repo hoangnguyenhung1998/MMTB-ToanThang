@@ -2,6 +2,10 @@
 
 use Illuminate\Support\Facades\Route;
 
+Route::middleware('auth')->group(function () {
+    Route::resource('companies', App\Http\Controllers\CompanyController::class)->only(['index', 'store', 'update', 'destroy']);
+});
+
 Route::get('/', function () {
     return redirect()->route('login');
 });

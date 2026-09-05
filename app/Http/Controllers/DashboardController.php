@@ -24,7 +24,7 @@ class DashboardController extends Controller
         $today = CarbonImmutable::today();
         $limitDate = $today->addDays(self::EXPIRY_DAYS);
         $statuses = ['WAIT_HANDOVER', 'HANDED_OVER', 'ACTIVE', 'RETURNED'];
-        $companies = ['VINCONS', 'VINALPHA'];
+        $companies = \App\Models\Company::orderBy('name')->pluck('code')->all();
 
         $totalMachines = Machine::count();
 

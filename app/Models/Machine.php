@@ -10,6 +10,16 @@ class Machine extends Model
 {
     protected $guarded = [];
 
+    public function companyRecord(): BelongsTo
+    {
+        return $this->belongsTo(Company::class, 'company', 'code');
+    }
+
+    public function getCompanyNameAttribute(): string
+    {
+        return $this->companyRecord?->name ?? (string) $this->company;
+    }
+
     public function currentDriver(): BelongsTo
     {
         return $this->belongsTo(Driver::class, 'current_driver_id');

@@ -5,7 +5,7 @@ class CompleteMachineIntakeOcrRequest extends FormRequest
 {
     public function rules(): array { return [
         'worker_id' => ['required','string','max:100'], 'confidence' => ['required','numeric','between:0,1'],
-        'extraction' => ['required','array'], 'extraction.company' => ['nullable','in:VINCONS,VINALPHA'],
+        'extraction' => ['required','array'], 'extraction.company' => ['nullable','string','max:255'],
         'extraction.chassis_no' => ['nullable','string','max:255'], 'extraction.engine_no' => ['nullable','string','max:255'],
         'extraction.machine_type' => ['nullable','string','max:255'], 'extraction.model_name' => ['nullable','string','max:255'],
         'extraction.brand' => ['nullable','string','max:255'], 'extraction.plate_no' => ['nullable','string','max:255'],

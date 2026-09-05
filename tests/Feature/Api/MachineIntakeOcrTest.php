@@ -44,6 +44,23 @@ class MachineIntakeOcrTest extends TestCase
         $this->postJson('/api/ocr/v1/intake/jobs/claim',['worker_id'=>'worker'])->assertUnauthorized();
     }
 
+    public function test_ocr_company_uses_catalog_and_unknown_candidate_does_not_break_completion(): void
+    {
+        foreach (['SGC', 'NEW-UNKNOWN'] as $company) {
+            $case = $this->caseWithImage();
+            $claim = $this->withToken('test-ocr-token')->postJson('/api/ocr/v1/intake/jobs/claim', ['worker_id' => 'intake-worker'])->assertOk();
+            $this->withToken('test-ocr-token')->postJson('/api/ocr/v1/intake/jobs/'.$claim->json('job.id').'/complete', [
+                'worker_id' => 'intake-worker', 'confidence' => .95,
+                'extraction' => ['company' => $company, 'chassis_no' => 'FRAME123', 'engine_no' => 'ENGINE123'],
+            ])->assertOk();
+            $this->assertSame($company === 'SGC' ? 'SGC' : null, $case->fresh()->company);
+            if ($company !== 'SGC') {
+                $this->assertContains('UNKNOWN_COMPANY', $case->fresh()->review_flags);
+                $this->assertSame($company, data_get($case->fresh()->extraction_summary, 'company.value'));
+            }
+        }
+    }
+
     public function test_existing_pending_case_can_be_requeued_from_web(): void
     {
         $case=$this->caseWithImage();

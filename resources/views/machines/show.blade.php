@@ -38,7 +38,7 @@
                         <p class="page-subtitle">
                             {{ $machine->machine_type ?? 'Chưa cập nhật loại máy' }}
                             <span class="detail-separator">•</span>
-                            {{ $machine->company ?? 'Chưa cập nhật công ty' }}
+                            {{ $machine->company_name ?: 'Chưa cập nhật công ty' }}
                         </p>
                     </div>
                     <span class="status-badge {{ $statusMeta['class'] }} detail-status-badge">

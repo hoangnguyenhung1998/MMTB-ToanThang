@@ -32,7 +32,7 @@
     <div class="row g-4"><div class="col-lg-8">
         <div class="app-card p-4 mb-4"><div class="d-flex justify-content-between mb-3"><h3 class="mb-0">Xác nhận định danh</h3><span class="badge bg-secondary">{{ $case->status }}</span></div>
         <form method="POST" action="{{ route('machine-intakes.confirm', $case) }}">@csrf @method('PUT')<div class="row g-3">
-            <div class="col-md-4"><label class="form-label required-label">Công ty</label><select name="company" class="form-select" required><option value="">Chọn</option><option @selected($case->company==='VINCONS')>VINCONS</option><option @selected($case->company==='VINALPHA')>VINALPHA</option></select></div>
+            <div class="col-md-4"><label class="form-label required-label">Công ty</label><select name="company" class="form-select" required><option value="">Chọn</option><x-company-options :selected="old('company', $case->company)" /></select></div>
             <div class="col-md-4"><label class="form-label required-label">Số khung</label><input required name="chassis_no" class="form-control" value="{{ old('chassis_no',$case->chassis_no_raw ?: $case->chassis_no) }}"></div>
             <div class="col-md-4"><label class="form-label required-label">Số máy</label><input required name="engine_no" class="form-control" value="{{ old('engine_no',$case->engine_no_raw ?: $case->engine_no) }}"></div>
             <div class="col-md-4"><label class="form-label required-label">Loại máy</label><input required name="machine_type" class="form-control" value="{{ old('machine_type',$case->machine_type) }}"></div>

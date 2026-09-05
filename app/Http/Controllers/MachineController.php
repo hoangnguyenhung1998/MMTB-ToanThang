@@ -75,7 +75,7 @@ class MachineController extends Controller
     {
         $validated = $request->validate([
             'asset_code' => ['required', 'string', 'max:255'],
-            'company' => ['required', 'in:VINCONS,VINALPHA'],
+            'company' => ['required', new \App\Rules\AvailableCompany()],
             'chassis_no' => ['required', 'string', 'max:255'],
             'engine_no' => ['nullable', 'string', 'max:255'],
             'plate_no' => ['nullable', 'string', 'max:255'],
@@ -157,7 +157,7 @@ class MachineController extends Controller
     {
         $validated = $request->validate([
             'asset_code' => ['required', 'string', 'max:255'],
-            'company' => ['required', 'in:VINCONS,VINALPHA'],
+            'company' => ['required', new \App\Rules\AvailableCompany($machine->company)],
             'chassis_no' => ['required', 'string', 'max:255'],
             'engine_no' => ['nullable', 'string', 'max:255'],
             'plate_no' => ['nullable', 'string', 'max:255'],
@@ -283,6 +283,7 @@ class MachineController extends Controller
     private function buildIndexQuery(Request $request): Builder
     {
         $query = Machine::with([
+            'companyRecord',
             'currentDriver',
             'currentAssignment.project',
             'currentAssignment.commandCenter',

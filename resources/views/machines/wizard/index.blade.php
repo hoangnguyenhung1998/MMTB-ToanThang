@@ -89,8 +89,7 @@
                         <label class="form-label required-label">Công ty</label>
                         <select name="company" class="form-select" required>
                             <option value="">Chọn công ty</option>
-                            <option value="VINCONS" @selected(old('company', $machine['company'] ?? '') === 'VINCONS')>VINCONS</option>
-                            <option value="VINALPHA" @selected(old('company', $machine['company'] ?? '') === 'VINALPHA')>VINALPHA</option>
+                            <x-company-options :selected="old('company', $machine['company'] ?? null)" />
                         </select>
                     </div>
                     <div class="col-md-4">

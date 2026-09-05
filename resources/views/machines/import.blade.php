@@ -47,6 +47,11 @@
                 <form method="POST" action="{{ route('machines.import') }}" enctype="multipart/form-data">
                     @csrf
                     <div class="mb-3">
+                        <label class="form-label">Công ty mặc định cho dòng Excel để trống công ty</label>
+                        <select name="company" class="form-select"><option value="">Dùng công ty trong file</option><x-company-options :selected="old('company')" /></select>
+                        <a href="{{ route('companies.index') }}">Quản lý công ty</a>
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label" for="file">Chọn file Excel (.xlsx)</label>
                         <input class="form-control" type="file" id="file" name="file" required>
                     </div>

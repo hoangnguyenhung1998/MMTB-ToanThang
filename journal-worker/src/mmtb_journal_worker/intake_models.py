@@ -32,7 +32,7 @@ class MachineIntakeExtraction(BaseModel):
     @classmethod
     def company_value(cls, value: str | None) -> str | None:
         value = clean_text(value)
-        return value.upper() if value and value.upper() in {"VINCONS", "VINALPHA"} else None
+        return value.upper() if value and re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,19}", value.upper()) else None
 
     @field_validator("chassis_no", "engine_no")
     @classmethod
