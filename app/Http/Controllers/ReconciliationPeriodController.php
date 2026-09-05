@@ -81,7 +81,7 @@ class ReconciliationPeriodController extends Controller
         Gate::authorize('appendMachines', $reconciliationPeriod);
         try {
             $result = $repair->repair($reconciliationPeriod, auth()->id());
-            return back()->with('success', "Đã khôi phục {$result['repaired']} dòng; còn {$result['unresolved']} dòng cần kiểm tra phân công nguồn hoặc trạng thái duyệt. Không thay đổi giờ làm.");
+            return back()->with('success', "Đã khôi phục {$result['repaired']} liên kết và dọn {$result['removed']} dòng nháp hết hiệu lực; còn {$result['unresolved']} dòng cần kiểm tra. Không thay đổi giờ làm.");
         } catch (Throwable $exception) {
             report($exception);
             return back()->with('error', $exception->getMessage());

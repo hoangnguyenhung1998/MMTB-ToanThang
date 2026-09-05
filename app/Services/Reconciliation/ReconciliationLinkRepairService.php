@@ -18,6 +18,7 @@ class ReconciliationLinkRepairService
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể sửa liên kết.');
             }
             $repaired = 0;
+            $removed = 0;
             $unresolved = 0;
             $rows = $period->rows()->lockForUpdate()->get();
             $assignments = MachineAssignment::query()
@@ -27,6 +28,32 @@ class ReconciliationLinkRepairService
                 ->keyBy('id');
             foreach ($rows as $row) {
                 $assignment = $assignments->get($row->machine_assignment_id);
+                $outsideAssignment = $assignment && (
+                    $assignment->time_in->copy()->startOfDay()->gt($row->work_date)
+                    || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($row->work_date))
+                );
+                if ($outsideAssignment) {
+                    $hasProtectedData = in_array($row->status, ['REVIEWED', 'CONFIRMED'], true)
+                        || $row->manually_edited_at
+                        || !empty($row->daily_ocr_job_ids)
+                        || !empty($row->journal_row_ids)
+                        || $row->ai_reconciliation_job_id;
+                    if ($hasProtectedData) {
+                        $unresolved++;
+                        continue;
+                    }
+                    ActivityLog::create([
+                        'user_id' => $userId, 'machine_id' => $row->machine_id,
+                        'subject_type' => $row->getMorphClass(), 'subject_id' => $row->id,
+                        'event' => 'reconciliation.stale_row_removed',
+                        'description' => 'Xóa dòng nháp nằm ngoài thời gian của phân công nguồn.',
+                        'properties' => ['row' => $row->only(['id', 'work_date', 'project_id', 'command_center_id', 'machine_assignment_id'])],
+                        'occurred_at' => now(),
+                    ]);
+                    $row->delete();
+                    $removed++;
+                    continue;
+                }
                 $needsRepair = !$assignment || !$assignment->project || !$assignment->commandCenter
                     || (int) $row->project_id !== (int) $assignment->project_id
                     || (int) $row->command_center_id !== (int) $assignment->command_center_id;
@@ -57,7 +84,7 @@ class ReconciliationLinkRepairService
                 ]);
                 $repaired++;
             }
-            return compact('repaired', 'unresolved');
+            return compact('repaired', 'removed', 'unresolved');
         });
     }
 }
