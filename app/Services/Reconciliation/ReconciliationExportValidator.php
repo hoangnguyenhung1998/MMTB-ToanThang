@@ -11,7 +11,7 @@ class ReconciliationExportValidator
     public function validate(ReconciliationPeriod $period): array
     {
         $rows = $period->rows()
-            ->with(['machine:id,asset_code', 'commandCenter:id,name'])
+            ->with(['machine:id,asset_code', 'commandCenter:id,name', 'assignment'])
             ->orderBy('machine_id')
             ->orderBy('work_date')
             ->orderBy('segment_start')
@@ -45,6 +45,23 @@ class ReconciliationExportValidator
 
         foreach ($rows as $row) {
             $label = $this->rowLabel($row);
+
+            if ($row->machine_assignment_id && !$row->assignment) {
+                $blocking->push($label.': không tìm thấy phân công nguồn.');
+            }
+            if ($assignment = $row->assignment) {
+                $date = $row->work_date;
+                $outsideAssignment = $assignment->time_in->copy()->startOfDay()->gt($date)
+                    || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($date));
+                $outsideSegment = ($date->isSameDay($assignment->time_in) && $row->segment_start < $assignment->time_in->format('H:i:s'))
+                    || ($assignment->time_out && $date->isSameDay($assignment->time_out) && $row->segment_end > $assignment->time_out->format('H:i:s'));
+                if ($outsideAssignment || $outsideSegment
+                    || (int) $row->machine_id !== $assignment->machine_id
+                    || (int) $row->project_id !== (int) $assignment->project_id
+                    || (int) $row->command_center_id !== (int) $assignment->command_center_id) {
+                    $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn; cần kiểm tra lịch điều chuyển/trả máy.');
+                }
+            }
 
             if (!$row->command_center_id) {
                 $blocking->push($label.': chưa xác định BCH.');

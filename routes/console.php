@@ -35,7 +35,7 @@ Schedule::command('reconciliation:sync-monthly --create-only')
     ->withoutOverlapping();
 
 Schedule::command('reconciliation:sync-monthly')
-    ->dailyAt('00:15')
+    ->everyFifteenMinutes()
     ->timezone('Asia/Ho_Chi_Minh')
     ->withoutOverlapping();
 

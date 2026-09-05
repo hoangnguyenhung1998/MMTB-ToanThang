@@ -81,19 +81,11 @@ class ReconciliationPeriodService
             throw new RuntimeException('Chỉ đồng bộ tự động đối với kỳ tháng.');
         }
 
-        if (!in_array($period->status, ['DRAFT', 'GENERATED'], true)) {
+        if (!in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true)) {
             return $period->refresh();
         }
 
-        if ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()) {
-            return $period->refresh();
-        }
-
-        if ($period->rows()->whereNotNull('manually_edited_at')->exists()) {
-            return $period->refresh();
-        }
-
-        return $this->generator->generate($period);
+        return $this->generator->generate($period, appendOnly: true);
     }
 
     public function generate(ReconciliationPeriod $period): ReconciliationPeriod

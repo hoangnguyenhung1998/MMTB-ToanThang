@@ -5,6 +5,10 @@ use App\Http\Controllers\ReconciliationRowController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth')->group(function () {
+    Route::post('/reconciliation-periods/{reconciliationPeriod}/repair-links', [ReconciliationPeriodController::class, 'repairLinks'])
+        ->name('reconciliation-periods.repair-links');
+    Route::post('/reconciliation-periods/{reconciliationPeriod}/append-machines', [ReconciliationPeriodController::class, 'appendMachines'])
+        ->name('reconciliation-periods.append-machines');
     Route::get('/reconciliation-periods', [ReconciliationPeriodController::class, 'index'])
         ->name('reconciliation-periods.index');
     Route::get('/reconciliation-periods/create', [ReconciliationPeriodController::class, 'create'])

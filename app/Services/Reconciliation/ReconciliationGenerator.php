@@ -19,18 +19,31 @@ class ReconciliationGenerator
     {
     }
 
-    public function generate(ReconciliationPeriod $period): ReconciliationPeriod
+    public function generate(ReconciliationPeriod $period, bool $appendOnly = false): ReconciliationPeriod
     {
         if ($period->date_from->gt($period->date_to)) {
             throw new InvalidArgumentException('Ngày bắt đầu kỳ đối chiếu phải nhỏ hơn hoặc bằng ngày kết thúc.');
         }
 
-        if ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()) {
-            throw new RuntimeException('Không thể tạo lại kỳ đã có dữ liệu được duyệt hoặc xác nhận.');
+        if (!$appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
+            || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
+            throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
         }
 
-        return DB::transaction(function () use ($period) {
-            $period->rows()->delete();
+        return DB::transaction(function () use ($period, $appendOnly) {
+            $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
+            if (!in_array($period->status, $appendOnly ? ['DRAFT', 'GENERATED', 'REVIEWING'] : ['DRAFT', 'GENERATED'], true)) {
+                throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể bổ sung dữ liệu.');
+            }
+            if (!$appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
+                || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
+                throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
+            }
+            $existing = $appendOnly ? $period->rows()->get(['machine_id', 'work_date', 'machine_assignment_id'])
+                ->mapWithKeys(fn ($row) => [implode('|', [$row->machine_id, $row->work_date->format('Y-m-d'), $row->machine_assignment_id]) => true]) : collect();
+            if (!$appendOnly) {
+                $period->rows()->delete();
+            }
 
             $periodStart = $period->date_from->copy()->startOfDay();
             $periodEnd = $period->date_to->copy()->endOfDay();
@@ -123,6 +136,10 @@ class ReconciliationGenerator
                     ]);
 
                     $segmentStart = $this->segmentStart($assignmentStart, $date);
+                    // An orphaned legacy row must be repaired explicitly, not duplicated.
+                    if ($existing->has($key) || $existing->has($assignment->machine_id.'|'.$date->toDateString().'|')) {
+                        continue;
+                    }
                     $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);
                     $sourceRows = collect($journalRows->get(
                         $assignment->machine_id.'|'.$date->toDateString(),
@@ -158,7 +175,7 @@ class ReconciliationGenerator
             }
 
             $period->update([
-                'status' => 'GENERATED',
+                'status' => $period->status === 'REVIEWING' ? 'REVIEWING' : 'GENERATED',
                 'generated_at' => $now,
             ]);
 
