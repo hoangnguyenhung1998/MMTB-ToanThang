@@ -27,7 +27,7 @@ class ReconciliationLinkRepairService
                 ->keyBy('id');
             foreach ($rows as $row) {
                 $assignment = $assignments->get($row->machine_assignment_id);
-                $needsRepair = !$assignment
+                $needsRepair = !$assignment || !$assignment->project || !$assignment->commandCenter
                     || (int) $row->project_id !== (int) $assignment->project_id
                     || (int) $row->command_center_id !== (int) $assignment->command_center_id;
                 if (!$needsRepair) {
