@@ -10,6 +10,7 @@ use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Services\Reconciliation\ReconciliationPeriodService;
 use App\Services\Reconciliation\ReconciliationLinkRepairService;
+use App\Services\Reconciliation\ReconciliationAssignmentBchResolutionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -192,6 +193,43 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $this->assertNull($stale->fresh());
         $this->assertNotNull($currentRow->fresh());
         $this->assertSame([12, 13], $currentRow->fresh()->daily_ocr_job_ids);
+    }
+
+    public function test_confirmed_historical_bch_restores_rows_and_assignment_day_segments(): void
+    {
+        $key = uniqid();
+        $machine = Machine::create(['asset_code' => $key, 'chassis_no' => $key, 'company' => 'SGC', 'status' => 'ACTIVE']);
+        $project = Project::create(['name' => 'Dự án']);
+        $bch = CommandCenter::create(['name' => 'TĐXD 02.4']);
+        $old = MachineAssignment::create([
+            'machine_id' => $machine->id, 'project_id' => $project->id, 'command_center_id' => null,
+            'time_in' => '2026-08-01 08:00:00', 'time_out' => '2026-08-03 09:39:00',
+        ]);
+        $current = MachineAssignment::create([
+            'machine_id' => $machine->id, 'project_id' => $project->id, 'command_center_id' => $bch->id,
+            'time_in' => '2026-08-03 21:39:00',
+        ]);
+        $period = app(ReconciliationPeriodService::class)->ensureMonthly('2026-08');
+        $oldRow = $period->rows()->create([
+            'machine_id' => $machine->id, 'machine_assignment_id' => $old->id, 'work_date' => '2026-08-03',
+            'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'project_id' => $project->id,
+            'command_center_id' => null, 'status' => 'DRAFT',
+        ]);
+        $currentRow = $period->rows()->create([
+            'machine_id' => $machine->id, 'machine_assignment_id' => $current->id, 'work_date' => '2026-08-03',
+            'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'project_id' => $project->id,
+            'command_center_id' => $bch->id, 'status' => 'DRAFT',
+        ]);
+
+        $result = app(ReconciliationAssignmentBchResolutionService::class)->resolve($period, $old, $bch, null);
+        $this->assertSame(1, $result['updated']);
+        $this->assertSame($bch->id, $oldRow->fresh()->command_center_id);
+        $this->assertSame('09:39:00', $oldRow->fresh()->segment_end);
+        $this->assertSame('21:39:00', $currentRow->fresh()->segment_start);
+        $this->assertNull($old->fresh()->command_center_id);
+        $this->assertDatabaseHas('machine_assignment_bch_resolutions', ['machine_assignment_id' => $old->id, 'command_center_id' => $bch->id]);
+        $validation = app(\App\Services\Reconciliation\ReconciliationExportValidator::class)->validate($period);
+        $this->assertTrue($validation['can_export']);
     }
 
     private function assignment(string $date): MachineAssignment

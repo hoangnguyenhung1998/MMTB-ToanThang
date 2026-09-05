@@ -15,6 +15,7 @@ use App\Http\Requests\Reconciliation\StartReviewReconciliationPeriodRequest;
 use App\Http\Requests\Reconciliation\StoreReconciliationPeriodRequest;
 use App\Models\CommandCenter;
 use App\Models\Machine;
+use App\Models\MachineAssignment;
 use App\Models\OcrJob;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
@@ -24,6 +25,7 @@ use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationPeriodService;
 use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\View\View;
 use Maatwebsite\Excel\Facades\Excel;
@@ -82,6 +84,34 @@ class ReconciliationPeriodController extends Controller
         try {
             $result = $repair->repair($reconciliationPeriod, auth()->id());
             return back()->with('success', "Đã khôi phục {$result['repaired']} liên kết và dọn {$result['removed']} dòng nháp hết hiệu lực; còn {$result['unresolved']} dòng cần kiểm tra. Không thay đổi giờ làm.");
+        } catch (Throwable $exception) {
+            report($exception);
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function resolveAssignmentBch(
+        Request $request,
+        ReconciliationPeriod $reconciliationPeriod,
+        MachineAssignment $machineAssignment,
+        \App\Services\Reconciliation\ReconciliationAssignmentBchResolutionService $resolution,
+        ReconciliationEvidenceSyncService $evidenceSync
+    ): RedirectResponse {
+        Gate::authorize('appendMachines', $reconciliationPeriod);
+        $data = $request->validate(['command_center_id' => ['required', 'integer', 'exists:command_centers,id']]);
+        try {
+            $result = $resolution->resolve(
+                $reconciliationPeriod,
+                $machineAssignment,
+                CommandCenter::findOrFail($data['command_center_id']),
+                $request->user()?->id
+            );
+            if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING'], true)) {
+                foreach ($result['dates'] as $date) {
+                    $evidenceSync->sync($reconciliationPeriod, $result['machine_id'], $date);
+                }
+            }
+            return back()->with('success', "Đã phục hồi BCH cho {$result['updated']} dòng và đồng bộ lại OCR; {$result['protected']} dòng đã sửa/duyệt được giữ nguyên.");
         } catch (Throwable $exception) {
             report($exception);
             return back()->with('error', $exception->getMessage());
@@ -223,6 +253,15 @@ class ReconciliationPeriodController extends Controller
             ->orderBy('name')
             ->get(['id', 'name']);
 
+        $unresolvedAssignments = MachineAssignment::query()
+            ->whereIn('id', $reconciliationPeriod->rows()->whereNull('command_center_id')->pluck('machine_assignment_id')->filter()->unique())
+            ->whereNull('command_center_id')
+            ->whereDoesntHave('bchResolution')
+            ->with(['machine:id,asset_code', 'project:id,name'])
+            ->orderBy('time_in')
+            ->get();
+        $availableCommandCenters = CommandCenter::query()->orderBy('name')->get(['id', 'name']);
+
         $rowStatuses = $reconciliationPeriod->rows()
             ->whereNotNull('status')
             ->distinct()
@@ -257,6 +296,8 @@ class ReconciliationPeriodController extends Controller
             'machines',
             'projects',
             'commandCenters',
+            'unresolvedAssignments',
+            'availableCommandCenters',
             'rowStatuses',
             'changeTypes',
             'reviewedCount',

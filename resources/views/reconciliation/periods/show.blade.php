@@ -147,6 +147,37 @@
         <div class="alert alert-danger">{{ session('error') }}</div>
     @endif
 
+    @if ($unresolvedAssignments->isNotEmpty())
+        <div class="card shadow-sm border-warning mb-3">
+            <div class="card-header bg-warning-subtle fw-semibold">Phân công lịch sử cần xác nhận lại BCH</div>
+            <div class="card-body">
+                <p class="text-muted">BCH nguồn đã bị mất liên kết. Chọn BCH đúng để phục hồi các dòng đối chiếu; hệ thống giữ lịch sử phân công và đồng bộ lại OCR.</p>
+                @foreach ($unresolvedAssignments as $assignment)
+                    <form method="POST" action="{{ route('reconciliation-periods.resolve-assignment-bch', [$reconciliationPeriod, $assignment]) }}" class="row g-2 align-items-end mb-2" onsubmit="return confirm('Xác nhận BCH lịch sử đã chọn cho phân công này?')">
+                        @csrf
+                        <div class="col-lg-4">
+                            <strong>{{ $assignment->machine?->asset_code }}</strong>
+                            <div class="small text-muted">
+                                {{ $assignment->time_in->format('d/m/Y H:i') }} – {{ $assignment->time_out?->format('d/m/Y H:i') ?? 'đang hoạt động' }}
+                                · {{ $assignment->project?->name ?? 'Chưa rõ dự án' }}
+                            </div>
+                        </div>
+                        <div class="col-lg-5">
+                            <label class="form-label" for="historical-bch-{{ $assignment->id }}">BCH thực tế</label>
+                            <select class="form-select" id="historical-bch-{{ $assignment->id }}" name="command_center_id" required>
+                                <option value="">Chọn BCH</option>
+                                @foreach ($availableCommandCenters as $center)
+                                    <option value="{{ $center->id }}">{{ $center->name }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="col-lg-3"><button class="btn btn-warning" type="submit">Xác nhận và phục hồi</button></div>
+                    </form>
+                @endforeach
+            </div>
+        </div>
+    @endif
+
     @if ($exportValidation['blocking']->isNotEmpty() || $exportValidation['warnings']->isNotEmpty())
         <div class="card shadow-sm border-0 mb-3">
             <div class="card-header bg-white fw-semibold">Kiểm tra trước khi xuất Excel</div>

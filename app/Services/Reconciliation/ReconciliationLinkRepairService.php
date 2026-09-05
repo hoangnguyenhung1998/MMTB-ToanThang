@@ -22,12 +22,14 @@ class ReconciliationLinkRepairService
             $unresolved = 0;
             $rows = $period->rows()->lockForUpdate()->get();
             $assignments = MachineAssignment::query()
-                ->with(['project', 'commandCenter'])
+                ->with(['project', 'commandCenter', 'bchResolution.commandCenter'])
                 ->whereIn('id', $rows->pluck('machine_assignment_id')->filter()->unique())
                 ->get()
                 ->keyBy('id');
             foreach ($rows as $row) {
                 $assignment = $assignments->get($row->machine_assignment_id);
+                $sourceBch = $assignment?->commandCenter ?: $assignment?->bchResolution?->commandCenter;
+                $sourceBchId = $sourceBch?->id;
                 $outsideAssignment = $assignment && (
                     $assignment->time_in->copy()->startOfDay()->gt($row->work_date)
                     || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($row->work_date))
@@ -47,7 +49,8 @@ class ReconciliationLinkRepairService
                             return false;
                         }
                         $candidateAssignment = $assignments->get($candidate->machine_assignment_id);
-                        if (!$candidateAssignment || !$candidateAssignment->project || !$candidateAssignment->commandCenter
+                        $candidateBch = $candidateAssignment?->commandCenter ?: $candidateAssignment?->bchResolution?->commandCenter;
+                        if (!$candidateAssignment || !$candidateAssignment->project || !$candidateBch
                             || $candidateAssignment->time_in->copy()->startOfDay()->gt($candidate->work_date)
                             || ($candidateAssignment->time_out && $candidateAssignment->time_out->copy()->endOfDay()->lt($candidate->work_date))) {
                             return false;
@@ -73,9 +76,9 @@ class ReconciliationLinkRepairService
                     $removed++;
                     continue;
                 }
-                $needsRepair = !$assignment || !$assignment->project || !$assignment->commandCenter
+                $needsRepair = !$assignment || !$assignment->project || !$sourceBch
                     || (int) $row->project_id !== (int) $assignment->project_id
-                    || (int) $row->command_center_id !== (int) $assignment->command_center_id;
+                    || (int) $row->command_center_id !== (int) $sourceBchId;
                 if (!$needsRepair) {
                     continue;
                 }
@@ -84,14 +87,14 @@ class ReconciliationLinkRepairService
                     continue;
                 }
                 if (!$assignment || (int) $assignment->machine_id !== (int) $row->machine_id
-                    || !$assignment->project || !$assignment->commandCenter
+                    || !$assignment->project || !$sourceBch
                     || $assignment->time_in->copy()->startOfDay()->gt($row->work_date)
                     || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($row->work_date))) {
                     $unresolved++;
                     continue;
                 }
                 $old = $row->only(['project_id', 'command_center_id']);
-                $new = ['project_id' => $assignment->project_id, 'command_center_id' => $assignment->command_center_id];
+                $new = ['project_id' => $assignment->project_id, 'command_center_id' => $sourceBchId];
                 $row->update($new);
                 ActivityLog::create([
                     'user_id' => $userId, 'machine_id' => $row->machine_id,

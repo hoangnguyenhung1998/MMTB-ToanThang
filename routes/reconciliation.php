@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth')->group(function () {
     Route::post('/reconciliation-periods/{reconciliationPeriod}/repair-links', [ReconciliationPeriodController::class, 'repairLinks'])
         ->name('reconciliation-periods.repair-links');
+    Route::post('/reconciliation-periods/{reconciliationPeriod}/assignments/{machineAssignment}/resolve-bch', [ReconciliationPeriodController::class, 'resolveAssignmentBch'])
+        ->name('reconciliation-periods.resolve-assignment-bch');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/append-machines', [ReconciliationPeriodController::class, 'appendMachines'])
         ->name('reconciliation-periods.append-machines');
     Route::get('/reconciliation-periods', [ReconciliationPeriodController::class, 'index'])

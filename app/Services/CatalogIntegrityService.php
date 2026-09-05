@@ -15,6 +15,7 @@ class CatalogIntegrityService
         $isBch = $model instanceof CommandCenter;
         $column = $isBch ? 'command_center_id' : 'project_id';
         $references = [
+            ...($isBch ? ['machine_assignment_bch_resolutions' => ['command_center_id']] : []),
             'machine_assignments' => [$column],
             'reconciliation_rows' => [$column],
             'machine_intake_cases' => [$column],
