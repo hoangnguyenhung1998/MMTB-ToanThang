@@ -58,12 +58,14 @@ class ReconciliationAssignmentBchResolutionService
             $affectedDates = array_values(array_unique($dates));
             $siblingRows = $period->rows()
                 ->where('machine_id', $assignment->machine_id)
-                ->whereIn('work_date', $affectedDates)
                 ->with('assignment')
                 ->lockForUpdate()
                 ->get();
             foreach ($siblingRows as $row) {
-                if (!$row->assignment || in_array($row->status, ['REVIEWED', 'CONFIRMED'], true) || $row->manually_edited_at) {
+                if (!in_array($row->work_date->format('Y-m-d'), $affectedDates, true)
+                    || !$row->assignment
+                    || in_array($row->status, ['REVIEWED', 'CONFIRMED'], true)
+                    || $row->manually_edited_at) {
                     continue;
                 }
                 $segment = [];
