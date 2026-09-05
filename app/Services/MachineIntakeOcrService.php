@@ -91,6 +91,16 @@ class MachineIntakeOcrService
         $updates = ['extraction_summary' => $summary, 'review_flags' => array_values(array_unique($flags))];
         if (! $case->confirmed_at && ! $case->machine_id) $updates['status'] = 'EXTRACTED';
         foreach (self::FIELDS as $field) if (! $case->confirmed_at && isset($summary[$field]['value'])) $updates[$field] = $summary[$field]['value'];
+        if (isset($updates['company'])) {
+            $code = strtoupper(trim((string) $updates['company']));
+            if (\App\Models\Company::where('code', $code)->where('is_active', true)->exists()) {
+                $updates['company'] = $code;
+            } else {
+                // Preserve the raw OCR candidate in extraction_summary; never invent a catalog entry.
+                unset($updates['company']);
+                $updates['review_flags'][] = 'UNKNOWN_COMPANY';
+            }
+        }
         if (isset($updates['chassis_no'])) { $updates['chassis_no_raw'] = $updates['chassis_no']; $updates['chassis_no'] = $this->normalizeIdentifier($updates['chassis_no']); }
         if (isset($updates['engine_no'])) { $updates['engine_no_raw'] = $updates['engine_no']; $updates['engine_no'] = $this->normalizeIdentifier($updates['engine_no']); }
         $case->update(app(MachineSpecificationNormalizer::class)->normalize($updates));

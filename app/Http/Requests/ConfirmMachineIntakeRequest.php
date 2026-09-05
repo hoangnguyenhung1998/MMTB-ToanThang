@@ -9,7 +9,7 @@ class ConfirmMachineIntakeRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'company' => ['required', 'in:VINCONS,VINALPHA'], 'chassis_no' => ['required', 'string', 'max:255'],
+            'company' => ['required', new \App\Rules\AvailableCompany($this->route('machineIntake') instanceof \App\Models\MachineIntakeCase ? $this->route('machineIntake')->company : null)], 'chassis_no' => ['required', 'string', 'max:255'],
             'engine_no' => ['required', 'string', 'max:255'], 'plate_no' => ['nullable', 'string', 'max:255'],
             'machine_type' => ['required', 'string', 'max:255'], 'model_name' => ['nullable', 'string', 'max:255'],
             'brand' => ['nullable','string','max:255'], 'plate_no' => ['nullable','string','max:255'],

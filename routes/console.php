@@ -35,7 +35,7 @@ Schedule::command('reconciliation:sync-monthly --create-only')
     ->withoutOverlapping();
 
 Schedule::command('reconciliation:sync-monthly')
-    ->dailyAt('00:15')
+    ->everyFifteenMinutes()
     ->timezone('Asia/Ho_Chi_Minh')
     ->withoutOverlapping();
 
@@ -49,6 +49,11 @@ Schedule::command('automation:evaluate-health')
 
 Schedule::command('automation:dispatch-alerts')
     ->everyMinute()
+    ->withoutOverlapping();
+
+Schedule::call(fn () => app(App\Services\OcrCapacityAlertRecorder::class)->evaluate())
+    ->name('ocr:monitor-capacity')
+    ->everyFiveMinutes()
     ->withoutOverlapping();
 
 Schedule::command('machine-handovers:dispatch-reminders')

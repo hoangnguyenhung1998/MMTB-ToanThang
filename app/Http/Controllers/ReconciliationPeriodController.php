@@ -62,6 +62,32 @@ class ReconciliationPeriodController extends Controller
         return view('reconciliation.periods.create');
     }
 
+    public function appendMachines(ReconciliationPeriod $reconciliationPeriod): RedirectResponse
+    {
+        Gate::authorize('appendMachines', $reconciliationPeriod);
+        try {
+            $before = $reconciliationPeriod->rows()->count();
+            $period = $this->periodService->syncMonthly($reconciliationPeriod);
+            $added = $period->rows()->count() - $before;
+            return back()->with('success', "Đã bổ sung {$added} dòng còn thiếu; giữ nguyên các dòng hiện có.");
+        } catch (Throwable $exception) {
+            report($exception);
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
+    public function repairLinks(ReconciliationPeriod $reconciliationPeriod, \App\Services\Reconciliation\ReconciliationLinkRepairService $repair): RedirectResponse
+    {
+        Gate::authorize('appendMachines', $reconciliationPeriod);
+        try {
+            $result = $repair->repair($reconciliationPeriod, auth()->id());
+            return back()->with('success', "Đã khôi phục {$result['repaired']} dòng; còn {$result['unresolved']} dòng cần kiểm tra phân công nguồn hoặc trạng thái duyệt. Không thay đổi giờ làm.");
+        } catch (Throwable $exception) {
+            report($exception);
+            return back()->with('error', $exception->getMessage());
+        }
+    }
+
     public function store(StoreReconciliationPeriodRequest $request): RedirectResponse
     {
         try {

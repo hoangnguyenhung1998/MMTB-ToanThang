@@ -30,7 +30,7 @@ class MachineIntakeVisionClient:
         mime={".png":"image/png",".webp":"image/webp",".tif":"image/tiff",".tiff":"image/tiff"}.get(image_path.suffix.lower(),"image/jpeg")
         encoded=base64.b64encode(image_path.read_bytes()).decode("ascii")
         instruction=("Bạn là OCR kiểm soát hồ sơ máy công trình. Loại ảnh: "+document_type+". Chỉ đọc ký tự thực sự nhìn thấy, tuyệt đối không suy đoán. "
-            "Trích công ty VINCONS/VINALPHA nếu có, số khung, số máy/động cơ, loại máy, nhãn hiệu, model, biển số và năm sản xuất. "
+            "Trích mã công ty nếu nhìn thấy rõ (ví dụ VINCONS, VINALPHA, SGC hoặc mã khác), không suy đoán công ty từ mã máy. Trích số khung, số máy/động cơ, loại máy, nhãn hiệu, model, biển số và năm sản xuất. "
             "Loại máy nhận dạng vật lý: máy xúc bánh xích, máy xúc bánh lốp, lu rung hoặc xe ô tô. Đọc công suất/model number và số chân ô tô 2/3/4 nếu thấy. "
             "Số khung và số máy phải giữ đúng thứ tự ký tự. Đặc biệt kiểm tra cặp dễ nhầm 0/O, 1/I, 5/S, 2/Z, 8/B. "
             "Nếu không chắc, giữ giá trị đọc tốt nhất nhưng thêm cờ AMBIGUOUS_<FIELD>_<POSITION> vào review_flags. Không dùng mã tài sản vì hồ sơ chưa được cấp mã. "

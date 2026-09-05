@@ -140,6 +140,7 @@ class MachineService
 
             $openAssignment = MachineAssignment::where('machine_id', $machine->id)
                 ->whereNull('time_out')
+                ->lockForUpdate()
                 ->first();
 
             if (!$openAssignment) {

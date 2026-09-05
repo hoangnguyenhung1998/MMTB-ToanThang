@@ -11,7 +11,8 @@
     */
 
     $statuses = $statuses ?? ['WAIT_HANDOVER', 'HANDED_OVER', 'ACTIVE', 'RETURNED'];
-    $companies = $companies ?? ['VINCONS', 'VINALPHA'];
+    $companies = $companies ?? \App\Models\Company::pluck('code')->all();
+    $companyNames = \App\Models\Company::pluck('name', 'code');
     $statusCounts = $statusCounts ?? collect();
     $companyStatusCounts = $companyStatusCounts ?? [];
     $projectCounts = $projectCounts ?? collect();
@@ -262,7 +263,7 @@
                 <div class="dashboard-panel-head">
                     <div>
                         <h2>Phân bổ theo công ty</h2>
-                        <p>Tình trạng thiết bị của VINCONS và VINALPHA.</p>
+                        <p>Tình trạng thiết bị theo công ty.</p>
                     </div>
                 </div>
 
@@ -281,7 +282,7 @@
                         <div class="dashboard-company-card">
                             <div class="dashboard-company-head">
                                 <div>
-                                    <strong>{{ $company }}</strong>
+                                    <strong>{{ $companyNames[$company] ?? $company }}</strong>
                                     <span>{{ number_format($companyTotal) }} thiết bị</span>
                                 </div>
                                 <b>{{ $companyPercent }}%</b>

@@ -9,6 +9,11 @@ class Project extends Model
 {
     protected $guarded = [];
 
+    protected static function booted(): void
+    {
+        static::deleting(fn (self $model) => app(\App\Services\CatalogIntegrityService::class)->assertUnused($model));
+    }
+
     public function assignments(): HasMany
     {
         return $this->hasMany(MachineAssignment::class);

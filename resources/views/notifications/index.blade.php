@@ -9,6 +9,7 @@
         'missing_driver' => 'Thiếu tài xế',
         'expired_document' => 'Hồ sơ hết hạn',
         'expiring_document' => 'Hồ sơ sắp hết hạn',
+        'ocr_capacity' => 'Công suất OCR',
     ];
 @endphp
 
@@ -17,7 +18,7 @@
         <div>
             <div class="notification-center-eyebrow">TRUNG TÂM THÔNG BÁO</div>
             <h1>Cảnh báo cần xử lý</h1>
-            <p>Tổng hợp tự động từ dữ liệu máy, tài xế và hồ sơ hiện tại.</p>
+            <p>Tổng hợp tự động từ dữ liệu máy, tài xế, hồ sơ và hệ thống OCR.</p>
         </div>
 
         <div class="notification-center-header-actions">

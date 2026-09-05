@@ -11,6 +11,9 @@ class MachineAssignment extends Model
 {
     protected $guarded = [];
     protected $casts = [
+        'machine_id' => 'integer',
+        'project_id' => 'integer',
+        'command_center_id' => 'integer',
         'time_in' => 'datetime',
         'time_out' => 'datetime',
     ];

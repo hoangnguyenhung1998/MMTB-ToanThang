@@ -53,6 +53,14 @@ class OcrJobTest extends TestCase
         $this->withToken('test-ocr-token')
             ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-2'])
             ->assertNoContent();
+
+        $this->assertDatabaseHas('ocr_processing_runs', [
+            'ocr_job_id' => $job->id,
+            'worker_id' => 'worker-1',
+            'stage' => 'CLASSIFY',
+            'attempt' => 1,
+            'status' => 'PROCESSING',
+        ]);
     }
 
     public function test_successful_result_is_matched_to_machine_and_classified(): void
@@ -87,6 +95,11 @@ class OcrJobTest extends TestCase
             'id' => $job->id,
             'status' => 'COMPLETED',
             'shift' => 'AFTERNOON_OT',
+        ]);
+        $this->assertDatabaseHas('ocr_processing_runs', [
+            'ocr_job_id' => $job->id,
+            'worker_id' => 'worker-1',
+            'status' => 'COMPLETED',
         ]);
     }
 
@@ -204,6 +217,18 @@ class OcrJobTest extends TestCase
             ->assertOk()
             ->assertJsonPath('job.id', $job->id)
             ->assertJsonPath('job.attempts', 2);
+
+        $this->assertDatabaseCount('ocr_processing_runs', 2);
+        $this->assertDatabaseHas('ocr_processing_runs', [
+            'ocr_job_id' => $job->id,
+            'attempt' => 1,
+            'status' => 'FAILED',
+        ]);
+        $this->assertDatabaseHas('ocr_processing_runs', [
+            'ocr_job_id' => $job->id,
+            'attempt' => 2,
+            'status' => 'PROCESSING',
+        ]);
     }
 
     public function test_worker_claims_only_supported_document_types(): void

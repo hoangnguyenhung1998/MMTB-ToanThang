@@ -39,7 +39,7 @@ class MachineWizardController extends Controller
     {
         $validated = $request->validate([
             'asset_code' => ['required', 'string', 'max:255', 'unique:machines,asset_code'],
-            'company' => ['required', 'in:VINCONS,VINALPHA'],
+            'company' => ['required', new \App\Rules\AvailableCompany()],
             'chassis_no' => ['required', 'string', 'max:255', 'unique:machines,chassis_no'],
             'engine_no' => ['nullable', 'string', 'max:255'],
             'plate_no' => ['nullable', 'string', 'max:255'],

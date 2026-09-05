@@ -29,6 +29,16 @@
 
         <div class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-secondary" href="{{ route('reconciliation-periods.index') }}">Danh sách kỳ</a>
+            @can('appendMachines', $reconciliationPeriod)
+                <form method="POST" action="{{ route('reconciliation-periods.repair-links', $reconciliationPeriod) }}" onsubmit="return confirm('Khôi phục liên kết thiếu từ phân công nguồn? Dòng đã duyệt và giờ làm sẽ được giữ nguyên.')">
+                    @csrf
+                    <button class="btn btn-outline-secondary" type="submit">Kiểm tra / sửa liên kết BCH</button>
+                </form>
+                <form method="POST" action="{{ route('reconciliation-periods.append-machines', $reconciliationPeriod) }}">
+                    @csrf
+                    <button class="btn btn-primary" type="submit" title="Thêm dòng còn thiếu từ ngày bàn giao, giữ nguyên giờ đã nhập">Bổ sung máy mới</button>
+                </form>
+            @endcan
 
             @if (in_array($reconciliationPeriod->status, ['DRAFT', 'GENERATED']))
                 <form method="POST"

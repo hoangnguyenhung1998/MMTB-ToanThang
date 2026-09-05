@@ -10,7 +10,7 @@ class StoreMachineIntakeRequest extends FormRequest
     {
         return [
             'source_channel' => ['nullable', 'in:WEB,ZALO,TELEGRAM,EMAIL'],
-            'company' => ['nullable', 'in:VINCONS,VINALPHA'],
+            'company' => ['nullable', new \App\Rules\AvailableCompany()],
             'chassis_no' => ['nullable', 'string', 'max:255'], 'engine_no' => ['nullable', 'string', 'max:255'],
             'plate_no' => ['nullable', 'string', 'max:255'], 'machine_type' => ['nullable', 'string', 'max:255'],
             'model_name' => ['nullable', 'string', 'max:255'],

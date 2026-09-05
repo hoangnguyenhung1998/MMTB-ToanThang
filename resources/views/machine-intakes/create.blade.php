@@ -12,7 +12,7 @@
             </x-section-card>
             <x-section-card number="02" title="Thông tin đã biết" subtitle="Có thể để trống rồi bổ sung sau OCR.">
                 <div class="row g-3">
-                    <div class="col-md-4"><label class="form-label">Công ty</label><select name="company" class="form-select"><option value="">Chưa xác định</option><option>VINCONS</option><option>VINALPHA</option></select></div>
+                    <div class="col-md-4"><label class="form-label">Công ty</label><select name="company" class="form-select"><option value="">Chưa xác định</option><x-company-options :selected="old('company')" /></select></div>
                     <div class="col-md-4"><label class="form-label">Số khung</label><input name="chassis_no" class="form-control" value="{{ old('chassis_no') }}"></div>
                     <div class="col-md-4"><label class="form-label">Số máy</label><input name="engine_no" class="form-control" value="{{ old('engine_no') }}"></div>
                     <div class="col-md-4"><label class="form-label">Loại máy</label><input name="machine_type" class="form-control" value="{{ old('machine_type') }}"></div>

@@ -53,7 +53,7 @@ class ReconciliationPeriodLifecycleTest extends TestCase
         ]);
     }
 
-    public function test_reviewing_period_is_not_regenerated_by_automatic_sync(): void
+    public function test_reviewing_period_appends_missing_rows_without_changing_review_state(): void
     {
         [$machineId, $projectId, $commandCenterId] = $this->baseData();
         $service = app(ReconciliationPeriodService::class);
@@ -70,7 +70,7 @@ class ReconciliationPeriodLifecycleTest extends TestCase
 
         $service->syncMonthly($period->fresh());
 
-        $this->assertDatabaseCount('reconciliation_rows', 0);
+        $this->assertDatabaseCount('reconciliation_rows', 12);
         $this->assertSame('REVIEWING', $period->fresh()->status);
     }
 
