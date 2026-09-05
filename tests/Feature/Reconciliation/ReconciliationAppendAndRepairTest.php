@@ -56,11 +56,11 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $row = $period->rows()->first();
         $row->update(['command_center_id' => null, 'regular_minutes' => 321, 'manually_edited_at' => now()]);
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame(['repaired' => 1, 'unresolved' => 0], $result);
+        $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], $result);
         $this->assertEquals(321, $row->fresh()->regular_minutes);
         $this->assertEquals($assignment->command_center_id, $row->fresh()->command_center_id);
         $this->assertSame(1, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
-        $this->assertSame(['repaired' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
     }
 
     public function test_missing_bch_in_source_assignment_is_not_guessed(): void
@@ -70,7 +70,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $service = app(ReconciliationPeriodService::class);
         $period = $service->ensureMonthly('2026-09');
         $service->syncMonthly($period);
-        $this->assertSame(['repaired' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
         $this->assertNull($period->rows()->first()->command_center_id);
     }
 
@@ -109,7 +109,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $service->syncMonthly($period);
         $row = $period->rows()->first();
         $row->update(['command_center_id' => null, 'status' => 'REVIEWED']);
-        $this->assertSame(['repaired' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
         $this->assertNull($row->fresh()->command_center_id);
     }
 
@@ -129,10 +129,31 @@ class ReconciliationAppendAndRepairTest extends TestCase
             'manually_edited_at' => now(),
         ]);
 
-        $this->assertSame(['repaired' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
         $this->assertSame($assignment->project_id, $row->fresh()->project_id);
         $this->assertSame($assignment->command_center_id, $row->fresh()->command_center_id);
         $this->assertEquals(321, $row->fresh()->regular_minutes);
+    }
+
+    public function test_repair_removes_only_unprotected_rows_outside_source_assignment(): void
+    {
+        $expired = $this->assignment('2026-08-01');
+        $expired->update(['time_out' => '2026-08-31 17:30:00']);
+        $period = app(ReconciliationPeriodService::class)->ensureMonthly('2026-09');
+        $staleId = $period->rows()->create([
+            'machine_id' => $expired->machine_id,
+            'machine_assignment_id' => $expired->id,
+            'work_date' => '2026-09-01',
+            'segment_start' => '00:00:00',
+            'segment_end' => '23:59:59',
+            'project_id' => $expired->project_id,
+            'command_center_id' => $expired->command_center_id,
+            'status' => 'DRAFT',
+        ])->id;
+
+        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertDatabaseMissing('reconciliation_rows', ['id' => $staleId]);
+        $this->assertSame(1, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
     }
 
     private function assignment(string $date): MachineAssignment
