@@ -16,7 +16,7 @@ DATE_PATTERNS = [
         ),
     ),
 ]
-TIME_PATTERN = re.compile(r"(?<!\d)([01]?\d|2[0-3])\s*[:.]\s*([0-5]\d)(?::([0-5]\d))?(?!\d)")
+TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*[:.hH]\s*([0-5]\d)(?::([0-5]\d))?(?![\d.])(?:\s*([AP])\s*\.?\s*M\.?)?", re.I)
 PHONE_PATTERN = re.compile(r"(?<!\d)(0(?:[ .-]?\d){8,10})(?!\d)")
 GENERIC_ASSET_PATTERN = re.compile(
     r"[A-Z0-9]{1,4}\s*[-_ ]\s*[A-Z0-9]{1,4}\s*[-_ ]?\s*[A-Z0-9]{2,8}",
@@ -56,16 +56,25 @@ def parse_date(text: str) -> date | None:
 
 def parse_time(text: str) -> time | None:
     clean = text.replace("O", "0").replace("o", "0")
+    for _, pattern in DATE_PATTERNS:
+        clean = pattern.sub(' ', clean)
+    candidates = set()
     for match in TIME_PATTERN.finditer(clean):
         try:
-            return time(
-                int(match.group(1)),
+            hour = int(match.group(1))
+            meridiem = match.group(4)
+            if meridiem:
+                if not 1 <= hour <= 12:
+                    continue
+                hour = hour % 12 + (12 if meridiem.upper() == "P" else 0)
+            candidates.add(time(
+                hour,
                 int(match.group(2)),
                 int(match.group(3) or 0),
-            )
+            ))
         except ValueError:
             continue
-    return None
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def parse_phone(text: str) -> str | None:
@@ -197,4 +206,3 @@ class AssetMatcher:
             return observed_code, 0.5, observed_raw
 
         return None, 0.0, ""
-

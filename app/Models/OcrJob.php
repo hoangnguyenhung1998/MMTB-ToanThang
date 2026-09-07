@@ -15,6 +15,7 @@ class OcrJob extends Model
     protected function casts(): array
     {
         return [
+            'daily_metadata' => 'array',
             'claimed_at' => 'datetime',
             'lease_expires_at' => 'datetime',
             'classification_confidence' => 'decimal:4',
@@ -51,6 +52,9 @@ class OcrJob extends Model
         // PENDING default so newly-created OCR results are evaluated too.
         $reviewStatus = $job->review_status ?? 'PENDING';
 
+        // A failed re-OCR must not approve fields retained from the previous attempt.
+        if (config('daily_photos.enabled') && $job->status === 'FAILED') return;
+
         if ($job->reviewed_at
             || ! in_array($reviewStatus, ['PENDING', 'AUTO_APPROVED'], true)
             || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
@@ -59,7 +63,9 @@ class OcrJob extends Model
             $isComplete = $job->machine_id
                 && $job->extracted_date
                 && $job->extracted_time
-                && $job->machine()->exists();
+                && $job->machine()->exists()
+                && (!config('daily_photos.enabled') || ((float) $job->confidence >= (float) config('ocr.minimum_confidence')
+                    && !array_intersect($job->exceptions ?? [], ['SENDER_MACHINE_CONFLICT', 'AMBIGUOUS_TIME', 'AMBIGUOUS_DATE'])));
 
             $updates = [
                 'status' => $isComplete ? 'COMPLETED' : $job->status,

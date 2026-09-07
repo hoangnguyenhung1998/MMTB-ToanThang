@@ -24,6 +24,7 @@ class AiReconciliationService
 
     public function claim(string $workerId, string $workDate, int $limit = 5): Collection
     {
+        if (config('daily_photos.enabled')) return new Collection();
         $this->enqueueCandidates($workDate);
         $this->rules->reconcilePending($workDate);
 
@@ -124,6 +125,7 @@ class AiReconciliationService
 
     public function complete(AiReconciliationJob $job, array $data): AiReconciliationSubmission
     {
+        abort_if(config('daily_photos.enabled'), 409, 'Đối soát AI đang bảo trì.');
         $existing = AiReconciliationSubmission::query()
             ->where('submission_uuid', $data['submission_uuid'])
             ->first();
@@ -171,6 +173,7 @@ class AiReconciliationService
 
     public function fail(AiReconciliationJob $job, array $data): AiReconciliationJob
     {
+        abort_if(config('daily_photos.enabled'), 409, 'Đối soát AI đang bảo trì.');
         $this->ensureClaimOwner($job, $data['worker_id']);
 
         $job->update([

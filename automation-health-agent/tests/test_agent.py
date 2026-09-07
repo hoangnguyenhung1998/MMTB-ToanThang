@@ -299,6 +299,17 @@ class HealthAgentTest(unittest.TestCase):
 
         health.task_reader.start.assert_not_called()
 
+    def test_daily_mode_never_recovers_or_restarts_ai_reconciliation(self):
+        health = agent.HealthAgent(Path("C:/MMTB"), "127.0.0.1", 18789)
+        definition = next(item for item in health.definitions if item.service_type == "RECONCILIATION_WORKER")
+        health.task_reader.start = Mock()
+        with patch.dict(os.environ, {"DAILY_PHOTOS_ONLY": "true"}), patch.object(agent.subprocess, "run") as run:
+            health._recover_ready_tasks({definition.task_name: {"state": "Ready"}})
+            health.task_reader.start.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "bảo trì"):
+                health.execute_command({"service": {"service_key": definition.service_key}, "action": "RESTART"})
+            run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

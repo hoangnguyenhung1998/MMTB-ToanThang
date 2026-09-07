@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from datetime import date, timedelta
@@ -44,6 +45,8 @@ class ReconciliationWorker:
         self.health.job_finished()
 
     def step(self) -> bool:
+        if os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() not in {'0', 'false', 'no'}:
+            return False
         processed = False
         commands = self.laravel.claim_commands(min(self.settings.claim_limit, 3))
         self.health.api_success()

@@ -17,6 +17,7 @@ class ReconciliationTimeSyncService
 
     public function sync(ReconciliationPeriod $period): int
     {
+        if (config('daily_photos.enabled')) return app(DailyPhotoSyncService::class)->sync($period)['updated'];
         if (!in_array($period->status, ['GENERATED', 'REVIEWING'], true)) {
             throw new RuntimeException('Chỉ được tự phân bổ giờ cho kỳ đã sinh dữ liệu hoặc đang kiểm tra.');
         }

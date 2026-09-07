@@ -26,6 +26,7 @@ class OcrJobService
     {
         return DB::transaction(function () use ($workerId, $documentTypes): ?OcrJob {
             $job = OcrJob::query()
+                ->when(config('daily_photos.enabled'), fn ($query) => $query->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']))
                 ->when(
                     $documentTypes !== [],
                     fn ($query) => $query->whereIn('document_type', $documentTypes),
@@ -76,10 +77,29 @@ class OcrJobService
         $machine = $assetCode
             ? Machine::query()->where('asset_code', $assetCode)->first()
             : null;
+        $senderMachine = config('daily_photos.enabled') ? app(ZaloSenderDriverService::class)->resolve($job, $data['date'] ?? null, $data['time'] ?? null) : null;
+        $mappingUsed = !$assetCode && $senderMachine;
+        if ($mappingUsed) {
+            $machine = $senderMachine;
+            $assetCode = $machine->asset_code;
+        }
         $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
         $exceptions = $this->detectExceptions($job, $data, $assetCode, $machine, $shift);
+        if ($senderMachine && $machine && $senderMachine->id !== $machine->id) $exceptions[] = 'SENDER_MACHINE_CONFLICT';
+        $metadata = ['machine_source' => $mappingUsed ? 'SENDER_ASSIGNMENT' : 'IMAGE', 'image_fingerprint' => $data['image_fingerprint'] ?? null];
+        if (config('daily_photos.enabled') && $machine && !empty($data['date']) && !empty($metadata['image_fingerprint'])) {
+            $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
+                ->whereKeyNot($job->id)->whereNotNull('daily_metadata')->get()->filter(function ($other) use ($metadata) {
+                    $hash = data_get($other->daily_metadata, 'image_fingerprint');
+                    if (!$hash || strlen($hash) !== 16) return false;
+                    $distance = 0;
+                    for ($i = 0; $i < 16; $i++) $distance += substr_count(decbin(hexdec($hash[$i]) ^ hexdec($metadata['image_fingerprint'][$i])), '1');
+                    return $distance <= 4;
+                })->pluck('id')->all();
+        }
 
         $job->update([
+            'daily_metadata' => $metadata,
             'machine_id' => $machine?->id,
             'document_type' => 'DAILY_TIMEMARK',
             'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
@@ -99,6 +119,17 @@ class OcrJobService
         ]);
 
         $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
+
+        if (config('daily_photos.enabled') && $machine && !empty($data['date'])) {
+            try {
+            \App\Models\ReconciliationPeriod::query()->whereIn('status', ['GENERATED', 'REVIEWING'])
+                ->whereDate('date_from', '<=', $data['date'])->whereDate('date_to', '>=', \Carbon\Carbon::parse($data['date'])->subDay()->toDateString())->get()
+                ->each(fn ($period) => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period, $machine->id, $data['date']));
+            } catch (\Throwable $exception) {
+                // OCR completion is durable. Scheduled/manual sync can retry independently.
+                report($exception);
+            }
+        }
 
         return $job->fresh(['attachment.message', 'machine']);
     }
@@ -120,7 +151,7 @@ class OcrJobService
             'classification_confidence' => $data['confidence'],
             'classified_by' => $data['worker_id'],
             'classified_at' => now(),
-            'status' => $isUnknown ? 'EXCEPTION' : 'PENDING',
+            'status' => config('daily_photos.enabled') && $data['document_type'] === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($isUnknown ? 'EXCEPTION' : 'PENDING'),
             'claimed_by' => null,
             'claimed_at' => null,
             'lease_expires_at' => null,
@@ -150,6 +181,7 @@ class OcrJobService
 
     public function completeJournal(OcrJob $job, array $data): OcrJob
     {
+        abort_if(config('daily_photos.enabled'), 409, 'OCR nhật trình tuần đã tạm dừng.');
         $this->ensureClaimOwner($job, $data['worker_id']);
 
         if ($job->document_type !== 'WEEKLY_JOURNAL') {
@@ -273,7 +305,7 @@ class OcrJobService
         $minutes = ((int) substr($time, 0, 2) * 60) + (int) substr($time, 3, 2);
 
         return match (true) {
-            $minutes >= 420 && $minutes < 660 => 'MORNING',
+            $minutes >= 0 && $minutes < 660 => 'MORNING',
             $minutes >= 660 && $minutes < 810 => 'MIDDAY',
             $minutes >= 810 && $minutes < 990 => 'AFTERNOON',
             $minutes >= 990 && $minutes <= 1050 => 'AFTERNOON_OT',

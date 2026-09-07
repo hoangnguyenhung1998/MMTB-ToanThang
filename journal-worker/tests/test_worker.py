@@ -1,7 +1,9 @@
 import tempfile
 import time
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from mmtb_journal_worker.config import Settings
 from mmtb_journal_worker.models import JournalExtraction, JournalRow
@@ -55,6 +57,7 @@ class FakeVisionClient:
 
 
 class WorkerTest(unittest.TestCase):
+    @patch.dict(os.environ, {"DAILY_PHOTOS_ONLY": "false"})
     def test_completes_weekly_job_and_deletes_temporary_image(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -82,6 +85,21 @@ class WorkerTest(unittest.TestCase):
             self.assertEqual(5, laravel.completed[0])
             self.assertEqual(240, laravel.completed[1]["rows"][0]["total_minutes"])
             self.assertEqual("2026-08-20", laravel.completed[1]["rows"][0]["work_date"])
+
+    @patch.dict(os.environ, {"DAILY_PHOTOS_ONLY": "true"})
+    def test_daily_mode_skips_weekly_but_keeps_intake_and_handover(self):
+        worker = object.__new__(JournalWorker)
+        worker._refresh_machine_catalog = Mock()
+        worker.laravel = Mock()
+        worker.laravel.claim_handover.return_value = None
+        worker.laravel.claim_intake.return_value = {"id": 12}
+        worker._process_intake = Mock(return_value=True)
+        worker.vision = Mock()
+        self.assertTrue(worker.step())
+        worker.laravel.claim.assert_not_called()
+        worker.laravel.claim_handover.assert_called_once()
+        worker._process_intake.assert_called_once_with({"id": 12})
+        worker.vision.extract.assert_not_called()
 
 
 if __name__ == "__main__":

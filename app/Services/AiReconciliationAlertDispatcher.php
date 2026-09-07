@@ -18,6 +18,7 @@ class AiReconciliationAlertDispatcher
 
     public function dispatchUrgent(): array
     {
+        if (config('daily_photos.enabled')) return ['sent' => 0, 'failed' => 0, 'skipped' => true];
         $this->stageOverdueWaitingJobs();
 
         if (! $this->telegram->enabled()) {
@@ -35,6 +36,7 @@ class AiReconciliationAlertDispatcher
 
     public function dispatchWarnings(): array
     {
+        if (config('daily_photos.enabled')) return ['sent' => 0, 'failed' => 0, 'skipped' => true];
         if (! $this->telegram->enabled()) {
             return ['sent' => 0, 'failed' => 0, 'skipped' => true];
         }
@@ -64,6 +66,7 @@ class AiReconciliationAlertDispatcher
 
     public function dispatchDailyDigest(?CarbonImmutable $now = null): array
     {
+        if (config('daily_photos.enabled')) return ['sent' => 0, 'failed' => 0, 'skipped' => true];
         $now ??= CarbonImmutable::now();
         $workDate = $now->subDay()->toDateString();
         $fingerprint = "daily-digest:{$workDate}";

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -54,7 +55,7 @@ class JournalWorker:
 
     def step(self) -> bool:
         self._refresh_machine_catalog()
-        job = self.laravel.claim()
+        job = self.laravel.claim() if os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() in {'0', 'false', 'no'} else None
         if job is None:
             job = self.laravel.claim_handover()
             if job is not None: return self._process_handover(job)

@@ -18,6 +18,7 @@ class RuleReconciliationService
 
     public function reconcilePending(string $workDate): void
     {
+        if (config('daily_photos.enabled')) return;
         AiReconciliationJob::query()
             ->whereDate('work_date', $workDate)
             ->whereIn('status', ['PENDING', 'RETRY'])
@@ -27,6 +28,7 @@ class RuleReconciliationService
 
     public function reconcile(AiReconciliationJob $job): ?AiReconciliationSubmission
     {
+        if (config('daily_photos.enabled')) return null;
         $submissionUuid = $this->submissionUuid($job);
         $existing = AiReconciliationSubmission::query()
             ->where('submission_uuid', $submissionUuid)

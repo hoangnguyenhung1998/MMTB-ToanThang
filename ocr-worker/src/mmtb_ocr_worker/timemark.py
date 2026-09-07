@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
+
 from rapidocr import RapidOCR
 
 from .imaging import enhance_for_ocr, flatten_ocr_result, read_image, region, rotate
@@ -19,6 +21,7 @@ class TimeMarkResult:
     work_location: str | None
     confidence: float
     raw_text: str
+    image_fingerprint: str | None = None
 
     def api_payload(self) -> dict:
         return {
@@ -30,6 +33,7 @@ class TimeMarkResult:
             "work_location": self.work_location,
             "confidence": round(self.confidence, 4),
             "raw_text": self.raw_text,
+            "image_fingerprint": self.image_fingerprint,
         }
 
 
@@ -49,7 +53,7 @@ class TimeMarkRecognizer:
         confidences: list[float] = []
         debug_parts: list[str] = []
 
-        for angle in (0, 180):
+        for angle in (0, 180, 90, 270):
             rotated = rotate(image, angle)
             candidates = [
                 ("asset", region(rotated, 0.00, 0.28, 0.50, 0.58)),
@@ -71,7 +75,9 @@ class TimeMarkRecognizer:
                 if asset[1] > best_asset[1]:
                     best_asset = asset
                 captured_date = captured_date or parse_date(text)
-                captured_time = captured_time or parse_time(text)
+                # A time candidate needs date context; don't mistake an isolated meter for time.
+                if parse_date(text):
+                    captured_time = captured_time or parse_time(text)
                 operator_name = operator_name or parse_operator(text)
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
@@ -80,17 +86,16 @@ class TimeMarkRecognizer:
                     best_asset[0]
                     and captured_date
                     and captured_time
-                    and operator_name
-                    and phone
-                    and work_location
+                    and best_asset[1] >= 0.85
                 ):
                     break
-            if best_asset[0] and captured_date and captured_time and operator_name and phone and work_location:
+            if captured_date and captured_time:
                 break
 
         average_ocr = sum(confidences) / len(confidences) if confidences else 0.0
-        confidence = min(1.0, average_ocr * 0.6 + best_asset[1] * 0.4)
+        confidence = min(average_ocr, best_asset[1]) if best_asset[0] else average_ocr
         return TimeMarkResult(
+            image_fingerprint=self.fingerprint(image),
             asset_code=best_asset[0],
             captured_date=captured_date.isoformat() if captured_date else None,
             captured_time=captured_time.isoformat() if captured_time else None,
@@ -100,3 +105,10 @@ class TimeMarkRecognizer:
             confidence=confidence,
             raw_text="\n\n".join(debug_parts),
         )
+
+    @staticmethod
+    def fingerprint(image) -> str:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+        bits = (small[:, 1:] > small[:, :-1]).flatten()
+        return f"{int(''.join('1' if bit else '0' for bit in bits), 2):016x}"

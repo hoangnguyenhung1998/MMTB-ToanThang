@@ -76,6 +76,7 @@ class AutomationHealthService
 
     public function conditionFor(AutomationService $service, ?CarbonInterface $at = null): string
     {
+        if (config('daily_photos.enabled') && $service->service_type === 'RECONCILIATION_WORKER') return 'PAUSED';
         $at ??= now();
         if ($service->reported_status === 'PAUSED') {
             return 'PAUSED';

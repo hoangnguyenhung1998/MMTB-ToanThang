@@ -13,6 +13,11 @@ class OcrMonitoringService
 
     private const TERMINAL_STATUSES = ['COMPLETED', 'EXCEPTION', 'FAILED'];
 
+    private function jobs(): \Illuminate\Database\Eloquent\Builder
+    {
+        return OcrJob::query()->when(config('daily_photos.enabled'), fn ($q) => $q->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']));
+    }
+
     public function dashboardData(): array
     {
         return [
@@ -30,19 +35,19 @@ class OcrMonitoringService
         $startUtc = $todayStart->utc();
         $endUtc = $now->utc();
 
-        $terminalToday = OcrJob::query()
+        $terminalToday = $this->jobs()
             ->whereIn('status', self::TERMINAL_STATUSES)
             ->whereBetween('processed_at', [$startUtc, $endUtc]);
-        $receivedToday = OcrJob::query()->whereBetween('created_at', [$startUtc, $endUtc])->count();
+        $receivedToday = $this->jobs()->whereBetween('created_at', [$startUtc, $endUtc])->count();
         $processedToday = (clone $terminalToday)->count();
         $completedToday = (clone $terminalToday)->where('status', 'COMPLETED')->count();
         $exceptionToday = (clone $terminalToday)->where('status', 'EXCEPTION')->count();
         $failedToday = (clone $terminalToday)->where('status', 'FAILED')->count();
-        $backlog = OcrJob::query()->whereIn('status', self::BACKLOG_STATUSES)->count();
-        $processing = OcrJob::query()->where('status', 'PROCESSING')->count();
-        $retrying = OcrJob::query()->where('status', 'RETRY')->count();
-        $oldestBacklog = OcrJob::query()->whereIn('status', self::BACKLOG_STATUSES)->oldest('created_at')->first();
-        $lastProcessedAt = OcrJob::query()->whereIn('status', self::TERMINAL_STATUSES)->max('processed_at');
+        $backlog = $this->jobs()->whereIn('status', self::BACKLOG_STATUSES)->count();
+        $processing = $this->jobs()->where('status', 'PROCESSING')->count();
+        $retrying = $this->jobs()->where('status', 'RETRY')->count();
+        $oldestBacklog = $this->jobs()->whereIn('status', self::BACKLOG_STATUSES)->oldest('created_at')->first();
+        $lastProcessedAt = $this->jobs()->whereIn('status', self::TERMINAL_STATUSES)->max('processed_at');
 
         $completed15m = $this->processedSince($now->utc()->subMinutes(15));
         $completed1h = $this->processedSince($now->utc()->subHour());
@@ -55,6 +60,7 @@ class OcrMonitoringService
         $projectedFinish = $etaMinutes !== null ? $now->addMinutes($etaMinutes) : null;
 
         $runDurations = OcrProcessingRun::query()
+            ->when(config('daily_photos.enabled'), fn ($q) => $q->whereHas('job', fn ($j) => $j->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK'])))
             ->whereNotNull('duration_ms')
             ->whereBetween('finished_at', [$startUtc, $endUtc])
             ->orderBy('duration_ms')
@@ -178,7 +184,7 @@ class OcrMonitoringService
 
     private function processedSince(CarbonImmutable $since): int
     {
-        return OcrJob::query()
+        return $this->jobs()
             ->whereIn('status', self::TERMINAL_STATUSES)
             ->where('processed_at', '>=', $since)
             ->count();
@@ -191,7 +197,7 @@ class OcrMonitoringService
         CarbonImmutable $todayStartUtc,
     ): float {
         if ($processedLastHour > 0) {
-            $first = OcrJob::query()
+            $first = $this->jobs()
                 ->whereIn('status', self::TERMINAL_STATUSES)
                 ->where('processed_at', '>=', $now->utc()->subHour())
                 ->min('processed_at');
@@ -206,7 +212,7 @@ class OcrMonitoringService
             return 0.0;
         }
 
-        $first = OcrJob::query()
+        $first = $this->jobs()
             ->whereIn('status', self::TERMINAL_STATUSES)
             ->where('processed_at', '>=', $todayStartUtc)
             ->min('processed_at');

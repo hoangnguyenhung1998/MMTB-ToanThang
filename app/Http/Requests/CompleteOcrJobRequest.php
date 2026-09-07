@@ -23,6 +23,7 @@ class CompleteOcrJobRequest extends FormRequest
             'work_location' => ['nullable', 'string', 'max:2000'],
             'confidence' => ['required', 'numeric', 'between:0,1'],
             'raw_text' => ['nullable', 'string'],
+            'image_fingerprint' => ['nullable', 'regex:/^[a-f0-9]{16}$/'],
         ];
     }
 }

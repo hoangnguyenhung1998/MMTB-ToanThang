@@ -15,6 +15,7 @@ class AutomationOperationalCommandService
 
     public function create(AutomationService $service, int $userId, string $action, array $payload = []): AutomationOperationalCommand
     {
+        abort_if(config('daily_photos.enabled') && $service->service_type === 'RECONCILIATION_WORKER', 409, 'Đối soát AI đang bảo trì.');
         if (in_array($action, ['ZALO_ACCOUNT_SWITCH', 'ZALO_GROUPS_UPDATE'], true) && $service->service_type !== 'ZALO_COLLECTOR') {
             throw ValidationException::withMessages(['action' => 'Lệnh quản lý Zalo chỉ dành cho Zalo Collector.']);
         }
@@ -54,6 +55,7 @@ class AutomationOperationalCommandService
                 ->where('status', 'PROCESSING')->where('lease_expires_at', '<=', now())
                 ->update(['status' => 'PENDING', 'claimed_by' => null, 'claimed_at' => null, 'lease_expires_at' => null]);
             $commands = AutomationOperationalCommand::query()->with('service')
+                ->when(config('daily_photos.enabled'), fn ($q) => $q->whereHas('service', fn ($s) => $s->where('service_type', '!=', 'RECONCILIATION_WORKER')))
                 ->where('automation_node_id', $node->id)->where('status', 'PENDING')
                 ->oldest('id')->lockForUpdate()->limit($limit)->get();
             foreach ($commands as $command) {

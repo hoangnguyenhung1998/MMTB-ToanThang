@@ -1,0 +1,37 @@
+name: Phase 16.9 daily photos
+on:
+  push:
+    branches: [feature/phase-16-9-daily-photo-reconciliation]
+  pull_request:
+    branches: [production]
+permissions:
+  contents: read
+jobs:
+  daily-photo-tests:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: testing
+      APP_KEY: base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, sqlite3, pdo_sqlite, gd, zip
+      - run: composer install --no-interaction --prefer-dist --no-scripts
+      - run: vendor/bin/phpunit --filter='DailyTimeAllocatorTest|DailyPhotoWorkflowTest|Reconciliation|OcrJobTest|ZaloIngestionTest|AutomationHealthTest'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ./ocr-worker
+      - run: python -m unittest discover -s ocr-worker/tests -v
+        env:
+          PYTHONPATH: ocr-worker/src
+      - run: python -m unittest discover -s automation-health-agent/tests -v
+      - run: pip install -e ./journal-worker -e ./reconciliation-worker
+      - run: python -m unittest discover -s journal-worker/tests -v
+      - run: python -m unittest discover -s reconciliation-worker/tests -v

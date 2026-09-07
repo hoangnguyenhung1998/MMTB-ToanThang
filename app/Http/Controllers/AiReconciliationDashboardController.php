@@ -22,6 +22,7 @@ class AiReconciliationDashboardController extends Controller
 
     public function index(IndexAiReconciliationDashboardRequest $request): View
     {
+        if (config('daily_photos.enabled')) return view('ai-reconciliation.maintenance');
         $filters = $request->validated();
 
         return view('ai-reconciliation.index', [
