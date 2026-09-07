@@ -52,8 +52,10 @@ Trạng thái bản làm việc ngày 07/09/2026: 105 test Python pass (OCR 30,
 Health Agent 22, JournalWorker 36, ReconciliationWorker 17). Kiểm tra cú pháp
 342 file PHP bằng tree-sitter không báo lỗi; đây không thay thế PHPUnit.
 Đã thêm 18 test PHP cho luồng mới nhưng chưa chạy vì môi trường không có PHP.
-Push nhánh bị kiểm duyệt tự động chặn, cần xác nhận riêng việc đưa mã Phase 16.9
-lên repository hiện tại. Chưa có kết quả Actions, chưa merge hoặc triển khai.
+Người dùng đã xác nhận đẩy Phase 16.9; nhánh đã được đăng tại PR #39.
+Lần chạy Actions đầu phát hiện thiếu build Vite và quy tắc giờ trước 7h ảnh hưởng
+chế độ cũ; đã bổ sung build và giới hạn quy tắc mới theo cờ 16.9 để chạy lại.
+Chưa merge hoặc triển khai.
 
 Sao lưu SQL trước migration. Migration mới chỉ thêm bảng ánh xạ, metadata OCR và
 chi tiết ca; không sửa dữ liệu lịch sử. Chưa chạy migration trong workspace này.

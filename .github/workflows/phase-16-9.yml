@@ -23,6 +23,12 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, sqlite3, pdo_sqlite, gd, zip
       - run: composer install --no-interaction --prefer-dist --no-scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
       - run: vendor/bin/phpunit --filter='DailyTimeAllocatorTest|DailyPhotoWorkflowTest|Reconciliation|OcrJobTest|ZaloIngestionTest|AutomationHealthTest'
       - uses: actions/setup-python@v5
         with:

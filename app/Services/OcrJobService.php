@@ -305,7 +305,7 @@ class OcrJobService
         $minutes = ((int) substr($time, 0, 2) * 60) + (int) substr($time, 3, 2);
 
         return match (true) {
-            $minutes >= 0 && $minutes < 660 => 'MORNING',
+            $minutes >= (config('daily_photos.enabled') ? 0 : 420) && $minutes < 660 => 'MORNING',
             $minutes >= 660 && $minutes < 810 => 'MIDDAY',
             $minutes >= 810 && $minutes < 990 => 'AFTERNOON',
             $minutes >= 990 && $minutes <= 1050 => 'AFTERNOON_OT',
