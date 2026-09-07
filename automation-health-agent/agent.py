@@ -283,8 +283,8 @@ class HealthAgent:
             task = tasks.get(task_name or "")
             if not task_name or str((task or {}).get("state", "")).upper() != "READY":
                 continue
-            last_attempt = self.recovery_attempted_at.get(task_name, 0.0)
-            if now - last_attempt < self.recovery_cooldown_seconds:
+            last_attempt = self.recovery_attempted_at.get(task_name)
+            if last_attempt is not None and now - last_attempt < self.recovery_cooldown_seconds:
                 continue
             self.recovery_attempted_at[task_name] = now
             try:

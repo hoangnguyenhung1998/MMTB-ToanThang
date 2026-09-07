@@ -286,8 +286,9 @@ class HealthAgentTest(unittest.TestCase):
         health.task_reader.start = Mock()
         tasks = {"MMTB-RapidOCRWorker": {"state": "Ready"}}
 
-        health._recover_ready_tasks(tasks)
-        health._recover_ready_tasks(tasks)
+        with patch.object(agent.time, "monotonic", return_value=10.0):
+            health._recover_ready_tasks(tasks)
+            health._recover_ready_tasks(tasks)
 
         health.task_reader.start.assert_called_once_with("MMTB-RapidOCRWorker")
 
