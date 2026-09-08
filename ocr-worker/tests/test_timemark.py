@@ -28,6 +28,23 @@ class TimeMarkTest(unittest.TestCase):
         self.assertEqual("13:55:00", result.captured_time)
         self.assertEqual(5, engine.call_count)
 
+    def test_progress_telemetry_does_not_change_result(self):
+        engine = Mock()
+        progress = Mock()
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", return_value=(["VT-XL0196 05/09/2026 06:14"], [0.99])):
+            result = TimeMarkRecognizer(["VT-XL0196"], engine).recognize(Path("test.jpg"), progress=progress)
+
+        self.assertEqual("VT-XL0196", result.asset_code)
+        self.assertEqual("2026-09-05", result.captured_date)
+        self.assertEqual("06:14:00", result.captured_time)
+        self.assertEqual(2, progress.call_count)
+        event, rotation, region, duration_ms = progress.call_args.args
+        self.assertEqual("finished", event)
+        self.assertEqual(0, rotation)
+        self.assertEqual("asset", region)
+        self.assertGreaterEqual(duration_ms, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

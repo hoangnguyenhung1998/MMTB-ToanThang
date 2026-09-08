@@ -6,13 +6,12 @@ use App\Models\JournalDocument;
 use App\Models\Machine;
 use App\Models\OcrJob;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class OcrJobService
 {
-    public function __construct(private readonly OcrProcessingRunService $processingRuns)
-    {
-    }
+    public function __construct(private readonly OcrProcessingRunService $processingRuns) {}
 
     public function enqueue(int $attachmentId): OcrJob
     {
@@ -25,12 +24,16 @@ class OcrJobService
     public function claim(string $workerId, array $documentTypes = []): ?OcrJob
     {
         return DB::transaction(function () use ($workerId, $documentTypes): ?OcrJob {
+            $maxAttempts = max(1, (int) config('ocr.max_attempts'));
+            $this->materializeExpiredLeases($maxAttempts);
+
             $job = OcrJob::query()
                 ->when(config('daily_photos.enabled'), fn ($query) => $query->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']))
                 ->when(
                     $documentTypes !== [],
                     fn ($query) => $query->whereIn('document_type', $documentTypes),
                 )
+                ->where('attempts', '<', $maxAttempts)
                 ->where(function ($query): void {
                     $query->whereIn('status', ['PENDING', 'RETRY'])
                         ->orWhere(function ($expired): void {
@@ -50,7 +53,7 @@ class OcrJobService
                 'status' => 'PROCESSING',
                 'claimed_by' => $workerId,
                 'claimed_at' => now(),
-                'lease_expires_at' => now()->addSeconds((int) config('ocr.lease_seconds')),
+                'lease_expires_at' => now()->addSeconds(max(1, (int) config('ocr.lease_seconds'))),
                 'attempts' => $job->attempts + 1,
                 'error_message' => null,
             ]);
@@ -61,108 +64,145 @@ class OcrJobService
         }, 3);
     }
 
+    public function renew(OcrJob $job, array $data): OcrJob
+    {
+        return DB::transaction(function () use ($job, $data): OcrJob {
+            $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
+            $this->ensureClaimOwner($job, $data['worker_id'], (int) $data['attempt']);
+            $job->update([
+                'lease_expires_at' => now()->addSeconds(max(1, (int) config('ocr.lease_seconds'))),
+            ]);
+
+            return $job->fresh();
+        }, 3);
+    }
+
+    public function expireLeases(): int
+    {
+        return DB::transaction(
+            fn (): int => $this->materializeExpiredLeases(max(1, (int) config('ocr.max_attempts'))),
+            3,
+        );
+    }
+
     public function complete(OcrJob $job, array $data): OcrJob
     {
-        $this->ensureClaimOwner($job, $data['worker_id']);
+        $completed = DB::transaction(function () use ($job, $data): OcrJob {
+            $job = OcrJob::query()->with('attachment.message')->lockForUpdate()->findOrFail($job->id);
+            $attempt = (int) ($data['attempt'] ?? $job->attempts);
+            $this->ensureClaimOwner($job, $data['worker_id'], isset($data['attempt']) ? (int) $data['attempt'] : null);
 
-        if ($job->document_type === 'WEEKLY_JOURNAL') {
-            throw ValidationException::withMessages([
-                'document_type' => 'A weekly journal must use the journal completion endpoint.',
+            if ($job->document_type === 'WEEKLY_JOURNAL') {
+                throw ValidationException::withMessages([
+                    'document_type' => 'A weekly journal must use the journal completion endpoint.',
+                ]);
+            }
+
+            $assetCode = isset($data['asset_code'])
+                ? strtoupper(trim((string) $data['asset_code']))
+                : null;
+            $machine = $assetCode
+                ? Machine::query()->where('asset_code', $assetCode)->first()
+                : null;
+            $senderMachine = config('daily_photos.enabled') ? app(ZaloSenderDriverService::class)->resolve($job, $data['date'] ?? null, $data['time'] ?? null) : null;
+            $mappingUsed = ! $assetCode && $senderMachine;
+            if ($mappingUsed) {
+                $machine = $senderMachine;
+                $assetCode = $machine->asset_code;
+            }
+            $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
+            $exceptions = $this->detectExceptions($job, $data, $assetCode, $machine, $shift);
+            if ($senderMachine && $machine && $senderMachine->id !== $machine->id) {
+                $exceptions[] = 'SENDER_MACHINE_CONFLICT';
+            }
+            $metadata = ['machine_source' => $mappingUsed ? 'SENDER_ASSIGNMENT' : 'IMAGE', 'image_fingerprint' => $data['image_fingerprint'] ?? null];
+            if (config('daily_photos.enabled') && $machine && ! empty($data['date']) && ! empty($metadata['image_fingerprint'])) {
+                $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
+                    ->whereKeyNot($job->id)->whereNotNull('daily_metadata')->get()->filter(function ($other) use ($metadata) {
+                        $hash = data_get($other->daily_metadata, 'image_fingerprint');
+                        if (! $hash || strlen($hash) !== 16) {
+                            return false;
+                        }
+                        $distance = 0;
+                        for ($i = 0; $i < 16; $i++) {
+                            $distance += substr_count(decbin(hexdec($hash[$i]) ^ hexdec($metadata['image_fingerprint'][$i])), '1');
+                        }
+
+                        return $distance <= 4;
+                    })->pluck('id')->all();
+            }
+
+            $job->update([
+                'daily_metadata' => $metadata,
+                'machine_id' => $machine?->id,
+                'document_type' => 'DAILY_TIMEMARK',
+                'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
+                'extracted_date' => $data['date'] ?? null,
+                'extracted_time' => $data['time'] ?? null,
+                'asset_code' => $assetCode,
+                'operator_name' => $data['operator_name'] ?? null,
+                'phone' => $data['phone'] ?? null,
+                'work_location' => $data['work_location'] ?? null,
+                'shift' => $shift,
+                'confidence' => $data['confidence'],
+                'raw_text' => $data['raw_text'] ?? null,
+                'exceptions' => $exceptions === [] ? null : $exceptions,
+                'error_message' => null,
+                'processed_at' => now(),
+                'lease_expires_at' => null,
             ]);
-        }
 
-        $assetCode = isset($data['asset_code'])
-            ? strtoupper(trim((string) $data['asset_code']))
-            : null;
-        $machine = $assetCode
-            ? Machine::query()->where('asset_code', $assetCode)->first()
-            : null;
-        $senderMachine = config('daily_photos.enabled') ? app(ZaloSenderDriverService::class)->resolve($job, $data['date'] ?? null, $data['time'] ?? null) : null;
-        $mappingUsed = !$assetCode && $senderMachine;
-        if ($mappingUsed) {
-            $machine = $senderMachine;
-            $assetCode = $machine->asset_code;
-        }
-        $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
-        $exceptions = $this->detectExceptions($job, $data, $assetCode, $machine, $shift);
-        if ($senderMachine && $machine && $senderMachine->id !== $machine->id) $exceptions[] = 'SENDER_MACHINE_CONFLICT';
-        $metadata = ['machine_source' => $mappingUsed ? 'SENDER_ASSIGNMENT' : 'IMAGE', 'image_fingerprint' => $data['image_fingerprint'] ?? null];
-        if (config('daily_photos.enabled') && $machine && !empty($data['date']) && !empty($metadata['image_fingerprint'])) {
-            $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
-                ->whereKeyNot($job->id)->whereNotNull('daily_metadata')->get()->filter(function ($other) use ($metadata) {
-                    $hash = data_get($other->daily_metadata, 'image_fingerprint');
-                    if (!$hash || strlen($hash) !== 16) return false;
-                    $distance = 0;
-                    for ($i = 0; $i < 16; $i++) $distance += substr_count(decbin(hexdec($hash[$i]) ^ hexdec($metadata['image_fingerprint'][$i])), '1');
-                    return $distance <= 4;
-                })->pluck('id')->all();
-        }
+            $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
 
-        $job->update([
-            'daily_metadata' => $metadata,
-            'machine_id' => $machine?->id,
-            'document_type' => 'DAILY_TIMEMARK',
-            'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
-            'extracted_date' => $data['date'] ?? null,
-            'extracted_time' => $data['time'] ?? null,
-            'asset_code' => $assetCode,
-            'operator_name' => $data['operator_name'] ?? null,
-            'phone' => $data['phone'] ?? null,
-            'work_location' => $data['work_location'] ?? null,
-            'shift' => $shift,
-            'confidence' => $data['confidence'],
-            'raw_text' => $data['raw_text'] ?? null,
-            'exceptions' => $exceptions === [] ? null : $exceptions,
-            'error_message' => null,
-            'processed_at' => now(),
-            'lease_expires_at' => null,
-        ]);
+            return $job->fresh(['attachment.message', 'machine']);
+        }, 3);
 
-        $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
-
-        if (config('daily_photos.enabled') && $machine && !empty($data['date'])) {
+        if (config('daily_photos.enabled') && $completed->machine_id && ! empty($data['date'])) {
             try {
-            \App\Models\ReconciliationPeriod::query()->whereIn('status', ['GENERATED', 'REVIEWING'])
-                ->whereDate('date_from', '<=', $data['date'])->whereDate('date_to', '>=', \Carbon\Carbon::parse($data['date'])->subDay()->toDateString())->get()
-                ->each(fn ($period) => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period, $machine->id, $data['date']));
+                \App\Models\ReconciliationPeriod::query()->whereIn('status', ['GENERATED', 'REVIEWING'])
+                    ->whereDate('date_from', '<=', $data['date'])->whereDate('date_to', '>=', \Carbon\Carbon::parse($data['date'])->subDay()->toDateString())->get()
+                    ->each(fn ($period) => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period, $completed->machine_id, $data['date']));
             } catch (\Throwable $exception) {
                 // OCR completion is durable. Scheduled/manual sync can retry independently.
                 report($exception);
             }
         }
 
-        return $job->fresh(['attachment.message', 'machine']);
+        return $completed;
     }
 
     public function classify(OcrJob $job, array $data): OcrJob
     {
-        $this->ensureClaimOwner($job, $data['worker_id']);
+        return DB::transaction(function () use ($job, $data): OcrJob {
+            $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
+            $attempt = (int) ($data['attempt'] ?? $job->attempts);
+            $this->ensureClaimOwner($job, $data['worker_id'], isset($data['attempt']) ? (int) $data['attempt'] : null);
 
-        if ($job->document_type !== 'UNKNOWN') {
-            throw ValidationException::withMessages([
-                'document_type' => 'This OCR job has already been classified.',
+            if ($job->document_type !== 'UNKNOWN') {
+                throw ValidationException::withMessages([
+                    'document_type' => 'This OCR job has already been classified.',
+                ]);
+            }
+
+            $isUnknown = $data['document_type'] === 'UNKNOWN';
+            $job->update([
+                'document_type' => $data['document_type'],
+                'classification_confidence' => $data['confidence'],
+                'classified_by' => $data['worker_id'],
+                'classified_at' => now(),
+                'status' => config('daily_photos.enabled') && $data['document_type'] === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($isUnknown ? 'EXCEPTION' : 'PENDING'),
+                'claimed_by' => null,
+                'claimed_at' => null,
+                'lease_expires_at' => null,
+                'error_message' => null,
+                'exceptions' => $isUnknown ? ['UNCLASSIFIED_DOCUMENT'] : null,
+                'processed_at' => $isUnknown ? now() : null,
             ]);
-        }
 
-        $isUnknown = $data['document_type'] === 'UNKNOWN';
+            $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
 
-        $job->update([
-            'document_type' => $data['document_type'],
-            'classification_confidence' => $data['confidence'],
-            'classified_by' => $data['worker_id'],
-            'classified_at' => now(),
-            'status' => config('daily_photos.enabled') && $data['document_type'] === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($isUnknown ? 'EXCEPTION' : 'PENDING'),
-            'claimed_by' => null,
-            'claimed_at' => null,
-            'lease_expires_at' => null,
-            'error_message' => null,
-            'exceptions' => $isUnknown ? ['UNCLASSIFIED_DOCUMENT'] : null,
-            'processed_at' => $isUnknown ? now() : null,
-        ]);
-
-        $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
-
-        return $job->fresh();
+            return $job->fresh();
+        }, 3);
     }
 
     public function machineCatalog(): array
@@ -182,15 +222,18 @@ class OcrJobService
     public function completeJournal(OcrJob $job, array $data): OcrJob
     {
         abort_if(config('daily_photos.enabled'), 409, 'OCR nhật trình tuần đã tạm dừng.');
-        $this->ensureClaimOwner($job, $data['worker_id']);
-
-        if ($job->document_type !== 'WEEKLY_JOURNAL') {
-            throw ValidationException::withMessages([
-                'document_type' => 'This OCR job is not classified as a weekly journal.',
-            ]);
-        }
 
         return DB::transaction(function () use ($job, $data): OcrJob {
+            $job = OcrJob::query()->with('attachment.message')->lockForUpdate()->findOrFail($job->id);
+            $attempt = (int) ($data['attempt'] ?? $job->attempts);
+            $this->ensureClaimOwner($job, $data['worker_id'], isset($data['attempt']) ? (int) $data['attempt'] : null);
+
+            if ($job->document_type !== 'WEEKLY_JOURNAL') {
+                throw ValidationException::withMessages([
+                    'document_type' => 'This OCR job is not classified as a weekly journal.',
+                ]);
+            }
+
             $assetCode = isset($data['asset_code'])
                 ? strtoupper(trim((string) $data['asset_code']))
                 : null;
@@ -236,7 +279,7 @@ class OcrJobService
                 'lease_expires_at' => null,
             ]);
 
-            $this->processingRuns->finish($job, $data['worker_id'], 'COMPLETED');
+            $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
 
             return $job->fresh(['attachment.message', 'machine', 'journalDocument.rows']);
         }, 3);
@@ -244,31 +287,107 @@ class OcrJobService
 
     public function fail(OcrJob $job, array $data): OcrJob
     {
-        $this->ensureClaimOwner($job, $data['worker_id']);
+        return DB::transaction(function () use ($job, $data): OcrJob {
+            $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
+            $attempt = (int) ($data['attempt'] ?? $job->attempts);
+            $this->ensureClaimOwner($job, $data['worker_id'], isset($data['attempt']) ? (int) $data['attempt'] : null);
+            $retryable = (bool) $data['retryable'] && $job->attempts < max(1, (int) config('ocr.max_attempts'));
 
-        $job->update([
-            'status' => $data['retryable'] ? 'RETRY' : 'FAILED',
-            'error_message' => $data['error'],
-            'lease_expires_at' => null,
-            'processed_at' => $data['retryable'] ? null : now(),
-        ]);
+            $job->update([
+                'status' => $retryable ? 'RETRY' : 'FAILED',
+                'error_message' => $data['error'],
+                'lease_expires_at' => null,
+                'processed_at' => $retryable ? null : now(),
+            ]);
 
-        $this->processingRuns->finish($job, $data['worker_id'], 'FAILED', $data['error']);
+            $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'FAILED', $data['error']);
 
-        return $job->fresh();
+            return $job->fresh();
+        }, 3);
     }
 
-    public function ensureClaimOwner(OcrJob $job, string $workerId): void
+    public function ensureClaimOwner(OcrJob $job, string $workerId, ?int $attempt = null): void
     {
         if (
             $job->status !== 'PROCESSING'
             || ! hash_equals((string) $job->claimed_by, $workerId)
-            || $job->lease_expires_at?->isPast()
+            || ! $job->lease_expires_at
+            || $job->lease_expires_at->isPast()
+            || ($attempt !== null && $attempt !== (int) $job->attempts)
+            || ($attempt === null && (bool) config('ocr.enforce_attempt_fencing'))
         ) {
+            Log::warning('OCR claim operation rejected.', [
+                'job_id' => $job->id,
+                'worker_id' => $workerId,
+                'attempt' => $attempt,
+                'current_worker_id' => $job->claimed_by,
+                'current_attempt' => $job->attempts,
+                'job_status' => $job->status,
+                'lease_expires_at' => $job->lease_expires_at?->toIso8601String(),
+                'operation' => request()?->path(),
+            ]);
             throw ValidationException::withMessages([
-                'worker_id' => 'This OCR job is not claimed by the supplied worker.',
+                'attempt' => 'This OCR job claim is stale or is not owned by the supplied worker.',
             ]);
         }
+    }
+
+    private function materializeExpiredLeases(int $maxAttempts): int
+    {
+        $jobs = OcrJob::query()
+            ->where('status', 'PROCESSING')
+            ->where('lease_expires_at', '<=', now())
+            ->lockForUpdate()
+            ->limit(100)
+            ->get();
+
+        $jobs->each(function (OcrJob $job) use ($maxAttempts): void {
+            $terminal = $job->attempts >= $maxAttempts;
+            $error = $terminal
+                ? "Worker lease expired after {$maxAttempts} OCR attempts."
+                : 'Worker lease expired before completion.';
+            $this->processingRuns->timeoutExpired($job, $error);
+            $job->update([
+                'status' => $terminal ? 'FAILED' : 'RETRY',
+                'claimed_by' => null,
+                'claimed_at' => null,
+                'lease_expires_at' => null,
+                'error_message' => $error,
+                'processed_at' => $terminal ? now() : null,
+            ]);
+            Log::log($terminal ? 'error' : 'warning', 'OCR job lease expiry materialized.', [
+                'job_id' => $job->id,
+                'attempt' => $job->attempts,
+                'max_attempts' => $maxAttempts,
+                'terminal' => $terminal,
+            ]);
+        });
+
+        $exhausted = OcrJob::query()
+            ->whereIn('status', ['PENDING', 'RETRY'])
+            ->where('attempts', '>=', $maxAttempts)
+            ->lockForUpdate()
+            ->limit(100)
+            ->get();
+
+        $exhausted->each(function (OcrJob $job) use ($maxAttempts): void {
+            $error = "Maximum of {$maxAttempts} OCR attempts reached.";
+            $job->update([
+                'status' => 'FAILED',
+                'claimed_by' => null,
+                'claimed_at' => null,
+                'lease_expires_at' => null,
+                'error_message' => $error,
+                'processed_at' => now(),
+            ]);
+            Log::error('Exhausted OCR job moved to terminal failure.', [
+                'job_id' => $job->id,
+                'attempt' => $job->attempts,
+                'max_attempts' => $maxAttempts,
+            ]);
+        });
+
+        return $jobs->count() + $exhausted->count();
     }
 
     private function detectExceptions(

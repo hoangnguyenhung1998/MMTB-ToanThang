@@ -9,6 +9,8 @@ Set a separate long random token in Laravel `.env`:
 ```env
 OCR_WORKER_API_TOKEN=
 OCR_JOB_LEASE_SECONDS=300
+OCR_JOB_MAX_ATTEMPTS=3
+OCR_ENFORCE_ATTEMPT_FENCING=false
 OCR_MINIMUM_CONFIDENCE=0.80
 ```
 
@@ -20,9 +22,9 @@ Send the token as `Authorization: Bearer ...` on every OCR request. Never commit
 
 1. A classifier claims `UNKNOWN` jobs, identifies the document type, then calls the classify endpoint.
 2. RapidOCR claims `DAILY_TIMEMARK`; OpenClaw claims `WEEKLY_JOURNAL`.
-3. Download the private source image before the five-minute lease expires.
-4. Submit one TimeMark result to `/complete` or multiple journal rows to `/complete-journal`.
-5. If processing fails, call `/fail` with `retryable=true` to return it to the queue.
+3. Use the returned `attempt` as the identity of that claim and renew its lease while local processing is active.
+4. Submit the same `attempt` on classify, complete, complete-journal, and fail.
+5. If processing fails, call `/fail` with `retryable=true`; Laravel owns the max-attempt decision.
 
 Claim only the types supported by that worker:
 
@@ -35,6 +37,21 @@ Claim only the types supported by that worker:
 
 The valid types are `UNKNOWN`, `DAILY_TIMEMARK`, and `WEEKLY_JOURNAL`. Omitting `document_types` remains supported for backward compatibility.
 
+The claim response includes `attempt`, legacy `attempts`, `max_attempts`, `lease_seconds`, and `lease_expires_at`. `attempt` increments atomically on every claim/reclaim.
+
+## Renew a lease
+
+`POST /api/ocr/v1/jobs/{id}/renew`
+
+```json
+{
+  "worker_id": "rapid-ocr-home-1",
+  "attempt": 2
+}
+```
+
+Renew is accepted only while that exact worker and attempt own an unexpired `PROCESSING` job. A stale attempt cannot renew or finalize a newer claim, even when both use the same `worker_id`.
+
 ## Classify an unknown image
 
 `POST /api/ocr/v1/jobs/{id}/classify`
@@ -42,6 +59,7 @@ The valid types are `UNKNOWN`, `DAILY_TIMEMARK`, and `WEEKLY_JOURNAL`. Omitting 
 ```json
 {
   "worker_id": "classifier-home-1",
+  "attempt": 1,
   "document_type": "WEEKLY_JOURNAL",
   "confidence": 0.98
 }
@@ -57,6 +75,7 @@ If classification is uncertain, submit `UNKNOWN`; Laravel stores the job as `EXC
 ```json
 {
   "worker_id": "rapid-ocr-home-1",
+  "attempt": 2,
   "date": "2026-08-20",
   "time": "16:45:00",
   "asset_code": "T-XL0354",
@@ -77,6 +96,7 @@ Laravel assigns one deterministic shift: `MORNING`, `MIDDAY`, `AFTERNOON`, `AFTE
 ```json
 {
   "worker_id": "openclaw-home-1",
+  "attempt": 1,
   "asset_code": "T-XL0354",
   "confidence": 0.94,
   "raw_text": "full journal OCR text",
@@ -107,4 +127,6 @@ The original file is never overwritten. Both daily results and journal rows rema
 
 The claim response returns `image_url` as a relative URL. Workers resolve it against the configured Laravel/Tailscale origin, preventing a server-side `localhost` address from leaking into remote downloads.
 
-Expired `PROCESSING` jobs can be claimed again. A result is accepted only from the worker that currently owns the lease.
+Expired `PROCESSING` jobs can be claimed again only below `OCR_JOB_MAX_ATTEMPTS`. An expired final attempt becomes terminal `FAILED`; its processing run remains `TIMED_OUT` for operational diagnosis.
+
+During the transitional rollout, omitted attempt values remain accepted while `OCR_ENFORCE_ATTEMPT_FENCING=false`. Set the flag to `true` only after every OCR worker sends attempt identity. This compatibility window preserves old workers but cannot distinguish two stale old-worker requests that share a worker ID.

@@ -133,6 +133,10 @@ class OcrMonitoringService
                 if ($run->duration_ms === null) {
                     $totalDuration += (int) $duration;
                 }
+                $jobEndedAt = $job?->processed_at ?? now();
+                $jobAge = $job?->created_at
+                    ? max(0, $job->created_at->diffInMilliseconds($jobEndedAt))
+                    : 0;
 
                 return [
                     'id' => $run->id,
@@ -140,9 +144,13 @@ class OcrMonitoringService
                     'worker_id' => $run->worker_id,
                     'stage' => $run->stage,
                     'attempt' => $run->attempt,
+                    'is_current_attempt' => $job !== null && (int) $run->attempt === (int) $job->attempts,
                     'status' => $run->status,
                     'duration_ms' => (int) $duration,
+                    'current_attempt_runtime_ms' => (int) $duration,
                     'total_job_duration_ms' => $totalDuration,
+                    'cumulative_processing_ms' => $totalDuration,
+                    'job_age_ms' => (int) $jobAge,
                     'queue_wait_ms' => $queueStartedAt
                         ? max(0, $queueStartedAt->diffInMilliseconds($run->started_at))
                         : 0,

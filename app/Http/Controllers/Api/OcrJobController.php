@@ -3,11 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\ClassifyOcrJobRequest;
 use App\Http\Requests\ClaimOcrJobRequest;
+use App\Http\Requests\ClassifyOcrJobRequest;
 use App\Http\Requests\CompleteJournalOcrJobRequest;
 use App\Http\Requests\CompleteOcrJobRequest;
 use App\Http\Requests\FailOcrJobRequest;
+use App\Http\Requests\RenewOcrJobLeaseRequest;
 use App\Models\OcrJob;
 use App\Services\OcrJobService;
 use Illuminate\Http\JsonResponse;
@@ -17,9 +18,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class OcrJobController extends Controller
 {
-    public function __construct(private readonly OcrJobService $service)
-    {
-    }
+    public function __construct(private readonly OcrJobService $service) {}
 
     public function claim(ClaimOcrJobRequest $request): JsonResponse
     {
@@ -37,10 +36,14 @@ class OcrJobController extends Controller
                 'id' => $job->id,
                 'document_type' => $job->document_type,
                 'attempts' => $job->attempts,
+                'attempt' => $job->attempts,
+                'max_attempts' => max(1, (int) config('ocr.max_attempts')),
+                'lease_seconds' => max(1, (int) config('ocr.lease_seconds')),
                 'lease_expires_at' => $job->lease_expires_at?->toIso8601String(),
                 'image_url' => route('api.ocr.jobs.image', [
                     'ocrJob' => $job,
                     'worker_id' => $request->validated('worker_id'),
+                    'attempt' => $job->attempts,
                 ], false),
                 'message' => [
                     'group_id' => $job->attachment->message->group_id,
@@ -53,10 +56,28 @@ class OcrJobController extends Controller
         ]);
     }
 
+    public function renew(RenewOcrJobLeaseRequest $request, OcrJob $ocrJob): JsonResponse
+    {
+        $job = $this->service->renew($ocrJob, $request->validated());
+
+        return response()->json(['job' => [
+            'id' => $job->id,
+            'attempt' => $job->attempts,
+            'lease_expires_at' => $job->lease_expires_at?->toIso8601String(),
+        ]]);
+    }
+
     public function image(Request $request, OcrJob $ocrJob): StreamedResponse
     {
-        $request->validate(['worker_id' => ['required', 'string', 'max:100']]);
-        $this->service->ensureClaimOwner($ocrJob, (string) $request->query('worker_id'));
+        $validated = $request->validate([
+            'worker_id' => ['required', 'string', 'max:100'],
+            'attempt' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $this->service->ensureClaimOwner(
+            $ocrJob,
+            (string) $validated['worker_id'],
+            isset($validated['attempt']) ? (int) $validated['attempt'] : null,
+        );
 
         $attachment = $ocrJob->attachment;
 

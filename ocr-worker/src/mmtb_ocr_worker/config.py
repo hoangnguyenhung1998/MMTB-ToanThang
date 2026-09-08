@@ -48,6 +48,8 @@ class Settings:
     worker_id: str
     poll_seconds: int = 10
     request_timeout_seconds: int = 30
+    lease_renew_interval_seconds: int = 60
+    processing_budget_seconds: int = 900
     classification_min_confidence: float = 0.70
     machine_refresh_seconds: int = 3600
     delay_between_jobs_seconds: float = 3.0
@@ -76,6 +78,8 @@ class Settings:
             worker_id=worker_id,
             poll_seconds=_positive_int("OCR_POLL_SECONDS", 10),
             request_timeout_seconds=_positive_int("OCR_REQUEST_TIMEOUT_SECONDS", 30),
+            lease_renew_interval_seconds=_positive_int("OCR_LEASE_RENEW_INTERVAL_SECONDS", 60),
+            processing_budget_seconds=_positive_int("OCR_PROCESSING_BUDGET_SECONDS", 900),
             classification_min_confidence=_confidence(
                 "OCR_CLASSIFICATION_MIN_CONFIDENCE",
                 0.70,

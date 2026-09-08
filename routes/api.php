@@ -1,18 +1,18 @@
 <?php
 
 use App\Http\Controllers\Api\AiReconciliationController;
-use App\Http\Controllers\Api\OcrJobController;
-use App\Http\Controllers\Api\MachineIntakeOcrController;
-use App\Http\Controllers\Api\OpenClawCommandController;
-use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Controllers\Api\AutomationHeartbeatController;
 use App\Http\Controllers\Api\AutomationOperationalCommandController;
 use App\Http\Controllers\Api\MachineIntakeEmailReplyController;
+use App\Http\Controllers\Api\MachineIntakeOcrController;
+use App\Http\Controllers\Api\OcrJobController;
+use App\Http\Controllers\Api\OpenClawCommandController;
+use App\Http\Controllers\Api\ZaloMessageController;
 use App\Http\Middleware\AuthenticateAutomationAgent;
 use App\Http\Middleware\AuthenticateCollector;
-use App\Http\Middleware\AuthenticateOpenClaw;
-use App\Http\Middleware\AuthenticateOcrWorker;
 use App\Http\Middleware\AuthenticateGmailIntakeWorker;
+use App\Http\Middleware\AuthenticateOcrWorker;
+use App\Http\Middleware\AuthenticateOpenClaw;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/automation/v1/heartbeat', AutomationHeartbeatController::class)
@@ -65,6 +65,8 @@ Route::prefix('ocr/v1')
             ->name('api.ocr.machines.index');
         Route::post('/jobs/claim', [OcrJobController::class, 'claim'])
             ->name('api.ocr.jobs.claim');
+        Route::post('/jobs/{ocrJob}/renew', [OcrJobController::class, 'renew'])
+            ->name('api.ocr.jobs.renew');
         Route::get('/jobs/{ocrJob}/image', [OcrJobController::class, 'image'])
             ->name('api.ocr.jobs.image');
         Route::post('/jobs/{ocrJob}/classify', [OcrJobController::class, 'classify'])

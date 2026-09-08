@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class CompleteJournalOcrJobRequest extends FormRequest
 {
@@ -15,6 +16,7 @@ class CompleteJournalOcrJobRequest extends FormRequest
     {
         return [
             'worker_id' => ['required', 'string', 'max:100'],
+            'attempt' => [Rule::requiredIf((bool) config('ocr.enforce_attempt_fencing')), 'nullable', 'integer', 'min:1'],
             'asset_code' => ['nullable', 'string', 'max:100'],
             'confidence' => ['required', 'numeric', 'between:0,1'],
             'raw_text' => ['nullable', 'string'],
