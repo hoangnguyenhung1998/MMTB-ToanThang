@@ -94,6 +94,9 @@ class ReconciliationExportValidator
         $rows->groupBy(fn ($row) => $row->machine_id.'|'.$row->work_date?->format('Y-m-d'))
             ->each(function (Collection $dailyRows) use ($blocking, $warnings): void {
                 $dailyRows = $dailyRows->values();
+                if (config('daily_photos.enabled') && $dailyRows->sum('regular_minutes') > 420) {
+                    $blocking->push($this->rowLabel($dailyRows->first()).': tổng hành chính ở các BCH vượt 7 tiếng.');
+                }
 
                 for ($left = 0; $left < $dailyRows->count(); $left++) {
                     for ($right = $left + 1; $right < $dailyRows->count(); $right++) {

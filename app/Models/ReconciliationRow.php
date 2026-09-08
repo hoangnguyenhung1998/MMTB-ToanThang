@@ -10,6 +10,7 @@ class ReconciliationRow extends Model
     protected $guarded = [];
 
     protected $casts = [
+        'daily_intervals' => 'array',
         'work_date' => 'date',
         'daily_ocr_job_ids' => 'array',
         'journal_row_ids' => 'array',

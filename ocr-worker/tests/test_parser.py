@@ -24,6 +24,19 @@ class ParserTest(unittest.TestCase):
     def test_parses_time(self):
         self.assertEqual("07:28:00", parse_time("07:28").isoformat())
 
+    def test_24_hour_time_and_meridiem_are_normalized(self):
+        for raw, expected in [('6h14', '06:14:00'), ('13:55', '13:55:00'), ('1:55 PM', '13:55:00'),
+                              ('12:00 AM', '00:00:00'), ('12:00 PM', '12:00:00'), ('06.14', '06:14:00')]:
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, parse_time(raw).isoformat())
+
+    def test_date_is_not_misread_as_a_time(self):
+        self.assertIsNone(parse_time('05.09.2026'))
+        self.assertEqual('06:14:00', parse_time('05.09.2026 06:14').isoformat())
+
+    def test_conflicting_times_are_not_guessed(self):
+        self.assertIsNone(parse_time('06:14 18:14'))
+
     def test_parses_phone(self):
         self.assertEqual("0866886292", parse_phone("SĐT: 0866 886 292"))
 

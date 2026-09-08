@@ -19,6 +19,11 @@ class ReconciliationRowService
         }
 
         return DB::transaction(function () use ($row, $data) {
+            $period = $row->period()->lockForUpdate()->firstOrFail();
+            if (!in_array($period->status, ['GENERATED', 'REVIEWING'], true)) throw new RuntimeException('Kỳ đã chốt hoặc chưa sinh dữ liệu.');
+            $row = ReconciliationRow::query()->lockForUpdate()->findOrFail($row->id);
+            if ($row->status === 'CONFIRMED') throw new RuntimeException('Dòng đã xác nhận.');
+            $before = $row->toArray();
             $timeFields = [
                 'regular_morning_start', 'regular_morning_end',
                 'regular_afternoon_start', 'regular_afternoon_end',
@@ -37,7 +42,22 @@ class ReconciliationRowService
                 ['start_time' => $timeData['overtime_afternoon_start'] ?? null, 'end_time' => $timeData['overtime_afternoon_end'] ?? null],
                 ['start_time' => $timeData['overtime_evening_start'] ?? null, 'end_time' => $timeData['overtime_evening_end'] ?? null],
             ]);
-            $recalculated = $this->timeAllocator->allocate($sourceIntervals);
+            if (config('daily_photos.enabled')) {
+                $typed = [];
+                foreach (DailyTimeAllocator::KINDS as $kind) {
+                    if (empty($timeData[$kind.'_start']) !== empty($timeData[$kind.'_end'])) {
+                        throw \Illuminate\Validation\ValidationException::withMessages(['intervals' => 'Mỗi ca cần đủ giờ vào và ra; không tự bỏ mốc đang thiếu.']);
+                    }
+                    if (!empty($timeData[$kind.'_start']) && !empty($timeData[$kind.'_end'])) {
+                        $typed[] = ['kind' => $kind, 'start' => $timeData[$kind.'_start'], 'end' => $timeData[$kind.'_end']];
+                    }
+                }
+                $allocator = app(DailyTimeAllocator::class);
+                $recalculated = $allocator->allocate($typed, false, $allocator->remainingRegularMinutes($row));
+                app(DailyTimeAllocator::class)->assertWithinAssignment($recalculated, $row);
+            } else {
+                $recalculated = $this->timeAllocator->allocate($sourceIntervals);
+            }
             $data = [
                 ...$data,
                 ...collect($recalculated)->only([
@@ -49,6 +69,7 @@ class ReconciliationRowService
             ];
             $row->update([
                 ...$data,
+                ...(config('daily_photos.enabled') ? ['evidence_signature' => app(DailyPhotoSyncService::class)->signatureForRow($row, app(DailyPhotoSyncService::class)->sources($row))] : []),
                 'manually_edited_at' => now(),
                 'has_evidence_changes' => false,
                 'status' => 'DRAFT',
@@ -58,6 +79,9 @@ class ReconciliationRowService
                 'confirmed_by' => null,
             ]);
 
+            \App\Models\ActivityLog::create(['user_id' => auth()->id(), 'machine_id' => $row->machine_id, 'event' => 'reconciliation.row_edited',
+                'description' => 'Sửa dòng đối chiếu', 'subject_type' => ReconciliationRow::class, 'subject_id' => $row->id,
+                'properties' => ['before' => $before, 'after' => $row->fresh()->toArray()], 'occurred_at' => now()]);
             return $row->refresh();
         });
     }

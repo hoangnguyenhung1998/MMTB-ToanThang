@@ -8,7 +8,7 @@ from pathlib import Path
 from rapidocr import RapidOCR
 
 from .imaging import enhance_for_ocr, flatten_ocr_result, read_image, rotate, table_line_score
-from .parser import GENERIC_ASSET_PATTERN, PHONE_PATTERN, normalize_text
+from .parser import GENERIC_ASSET_PATTERN, PHONE_PATTERN, normalize_text, parse_date, parse_time
 
 
 @dataclass(frozen=True)
@@ -92,12 +92,18 @@ def classify_text(text: str, table_score: float = 0.0, minimum_confidence: float
         confidence = min(0.99, 0.72 + form_hits * 0.06 + structural_hits * 0.02 + table_score * 0.08)
         return Classification("WEEKLY_JOURNAL", confidence, text)
 
+    if any(phrase in normalized for phrase in ('BIEN BAN BAN GIAO', 'HOA DON', 'PHIEU XUAT KHO')):
+        return Classification('UNKNOWN', 0.99, text)
+
     top_score = max(daily_score, journal_score)
     margin = abs(daily_score - journal_score)
     confidence = min(0.99, 0.45 + top_score * 0.07 + margin * 0.04)
     if top_score < 2.5 or margin < 1 or confidence < minimum_confidence:
         return Classification("UNKNOWN", confidence, text)
     document_type = "DAILY_TIMEMARK" if daily_score > journal_score else "WEEKLY_JOURNAL"
+    if document_type == 'DAILY_TIMEMARK' and not ('TIMEMARK' in normalized or 'TIME MARK' in normalized
+            or (parse_date(text) and parse_time(text))):
+        return Classification('UNKNOWN', confidence, text)
     return Classification(document_type, confidence, text)
 
 

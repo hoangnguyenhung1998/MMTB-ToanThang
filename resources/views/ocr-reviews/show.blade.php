@@ -22,6 +22,16 @@
     </header>
 
     @if (session('success'))<div class="alert alert-success">{{ session('success') }}</div>@endif
+    @if($errors->any())<div class="alert alert-danger">{{ $errors->first() }}</div>@endif
+    @if(config('daily_photos.enabled') && !$job->reviewed_at && $job->status !== 'PROCESSING')
+    <form class="d-flex gap-2 mb-3" method="POST" action="{{ route('daily-photos.requeue', $job) }}">
+        @csrf
+        <button class="btn btn-outline-primary" name="document_type" value="DAILY_TIMEMARK">Ảnh ngày — OCR lại</button>
+        <button class="btn btn-outline-secondary" name="document_type" value="WEEKLY_JOURNAL">Ảnh nhật trình — tạm giữ</button>
+        <button class="btn btn-outline-secondary" name="document_type" value="UNKNOWN">Ảnh khác — không OCR</button>
+    </form>
+    @endif
+    @if(data_get($job->daily_metadata, 'near_duplicate_ids'))<div class="alert alert-warning">Ảnh có thể gần trùng với job {{ implode(', ', $job->daily_metadata['near_duplicate_ids']) }}. Giữ ảnh gốc để kiểm tra.</div>@endif
     @if ($job->document_type === 'DAILY_TIMEMARK')
     <div class="daily-review-workspace">
         <div class="daily-editor-column">
@@ -32,7 +42,7 @@
             <div class="daily-form-grid">
                 <label><span>Mã máy xác nhận</span><select name="machine_id">@foreach($machines as $machine)<option value="{{ $machine->id }}" @selected($job->machine_id === $machine->id)>{{ $machine->asset_code }}</option>@endforeach</select></label>
                 <label><span>Ngày</span><input type="date" name="extracted_date" value="{{ $job->extracted_date?->format('Y-m-d') }}"></label>
-                <label><span>Giờ</span><input type="time" name="extracted_time" value="{{ $job->extracted_time ? substr($job->extracted_time,0,5) : '' }}"></label>
+                <label><span>Giờ 24 giờ</span><input type="text" inputmode="numeric" placeholder="HH:mm" pattern="(?:[01]\d|2[0-3]):[0-5]\d" name="extracted_time" value="{{ $job->extracted_time ? substr($job->extracted_time,0,5) : '' }}"></label>
                 <label><span>Người vận hành</span><input name="operator_name" value="{{ $job->operator_name }}"></label>
                 <label><span>Số điện thoại</span><input name="phone" value="{{ $job->phone }}"></label>
                 <label class="daily-wide-field"><span>Vị trí</span><textarea name="work_location" rows="2">{{ $job->work_location }}</textarea></label>

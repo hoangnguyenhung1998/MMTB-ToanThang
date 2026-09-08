@@ -16,6 +16,7 @@ class OpenClawCommandService
 
     public function create(AiReconciliationJob $job, int $userId, array $data): OpenClawCommand
     {
+        abort_if(config('daily_photos.enabled'), 409, 'Đối soát AI đang bảo trì.');
         $active = $job->commands()
             ->whereIn('status', ['PENDING', 'PROCESSING', 'RETRY'])
             ->exists();
@@ -36,6 +37,7 @@ class OpenClawCommandService
 
     public function claim(string $workerId, int $limit = 3): Collection
     {
+        if (config('daily_photos.enabled')) return new Collection();
         return DB::transaction(function () use ($workerId, $limit): Collection {
             $commands = OpenClawCommand::query()
                 ->whereNotNull('ai_reconciliation_job_id')
@@ -88,6 +90,7 @@ class OpenClawCommandService
 
     public function complete(OpenClawCommand $command, string $workerId, array $data): OpenClawCommand
     {
+        abort_if(config('daily_photos.enabled'), 409, 'Đối soát AI đang bảo trì.');
         $this->ensureClaimOwner($command, $workerId);
 
         $command->update([
@@ -106,6 +109,7 @@ class OpenClawCommandService
 
     public function fail(OpenClawCommand $command, string $workerId, string $error, bool $retryable): OpenClawCommand
     {
+        abort_if(config('daily_photos.enabled'), 409, 'Đối soát AI đang bảo trì.');
         $this->ensureClaimOwner($command, $workerId);
 
         $command->update([

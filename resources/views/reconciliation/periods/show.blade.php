@@ -63,9 +63,9 @@
             @if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING']))
                 <form method="POST"
                       action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}"
-                      onsubmit="return confirm('Đồng bộ OCR ảnh hằng ngày, nhật trình và kết quả AI? Dòng đã sửa hoặc xác nhận sẽ không bị ghi đè.')">
+                      onsubmit="return confirm('Đồng bộ giờ từ ảnh hằng ngày? Dòng đã sửa, duyệt hoặc xác nhận sẽ được giữ nguyên.')">
                     @csrf
-                    <button class="btn btn-outline-primary" type="submit">Đồng bộ OCR & AI</button>
+                    <button class="btn btn-outline-primary" type="submit">Đồng bộ giờ ảnh ngày</button>
                 </form>
             @endif
 
@@ -557,17 +557,17 @@
                             @endforeach
                             @php
                                 $evidenceColor = match ($row->evidence_status) {
-                                    'MATCHED' => 'success',
-                                    'WARNING', 'JOURNAL_ONLY', 'DAILY_ONLY', 'WAITING_EVIDENCE' => 'warning',
+                                    'MATCHED', 'DAILY_READY', 'DAILY_CONFIRMED' => 'success',
+                                    'WARNING', 'JOURNAL_ONLY', 'DAILY_ONLY', 'WAITING_EVIDENCE', 'DAILY_REVIEW' => 'warning',
                                     'EXCEPTION' => 'danger',
                                     'PENDING_ANALYSIS' => 'info',
                                     default => 'secondary',
                                 };
                             @endphp
                             <td>
-                                <span class="badge text-bg-{{ $evidenceColor }}">{{ $row->evidence_status ?? 'NO_EVIDENCE' }}</span>
+                                <span class="badge text-bg-{{ $evidenceColor }}" title="{{ $row->evidence_summary }}">{{ ['DAILY_READY'=>'Đã phân bổ ảnh ngày','DAILY_CONFIRMED'=>'Đã xác nhận ca','DAILY_REVIEW'=>'Cần kiểm tra ca','NO_EVIDENCE'=>'Chưa có ảnh'][$row->evidence_status] ?? $row->evidence_status }}</span>
                                 @if ($row->has_evidence_changes)
-                                    <span class="badge text-bg-danger" title="Có OCR hoặc kết quả AI mới sau lần sửa/xác nhận">Có dữ liệu mới</span>
+                                    <span class="badge text-bg-danger" title="Có ảnh hoặc kết quả OCR mới sau lần sửa/xác nhận">Có dữ liệu mới</span>
                                 @endif
                             </td>
                             <td><span class="badge text-bg-{{ $row->status === 'CONFIRMED' ? 'success' : ($row->status === 'REJECTED' ? 'danger' : 'warning') }}">{{ $row->status }}</span></td>

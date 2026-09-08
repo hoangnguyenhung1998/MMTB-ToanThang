@@ -24,6 +24,7 @@ class OcrReviewService
     public function paginate(array $filters): LengthAwarePaginator
     {
         return OcrJob::query()
+            ->when(config('daily_photos.enabled') && empty($filters['document_type']), fn ($q) => $q->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']))
             ->with(['machine:id,asset_code', 'attachment.message'])
             ->when($filters['q'] ?? null, function (Builder $query, string $value): void {
                 $search = '%'.trim($value).'%';
@@ -100,6 +101,7 @@ class OcrReviewService
 
     public function review(OcrJob $job, array $data, User $user): OcrJob
     {
+        $previous = clone $job;
         $reviewed = DB::transaction(function () use ($job, $data, $user): OcrJob {
             $before = $job->only(['status', 'review_status', 'machine_id', 'asset_code', 'extracted_date', 'extracted_time', 'exceptions']);
             $action = $data['action'];
@@ -162,9 +164,10 @@ class OcrReviewService
             return $job->fresh();
         });
 
-        if ($reviewed->document_type === 'DAILY_TIMEMARK'
-            && in_array($reviewed->review_status, ['APPROVED', 'CORRECTED'], true)) {
-            $this->syncRelatedPeriods($reviewed);
+        if ($reviewed->document_type === 'DAILY_TIMEMARK') {
+            if ($reviewed->machine_id && $reviewed->extracted_date) $this->syncRelatedPeriods($reviewed);
+            if ($previous->machine_id && $previous->extracted_date
+                && ($previous->machine_id !== $reviewed->machine_id || !$previous->extracted_date->eq($reviewed->extracted_date))) $this->syncRelatedPeriods($previous);
         }
 
         return $reviewed;
@@ -175,7 +178,7 @@ class OcrReviewService
         ReconciliationPeriod::query()
             ->whereIn('status', ['GENERATED', 'REVIEWING'])
             ->whereDate('date_from', '<=', $job->extracted_date)
-            ->whereDate('date_to', '>=', $job->extracted_date)
+            ->whereDate('date_to', '>=', config('daily_photos.enabled') ? $job->extracted_date->copy()->subDay() : $job->extracted_date)
             ->get()
             ->each(fn (ReconciliationPeriod $period) => $this->evidenceSync->sync(
                 $period,

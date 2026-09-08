@@ -1,13 +1,23 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from mmtb_reconciliation_worker.models import CommandResult, ReconciliationResult
 from mmtb_reconciliation_worker.worker import ReconciliationWorker
 
 
 class WorkerTest(unittest.TestCase):
+    @patch.dict(os.environ, {"DAILY_PHOTOS_ONLY": "true"})
+    def test_daily_mode_makes_no_api_or_model_calls(self):
+        worker = object.__new__(ReconciliationWorker)
+        worker.laravel = Mock()
+        worker.openclaw = Mock()
+        self.assertFalse(worker.step())
+        self.assertEqual([], worker.laravel.mock_calls)
+        self.assertEqual([], worker.openclaw.mock_calls)
+
     def test_completes_job_and_deletes_temporary_image(self):
         worker = object.__new__(ReconciliationWorker)
         worker.settings = Mock(worker_id="worker-1", openclaw_model=None)

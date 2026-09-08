@@ -17,14 +17,17 @@ Schedule::command('notifications:sync-operational')
     ->withoutOverlapping();
 
 Schedule::command('reconciliation:dispatch-alerts urgent')
+    ->when(fn () => !config('daily_photos.enabled'))
     ->everyFiveMinutes()
     ->withoutOverlapping();
 
 Schedule::command('reconciliation:dispatch-alerts warnings')
+    ->when(fn () => !config('daily_photos.enabled'))
     ->everyThirtyMinutes()
     ->withoutOverlapping();
 
 Schedule::command('reconciliation:dispatch-alerts daily')
+    ->when(fn () => !config('daily_photos.enabled'))
     ->dailyAt('07:00')
     ->timezone('Asia/Ho_Chi_Minh')
     ->withoutOverlapping();

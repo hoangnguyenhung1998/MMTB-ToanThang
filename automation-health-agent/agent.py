@@ -278,11 +278,13 @@ class HealthAgent:
         now = time.monotonic()
         for definition in self.definitions:
             task_name = definition.task_name
+            if definition.service_type == 'RECONCILIATION_WORKER' and os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() not in {'0', 'false', 'no'}:
+                continue
             task = tasks.get(task_name or "")
             if not task_name or str((task or {}).get("state", "")).upper() != "READY":
                 continue
-            last_attempt = self.recovery_attempted_at.get(task_name, 0.0)
-            if now - last_attempt < self.recovery_cooldown_seconds:
+            last_attempt = self.recovery_attempted_at.get(task_name)
+            if last_attempt is not None and now - last_attempt < self.recovery_cooldown_seconds:
                 continue
             self.recovery_attempted_at[task_name] = now
             try:
@@ -335,6 +337,8 @@ class HealthAgent:
         definition = next((item for item in self.definitions if item.service_key == service_key), None)
         if definition is None:
             raise RuntimeError(f"Dịch vụ không thuộc allowlist: {service_key}")
+        if definition.service_type == 'RECONCILIATION_WORKER' and os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() not in {'0', 'false', 'no'}:
+            raise RuntimeError('Đối soát AI đang bảo trì.')
         action = command["action"]
         if action == "ZALO_ACCOUNT_SWITCH":
             if definition.service_type != "ZALO_COLLECTOR":

@@ -36,6 +36,7 @@
 @endphp
 
 <div class="container-fluid">
+    @if(config('daily_photos.enabled')) @include('daily-photos._intervals') @endif
     @if (session('success'))
         <div class="alert alert-success">{{ session('success') }}</div>
     @endif
@@ -242,7 +243,7 @@
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">Nội dung công việc</label>
-                        <textarea class="form-control" name="work_content" rows="4">{{ old('work_content', $reconciliationRow->work_content) }}</textarea>
+                        <input class="form-control" name="work_content" value="{{ old('work_content', $reconciliationRow->work_content) }}">
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">Giải trình</label>

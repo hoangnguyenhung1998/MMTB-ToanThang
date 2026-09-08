@@ -14,6 +14,7 @@ class AutomationHealthAlertDispatcher
         if (! $this->telegram->enabled()) return ['sent' => 0, 'failed' => 0, 'skipped' => true];
         $sent = 0; $failed = 0;
         $alerts = AutomationHealthAlert::query()
+            ->when(config('daily_photos.enabled'), fn ($q) => $q->whereDoesntHave('incident.service', fn ($s) => $s->where('service_type', 'RECONCILIATION_WORKER')))
             ->whereIn('status', ['PENDING', 'RETRY'])->where('attempts', '<', 5)
             ->where(fn ($query) => $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now()))
             ->oldest('id')->limit(50)->get();

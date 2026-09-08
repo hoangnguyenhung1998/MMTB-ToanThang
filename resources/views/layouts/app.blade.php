@@ -52,7 +52,8 @@
                 <div class="sidebar-group-links">
                     <a class="sidebar-link {{ request()->routeIs('automation-health.*') ? 'active' : '' }}" href="{{ route('automation-health.index') }}"><span>Giám sát tự động</span></a>
                     <a class="sidebar-link {{ request()->routeIs('zalo-accounts.*') ? 'active' : '' }}" href="{{ route('zalo-accounts.index') }}"><span>Tài khoản Zalo</span></a>
-                    <a class="sidebar-link {{ request()->routeIs('ai-reconciliation.*') ? 'active' : '' }}" href="{{ route('ai-reconciliation.index') }}"><span>Đối soát AI</span></a>
+                    <a class="sidebar-link {{ request()->routeIs('ai-reconciliation.*') ? 'active' : '' }}" href="{{ route('ai-reconciliation.index') }}"><span>Đối soát AI{{ config('daily_photos.enabled') ? ' · Bảo trì' : '' }}</span></a>
+                    <a class="sidebar-link" href="{{ route('daily-photos.settings') }}"><span>Người gửi Zalo / lái máy</span></a>
                 </div>
             </details>
 
@@ -349,5 +350,8 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+@if(config('daily_photos.enabled') && request()->routeIs('reconciliation-periods.show', 'reconciliation-rows.show'))
+    @include('daily-photos._suggestions')
+@endif
 </body>
 </html>

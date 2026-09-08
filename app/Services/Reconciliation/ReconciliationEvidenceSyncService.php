@@ -23,6 +23,7 @@ class ReconciliationEvidenceSyncService
 
     public function sync(ReconciliationPeriod $period, ?int $machineId = null, ?string $workDate = null): array
     {
+        if (config('daily_photos.enabled')) return app(DailyPhotoSyncService::class)->sync($period, $machineId, $workDate);
         if (!in_array($period->status, ['GENERATED', 'REVIEWING'], true)) {
             throw new RuntimeException('Chỉ đồng bộ bằng chứng khi kỳ đã sinh dữ liệu hoặc đang kiểm tra.');
         }
@@ -66,7 +67,7 @@ class ReconciliationEvidenceSyncService
                 $submission = $aiJob?->latestSubmission;
                 $signature = $this->signature($daily, $journals, $aiJob, $submission);
                 $status = $this->evidenceStatus($daily, $journals, $aiJob, $submission);
-                $protected = $row->status === 'CONFIRMED' || $row->manually_edited_at !== null;
+                $protected = in_array($row->status, ['REVIEWED', 'CONFIRMED', 'REJECTED'], true) || $row->manually_edited_at !== null;
                 $changed = $row->evidence_signature !== null && $row->evidence_signature !== $signature;
 
                 $provenance = [
