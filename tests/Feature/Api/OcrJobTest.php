@@ -4,8 +4,12 @@ namespace Tests\Feature\Api;
 
 use App\Models\Machine;
 use App\Models\OcrJob;
+use App\Models\OcrProcessingRun;
+use App\Models\ReconciliationPeriod;
 use App\Models\ZaloAttachment;
 use App\Models\ZaloMessage;
+use App\Services\Reconciliation\DailyPhotoSyncService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
@@ -22,9 +26,17 @@ class OcrJobTest extends TestCase
             'app.timezone' => 'Asia/Ho_Chi_Minh',
             'ocr.worker_token' => 'test-ocr-token',
             'ocr.lease_seconds' => 300,
+            'ocr.max_attempts' => 3,
+            'ocr.enforce_attempt_fencing' => false,
             'ocr.minimum_confidence' => 0.80,
         ]);
         Storage::fake('local');
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 
     public function test_worker_must_authenticate(): void
@@ -407,6 +419,198 @@ class OcrJobTest extends TestCase
             'id' => $job->id,
             'status' => 'EXCEPTION',
         ]);
+    }
+
+    public function test_claim_returns_identity_and_current_attempt_can_renew(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true]);
+        Carbon::setTestNow('2026-09-09 08:00:00');
+        $job = $this->createJob();
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+            ->assertOk()
+            ->assertJsonPath('job.attempt', 1)
+            ->assertJsonPath('job.attempts', 1)
+            ->assertJsonPath('job.max_attempts', 3)
+            ->assertJsonPath('job.lease_seconds', 300);
+
+        Carbon::setTestNow('2026-09-09 08:03:00');
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/renew", ['worker_id' => 'worker-1', 'attempt' => 1])
+            ->assertOk()
+            ->assertJsonPath('job.attempt', 1);
+
+        $this->assertSame('2026-09-09 08:08:00', $job->fresh()->lease_expires_at->format('Y-m-d H:i:s'));
+    }
+
+    public function test_renew_rejects_stale_attempt_and_wrong_worker(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/renew", ['worker_id' => 'worker-1', 'attempt' => 2])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('attempt');
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/renew", ['worker_id' => 'worker-2', 'attempt' => 1])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('attempt');
+    }
+
+    public function test_same_worker_stale_attempt_cannot_complete_classify_fail_or_sync_evidence(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true]);
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL1601',
+            'company' => 'VINCONS',
+            'chassis_no' => 'LEASE-FENCE-1',
+            'status' => 'ACTIVE',
+        ]);
+        ReconciliationPeriod::query()->create([
+            'name' => 'September 2026',
+            'type' => 'MONTHLY',
+            'date_from' => '2026-09-01',
+            'date_to' => '2026-09-30',
+            'status' => 'GENERATED',
+        ]);
+        $this->mock(DailyPhotoSyncService::class, fn ($mock) => $mock->shouldNotReceive('sync'));
+        $job = $this->createJob();
+        $this->claim($job);
+        $job->update(['lease_expires_at' => now()->subSecond()]);
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+            ->assertOk()
+            ->assertJsonPath('job.id', $job->id)
+            ->assertJsonPath('job.attempt', 2);
+
+        $this->assertDatabaseHas('ocr_processing_runs', [
+            'ocr_job_id' => $job->id,
+            'attempt' => 1,
+            'status' => 'TIMED_OUT',
+        ]);
+
+        $staleComplete = [
+            'worker_id' => 'worker-1',
+            'attempt' => 1,
+            'date' => '2026-09-09',
+            'time' => '08:00:00',
+            'asset_code' => $machine->asset_code,
+            'confidence' => 0.99,
+        ];
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/complete", $staleComplete)
+            ->assertUnprocessable()->assertJsonValidationErrors('attempt');
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/classify", [
+            'worker_id' => 'worker-1', 'attempt' => 1, 'document_type' => 'DAILY_TIMEMARK', 'confidence' => 0.99,
+        ])->assertUnprocessable()->assertJsonValidationErrors('attempt');
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/fail", [
+            'worker_id' => 'worker-1', 'attempt' => 1, 'error' => 'late failure', 'retryable' => true,
+        ])->assertUnprocessable()->assertJsonValidationErrors('attempt');
+
+        $fresh = $job->fresh();
+        $this->assertSame('PROCESSING', $fresh->status);
+        $this->assertSame(2, $fresh->attempts);
+        $this->assertNull($fresh->machine_id);
+    }
+
+    public function test_current_attempt_completion_is_accepted_when_fencing_is_enforced(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true]);
+        $machine = Machine::query()->create([
+            'asset_code' => 'VT-XL1602', 'company' => 'VINCONS', 'chassis_no' => 'LEASE-FENCE-2', 'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+            'worker_id' => 'worker-1', 'attempt' => 1, 'date' => '2026-09-09', 'time' => '08:00:00',
+            'asset_code' => $machine->asset_code, 'confidence' => 0.99,
+        ])->assertOk()->assertJsonPath('job.status', 'COMPLETED');
+    }
+
+    public function test_old_worker_payload_remains_accepted_until_fencing_is_enforced(): void
+    {
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/fail", [
+            'worker_id' => 'worker-1', 'error' => 'legacy worker failure', 'retryable' => false,
+        ])->assertOk()->assertJsonPath('job.status', 'FAILED');
+
+        config(['ocr.enforce_attempt_fencing' => true]);
+        $another = $this->createJob();
+        $this->claim($another);
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$another->id}/fail", [
+            'worker_id' => 'worker-1', 'error' => 'missing attempt', 'retryable' => false,
+        ])->assertUnprocessable()->assertJsonValidationErrors('attempt');
+    }
+
+    public function test_expired_final_attempt_becomes_terminal_failed_and_cannot_reclaim(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true, 'ocr.max_attempts' => 3]);
+        $job = $this->createJob();
+
+        foreach ([1, 2, 3] as $attempt) {
+            $this->withToken('test-ocr-token')
+                ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+                ->assertOk()
+                ->assertJsonPath('job.attempt', $attempt);
+            $job->refresh()->update(['lease_expires_at' => now()->subSecond()]);
+        }
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+            ->assertNoContent();
+
+        $fresh = $job->fresh();
+        $this->assertSame('FAILED', $fresh->status);
+        $this->assertSame(3, $fresh->attempts);
+        $this->assertNotNull($fresh->processed_at);
+        $this->assertStringContainsString('after 3 OCR attempts', $fresh->error_message);
+        $this->assertSame('TIMED_OUT', OcrProcessingRun::query()->where('ocr_job_id', $job->id)->where('attempt', 3)->value('status'));
+    }
+
+    public function test_retryable_failure_on_final_attempt_becomes_terminal_failed(): void
+    {
+        config(['ocr.enforce_attempt_fencing' => true, 'ocr.max_attempts' => 1]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')->postJson("/api/ocr/v1/jobs/{$job->id}/fail", [
+            'worker_id' => 'worker-1',
+            'attempt' => 1,
+            'error' => 'OCR processing budget exceeded.',
+            'retryable' => true,
+        ])->assertOk()->assertJsonPath('job.status', 'FAILED');
+
+        $this->assertNotNull($job->fresh()->processed_at);
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+            ->assertNoContent();
+    }
+
+    public function test_existing_queued_job_at_attempt_limit_is_materialized_as_terminal_failed(): void
+    {
+        config(['ocr.max_attempts' => 3]);
+        $job = $this->createJob();
+        $job->update([
+            'status' => 'RETRY',
+            'attempts' => 3,
+            'error_message' => 'Legacy retry state.',
+        ]);
+
+        $this->withToken('test-ocr-token')
+            ->postJson('/api/ocr/v1/jobs/claim', ['worker_id' => 'worker-1'])
+            ->assertNoContent();
+
+        $fresh = $job->fresh();
+        $this->assertSame('FAILED', $fresh->status);
+        $this->assertNotNull($fresh->processed_at);
+        $this->assertSame('Maximum of 3 OCR attempts reached.', $fresh->error_message);
     }
 
     private function claim(OcrJob $job): void

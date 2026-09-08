@@ -44,6 +44,9 @@ The worker:
 - claims only `DAILY_TIMEMARK` and `UNKNOWN` jobs;
 - downloads a temporary copy of the private source image;
 - sends results back to Laravel;
+- renews the exact claim attempt independently while RapidOCR is running;
+- abandons stale results when Laravel reports that ownership was lost;
+- enforces a wall-clock processing budget at safe boundaries;
 - deletes only its temporary copy;
 - waits and retries when the office Laravel server is unavailable;
 - prevents two worker processes on the same machine.
@@ -54,7 +57,18 @@ after every 10 images. Override `OCR_DELAY_BETWEEN_JOBS_SECONDS`,
 `OCR_BATCH_SIZE`, and `OCR_BATCH_COOLDOWN_SECONDS` in `.env` when needed. Set
 the delay or cooldown to `0` to disable that rest without changing code.
 
+Lease ownership and processing time are separate controls. Laravel returns the
+lease duration for each claim. The worker renews it every
+`OCR_LEASE_RENEW_INTERVAL_SECONDS` (default 60 seconds). Local work is bounded by
+`OCR_PROCESSING_BUDGET_SECONDS` (default 900 seconds); if a single native
+RapidOCR call blocks, the heartbeat continues and the budget is enforced as soon
+as that call returns to a safe Python boundary. The worker never kills the native
+OCR call forcibly.
+
 Logs are stored at `ocr-worker/data/worker.log` and rotate daily for 14 days.
+TimeMark logs include job ID, attempt, worker ID, download time, rotation/region
+engine timing, renew outcome, total processing time, finalization, and ownership
+loss. Image bytes, OCR API tokens, and authorization headers are never logged.
 
 ## Autostart on the 24/7 laptop
 

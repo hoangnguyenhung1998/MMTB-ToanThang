@@ -51,6 +51,20 @@ class ApiClientTest(unittest.TestCase):
 
         self.assertEqual(17.0, raised.exception.retry_after_seconds)
 
+    def test_attempt_identity_is_sent_for_renew_and_terminal_operations(self):
+        response = Mock()
+        response.json.return_value = {"job": {"status": "COMPLETED"}}
+        self.client._request = Mock(return_value=response)
+
+        self.client.renew(7, 2)
+        self.client.classify(7, 2, "DAILY_TIMEMARK", 0.98)
+        self.client.complete_timemark(7, 2, {"confidence": 0.98})
+        self.client.fail(7, 2, "budget exceeded", True)
+
+        payloads = [call.kwargs["json"] for call in self.client._request.call_args_list]
+        self.assertEqual([2, 2, 2, 2], [payload["attempt"] for payload in payloads])
+        self.assertTrue(all(payload["worker_id"] == "worker-test" for payload in payloads))
+
 
 if __name__ == "__main__":
     unittest.main()

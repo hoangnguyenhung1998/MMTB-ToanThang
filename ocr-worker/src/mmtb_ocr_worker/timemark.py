@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
+from collections.abc import Callable
 
 import cv2
 
@@ -42,7 +44,11 @@ class TimeMarkRecognizer:
         self.matcher = AssetMatcher(asset_codes)
         self.engine = engine or RapidOCR()
 
-    def recognize(self, path: Path) -> TimeMarkResult:
+    def recognize(
+        self,
+        path: Path,
+        progress: Callable[[str, int, str, int | None], None] | None = None,
+    ) -> TimeMarkResult:
         image = read_image(path)
         best_asset: tuple[str | None, float, str] = (None, 0.0, "")
         captured_date = None
@@ -63,7 +69,14 @@ class TimeMarkRecognizer:
                 ("full", rotated),
             ]
             for region_name, candidate in candidates:
-                texts, scores = flatten_ocr_result(self.engine(enhance_for_ocr(candidate)))
+                if progress is not None:
+                    progress("started", angle, region_name, None)
+                engine_started = time.monotonic()
+                try:
+                    texts, scores = flatten_ocr_result(self.engine(enhance_for_ocr(candidate)))
+                finally:
+                    if progress is not None:
+                        progress("finished", angle, region_name, round((time.monotonic() - engine_started) * 1000))
                 text = "\n".join(texts)
                 if not text.strip():
                     continue

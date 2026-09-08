@@ -53,7 +53,7 @@
 
     <section class="om-table-card">
         <div class="om-table-head"><h2>Nhật ký xử lý gần nhất</h2><span id="lastUpdated" class="om-updated">Đang kết nối…</span></div>
-        <div class="om-scroll"><table class="om-table"><thead><tr><th>THỜI GIAN</th><th>JOB/ẢNH</th><th>NGUỒN</th><th>CÔNG ĐOẠN</th><th>CHỜ</th><th>XỬ LÝ</th><th>TỔNG ẢNH</th><th>TRẠNG THÁI</th><th>THÔNG TIN</th></tr></thead><tbody id="runRows"></tbody></table></div>
+        <div class="om-scroll"><table class="om-table"><thead><tr><th>THỜI GIAN</th><th>JOB/ẢNH</th><th>NGUỒN</th><th>CÔNG ĐOẠN</th><th>CHỜ LƯỢT</th><th>THỜI GIAN LƯỢT</th><th>XỬ LÝ CỘNG DỒN</th><th>TUỔI JOB</th><th>TRẠNG THÁI</th><th>THÔNG TIN</th></tr></thead><tbody id="runRows"></tbody></table></div>
     </section>
 </div>
 
@@ -96,14 +96,14 @@
 
     const renderRuns = runs => {
         const rows = document.getElementById('runRows');
-        if (!runs.length) { rows.innerHTML = '<tr><td colspan="9" class="om-empty">Chưa có lượt OCR mới sau khi bật đo công suất.</td></tr>'; return; }
+        if (!runs.length) { rows.innerHTML = '<tr><td colspan="10" class="om-empty">Chưa có lượt OCR mới sau khi bật đo công suất.</td></tr>'; return; }
         rows.innerHTML = runs.map(run => `<tr>
             <td>${escapeHtml(clock(run.started_at))}<span class="om-sub">Lần ${number(run.attempt)}</span></td>
             <td><a href="${escapeHtml(run.url || '#')}">Job #${number(run.job_id)}</a><span class="om-sub">${escapeHtml(run.asset_code || 'Chưa rõ máy')}</span></td>
             <td>${escapeHtml(run.sender_name || 'Không rõ người gửi')}<span class="om-sub">Nhóm ${escapeHtml(run.group_id || '—')}</span></td>
             <td>${escapeHtml(stageLabels[run.stage] || run.stage)}<span class="om-sub">${escapeHtml(run.worker_id)}</span></td>
-            <td>${duration(run.queue_wait_ms)}</td><td><strong>${duration(run.duration_ms)}</strong></td><td>${duration(run.total_job_duration_ms)}</td>
-            <td><span class="om-status ${escapeHtml(run.status)}">${escapeHtml(statusLabels[run.status] || run.status)}</span></td>
+            <td>${duration(run.queue_wait_ms)}</td><td><strong>${duration(run.current_attempt_runtime_ms)}</strong><span class="om-sub">${run.is_current_attempt ? 'Lượt hiện tại' : 'Lượt trước'}</span></td><td>${duration(run.cumulative_processing_ms)}</td><td>${duration(run.job_age_ms)}</td>
+            <td><span class="om-status ${escapeHtml(run.status)}">${escapeHtml(statusLabels[run.status] || run.status)}</span><span class="om-sub">Job: ${escapeHtml(run.job_status || '—')}</span></td>
             <td class="om-error">${escapeHtml(run.error_message || run.document_type || '—')}</td>
         </tr>`).join('');
     };

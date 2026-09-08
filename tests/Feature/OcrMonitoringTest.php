@@ -7,8 +7,8 @@ use App\Models\OcrProcessingRun;
 use App\Models\User;
 use App\Models\ZaloAttachment;
 use App\Models\ZaloMessage;
-use App\Services\OcrCapacityAlertRecorder;
 use App\Services\AutomationHealthAlertDispatcher;
+use App\Services\OcrCapacityAlertRecorder;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -29,6 +29,7 @@ class OcrMonitoringTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-09-05 12:00:00', 'Asia/Ho_Chi_Minh')->utc());
         $user = User::factory()->create();
         $job = $this->job('COMPLETED', now()->subSeconds(12), now());
+        $job->update(['attempts' => 1]);
         OcrProcessingRun::query()->create([
             'ocr_job_id' => $job->id,
             'worker_id' => 'rapid-ocr-home-1',
@@ -46,6 +47,9 @@ class OcrMonitoringTest extends TestCase
             ->assertSee('Tự cập nhật mỗi 5 giây')
             ->assertSee('Giám sát OCR')
             ->assertSee('Ảnh & OCR', false)
+            ->assertSee('THỜI GIAN LƯỢT')
+            ->assertSee('XỬ LÝ CỘNG DỒN')
+            ->assertSee('TUỔI JOB')
             ->assertSee('sidebarCollapse')
             ->assertDontSee('cookie')
             ->assertDontSee('imei');
@@ -56,6 +60,10 @@ class OcrMonitoringTest extends TestCase
             ->assertJsonPath('summary.runtime.average_ms', 12000)
             ->assertJsonPath('runs.0.job_id', $job->id)
             ->assertJsonPath('runs.0.duration_ms', 12000)
+            ->assertJsonPath('runs.0.current_attempt_runtime_ms', 12000)
+            ->assertJsonPath('runs.0.is_current_attempt', true)
+            ->assertJsonPath('runs.0.cumulative_processing_ms', 12000)
+            ->assertJsonPath('runs.0.job_age_ms', 12000)
             ->assertJsonPath('runs.0.sender_name', 'Lái máy thử nghiệm');
     }
 

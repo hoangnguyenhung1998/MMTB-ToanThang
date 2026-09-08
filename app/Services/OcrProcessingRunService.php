@@ -22,13 +22,13 @@ class OcrProcessingRunService
         ]);
     }
 
-    public function finish(OcrJob $job, string $workerId, string $status, ?string $error = null): void
+    public function finish(OcrJob $job, string $workerId, int $attempt, string $status, ?string $error = null): void
     {
         $run = OcrProcessingRun::query()
             ->where('ocr_job_id', $job->id)
             ->where('worker_id', $workerId)
+            ->where('attempt', $attempt)
             ->where('status', 'PROCESSING')
-            ->latest('id')
             ->first();
 
         if (! $run) {
@@ -44,19 +44,24 @@ class OcrProcessingRunService
         ]);
     }
 
-    private function timeoutOpenRuns(OcrJob $job): void
+    public function timeoutExpired(OcrJob $job, string $error = 'Worker lease expired before completion.'): void
+    {
+        $this->timeoutOpenRuns($job, $error);
+    }
+
+    private function timeoutOpenRuns(OcrJob $job, string $error = 'Worker lease expired before completion.'): void
     {
         OcrProcessingRun::query()
             ->where('ocr_job_id', $job->id)
             ->where('status', 'PROCESSING')
             ->get()
-            ->each(function (OcrProcessingRun $run): void {
+            ->each(function (OcrProcessingRun $run) use ($error): void {
                 $finishedAt = now();
                 $run->update([
                     'status' => 'TIMED_OUT',
                     'finished_at' => $finishedAt,
                     'duration_ms' => max(0, $run->started_at->diffInMilliseconds($finishedAt)),
-                    'error_message' => 'Worker lease expired before completion.',
+                    'error_message' => $error,
                 ]);
             });
     }

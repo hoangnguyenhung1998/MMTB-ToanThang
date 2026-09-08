@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class CompleteOcrJobRequest extends FormRequest
 {
@@ -15,6 +16,7 @@ class CompleteOcrJobRequest extends FormRequest
     {
         return [
             'worker_id' => ['required', 'string', 'max:100'],
+            'attempt' => [Rule::requiredIf((bool) config('ocr.enforce_attempt_fencing')), 'nullable', 'integer', 'min:1'],
             'date' => ['nullable', 'date_format:Y-m-d'],
             'time' => ['nullable', 'date_format:H:i:s'],
             'asset_code' => ['nullable', 'string', 'max:100'],

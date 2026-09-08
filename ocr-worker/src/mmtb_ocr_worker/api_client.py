@@ -29,13 +29,16 @@ class LaravelOcrClient:
         self.timeout_seconds = timeout_seconds
         self.temp_dir = temp_dir
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        self.session = session or requests.Session()
-        self.session.headers.update({
+        headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Connection": "close",
             "User-Agent": "mmtb-ocr-worker/0.1.0",
-        })
+        }
+        self.session = session or requests.Session()
+        self.session.headers.update(headers)
+        self.renew_session = session or requests.Session()
+        self.renew_session.headers.update(headers)
 
     def machines(self) -> list[dict]:
         response = self._request("GET", "/machines")
@@ -74,32 +77,43 @@ class LaravelOcrClient:
                     target.write(chunk)
             return Path(target.name)
 
-    def classify(self, job_id: int, document_type: str, confidence: float) -> dict:
+    def renew(self, job_id: int, attempt: int) -> dict:
+        response = self._request(
+            "POST",
+            f"/jobs/{job_id}/renew",
+            json={"worker_id": self.worker_id, "attempt": attempt},
+            session=self.renew_session,
+        )
+        return response.json()["job"]
+
+    def classify(self, job_id: int, attempt: int, document_type: str, confidence: float) -> dict:
         response = self._request(
             "POST",
             f"/jobs/{job_id}/classify",
             json={
                 "worker_id": self.worker_id,
+                "attempt": attempt,
                 "document_type": document_type,
                 "confidence": round(confidence, 4),
             },
         )
         return response.json()["job"]
 
-    def complete_timemark(self, job_id: int, payload: dict) -> dict:
+    def complete_timemark(self, job_id: int, attempt: int, payload: dict) -> dict:
         response = self._request(
             "POST",
             f"/jobs/{job_id}/complete",
-            json={"worker_id": self.worker_id, **payload},
+            json={"worker_id": self.worker_id, "attempt": attempt, **payload},
         )
         return response.json()["job"]
 
-    def fail(self, job_id: int, error: str, retryable: bool) -> dict:
+    def fail(self, job_id: int, attempt: int, error: str, retryable: bool) -> dict:
         response = self._request(
             "POST",
             f"/jobs/{job_id}/fail",
             json={
                 "worker_id": self.worker_id,
+                "attempt": attempt,
                 "error": error[:2000],
                 "retryable": retryable,
             },
@@ -107,8 +121,9 @@ class LaravelOcrClient:
         return response.json()["job"]
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        session = kwargs.pop("session", self.session)
         try:
-            response = self.session.request(
+            response = session.request(
                 method,
                 f"{self.api_url}{path}",
                 timeout=self.timeout_seconds,
