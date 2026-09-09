@@ -17,9 +17,10 @@ use Illuminate\Validation\ValidationException;
 
 class OcrReviewService
 {
-    public function __construct(private readonly ReconciliationEvidenceSyncService $evidenceSync)
-    {
-    }
+    public function __construct(
+        private readonly ReconciliationEvidenceSyncService $evidenceSync,
+        private readonly DailyPhotoCaseService $dailyPhotoCases,
+    ) {}
 
     public function paginate(array $filters): LengthAwarePaginator
     {
@@ -103,6 +104,7 @@ class OcrReviewService
     {
         $previous = clone $job;
         $reviewed = DB::transaction(function () use ($job, $data, $user): OcrJob {
+            $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             $before = $job->only(['status', 'review_status', 'machine_id', 'asset_code', 'extracted_date', 'extracted_time', 'exceptions']);
             $action = $data['action'];
             $changes = [
@@ -118,9 +120,23 @@ class OcrReviewService
 
             if ($action === 'correct') {
                 $machine = Machine::query()->findOrFail($data['machine_id']);
+                $resolutionMetadata = $job->machine_resolution_metadata ?? [];
+                $resolutionMetadata['human_resolution'] = [
+                    'previous_method' => $job->machine_resolution_method,
+                    'previous_machine_id' => $job->machine_id,
+                    'resolved_by' => $user->id,
+                    'resolved_at' => now()->toIso8601String(),
+                    'version' => config('daily_photos.foundation_version'),
+                ];
                 $changes += [
                     'machine_id' => $machine->id,
                     'asset_code' => $machine->asset_code,
+                    'machine_resolution_method' => DailyPhotoMachineResolutionService::HUMAN,
+                    'machine_resolution_metadata' => $resolutionMetadata,
+                    'sender_driver_link_id' => null,
+                    'machine_driver_history_id' => null,
+                    'machine_resolved_at' => now(),
+                    'daily_photo_case_id' => null,
                     'extracted_date' => $data['extracted_date'] ?? $job->extracted_date,
                     'extracted_time' => $data['extracted_time'] ?? $job->extracted_time,
                     'operator_name' => $data['operator_name'] ?? $job->operator_name,
@@ -129,6 +145,21 @@ class OcrReviewService
                     'status' => 'COMPLETED',
                     'exceptions' => null,
                 ];
+            }
+
+            if ($action === 'approve' && !$job->machine_resolution_method && $job->machine_id) {
+                $changes['machine_resolution_method'] = DailyPhotoMachineResolutionService::HUMAN;
+                $changes['machine_resolution_metadata'] = [
+                    ...($job->machine_resolution_metadata ?? []),
+                    'human_resolution' => [
+                        'previous_method' => null,
+                        'previous_machine_id' => $job->machine_id,
+                        'resolved_by' => $user->id,
+                        'resolved_at' => now()->toIso8601String(),
+                        'version' => config('daily_photos.foundation_version'),
+                    ],
+                ];
+                $changes['machine_resolved_at'] = now();
             }
 
             if ($job->document_type === 'DAILY_TIMEMARK' && $action !== 'reject') {
@@ -145,7 +176,14 @@ class OcrReviewService
                 $changes['exceptions'] = null;
             }
 
+            if ($action === 'reject') {
+                $changes['daily_photo_case_id'] = null;
+            }
             $job->update($changes);
+            $fresh = $job->fresh();
+            if ($fresh->document_type === 'DAILY_TIMEMARK' && $action !== 'reject') {
+                $this->dailyPhotoCases->materialize($fresh);
+            }
             ActivityLog::query()->create([
                 'user_id' => $user->id,
                 'machine_id' => $job->machine_id,
@@ -161,7 +199,7 @@ class OcrReviewService
                 'occurred_at' => now(),
             ]);
 
-            return $job->fresh();
+            return $job->fresh(['dailyPhotoCase']);
         });
 
         if ($reviewed->document_type === 'DAILY_TIMEMARK') {
