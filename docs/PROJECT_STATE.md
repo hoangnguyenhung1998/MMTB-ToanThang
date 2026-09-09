@@ -1,110 +1,111 @@
 # Project State
 
-- Updated: 2026-09-09 21:07:25 +07:00
-- Current Phase: Phase 16.10.3 — Downstream Integration / Exception-First Continuation
+- Updated: 2026-09-09 22:04:36 +07:00
+- Current Phase: Phase 16.10.3 — Canonical Daily Photo Downstream Integration
 - Current Branch: `phase16-10-exception-first` (VERIFIED)
-- Current HEAD: `c8e3796040809afa81840ed1423a3c7149e7aaa5` — `feat: add deterministic daily photo pairing` (VERIFIED)
-- Current Status: `PLANNED`
-- Working Tree: MODIFIED intentionally; continuity documentation and the user's `AGENTS.md` change are uncommitted and not pushed.
+- Current HEAD: `d358b87776ca220efd43c13bc06f522ff5466b83` — `docs: add project continuity checkpoint for phase 16.10` (VERIFIED)
+- Current Status: `IN PROGRESS` — implementation and tests are VERIFIED locally; user review and any later commit/push remain pending.
+- Working Tree: MODIFIED intentionally with Phase 16.10.3 application, test, and continuity-documentation changes. Nothing is staged, committed, or pushed for this Phase.
 
 ## Objective
 
-Audit how the existing daily-photo downstream flow consumes OCR evidence, compare it with the canonical `DailyPhotoCase` / `DailyPhotoInterval` foundation, identify proven integration gaps, and only then define and implement the smallest exception-first integration that preserves existing business rules.
-
-Phase 16.10.3 implementation has not started. This checkpoint only establishes repository-based continuity.
+Make canonical `DailyPhotoCase` / `DailyPhotoInterval` the only automatic downstream pairing source while preserving exception-first behavior: `READY` cases may populate reconciliation deterministically; `COLLECTING` waits without inventing hours; `PAIRING_AMBIGUOUS` fails closed and remains on the exception path.
 
 ## Dependencies
 
-- Phase 16.10.1 — Canonical Daily Photo Foundation (`af417bb1c7ffee88dd25266ae78e5e40aff953cc`) — VERIFIED. Provides canonical machine/case identity, capture-date work date, assignment resolution, provenance, and idempotent materialization.
-- Phase 16.10.2 — Deterministic Daily Photo Pairing (`c8e3796040809afa81840ed1423a3c7149e7aaa5`) — VERIFIED. Provides canonical evidence memberships, deterministic intervals, ambiguity states, and recomputation.
+- Phase 16.10.1 — Canonical Daily Photo Foundation (`af417bb1c7ffee88dd25266ae78e5e40aff953cc`) — VERIFIED.
+- Phase 16.10.2 — Deterministic Daily Photo Pairing (`c8e3796040809afa81840ed1423a3c7149e7aaa5`) — VERIFIED.
+- Continuity checkpoint (`d358b87776ca220efd43c13bc06f522ff5466b83`) — VERIFIED current base.
 
 ## Related
 
-- Phase 16.9 — Daily Photos (`docs/phase-16-9-daily-photos.md`) — RELATED, not a direct prerequisite for resuming Phase 16.10.3. It documents the existing reconciliation/manual-review behavior that the downstream audit must preserve.
-- Production base `9f8fe11a8682229cfa9e5e9167857d2c57d14c03` — VERIFIED as an ancestor of HEAD and the direct parent of Phase 16.10.1. It is not a Phase 16.10.3 implementation target in this checkpoint.
+- Phase 16.9 — Daily Photos (`docs/phase-16-9-daily-photos.md`) — RELATED. Existing rounding, explicit manual allocation, protected-row, archive, and exception behavior was preserved where compatible.
+- Reconciliation evidence sync is a downstream consumer, not a replacement for the canonical pairing source.
 
 ## Completed / Verified Steps
 
-- [x] Audited the initial working tree without reverting, stashing, or overwriting user changes.
-- [x] Verified branch, HEAD, upstream tracking after `git fetch origin`, commit ancestry, Phase 16.10.1 commit, Phase 16.10.2 commit, and production-base relationship.
-- [x] Inspected the canonical models, migrations, services, and the two canonical feature-test files.
-- [x] Confirmed the current downstream `DailyPhotoSyncService` still queries `OcrJob` directly and contains its own conventional four-photo pairing path. This is an audit starting point, not yet a proven implementation defect.
-- [x] Ran the full Laravel regression suite successfully.
-- [x] Created the repository continuity checkpoint and Phase records. This is documentation only; Phase 16.10.3 business implementation remains unstarted.
+- [x] Traced `DailyPhotoCase` → `DailyPhotoInterval` → `DailyPhotoSyncService` → `DailyPhotoWorkflowService` → Daily Image Exception Center / Archive → reconciliation.
+- [x] Proved that automatic reconciliation, Exception Center, and Archive independently re-paired reviewed `OcrJob` rows instead of consuming canonical intervals.
+- [x] Replaced automatic legacy pairing with canonical case/interval consumption when daily-photo mode is enabled; legacy behavior remains behind the disabled feature path.
+- [x] Implemented fail-closed handling for `COLLECTING`, `PAIRING_AMBIGUOUS`, and canonical intervals that cannot be safely allocated.
+- [x] Preserved explicit manual source selection and protected manual/reviewed reconciliation rows.
+- [x] Added correction/requeue refresh coverage and fixed filtered downstream sync to compare date columns with `whereDate`.
+- [x] Added downstream integration coverage for one, two, and three shifts; collecting; ambiguity; idempotency; correction; requeue; protected rows; Exception Center; and Archive.
+- [x] Ran Phase 16.10, DailyPhotoWorkflow, DailyImageExceptionCenter, reconciliation, and full Laravel regression suites successfully.
 
 ## Current Step
 
-Continuity/bootstrap documentation audit is complete and ready for review. Phase 16.10.3 remains `PLANNED`; no application implementation or downstream integration audit has been performed beyond locating the current consumer boundary.
+Implementation and automated verification are complete locally. The uncommitted diff is being handed off for user review; Phase 16.10.3 has not been committed, pushed, merged, or deployed.
 
 ## Remaining Steps
 
-- [ ] Audit the complete downstream path from canonical `DailyPhotoCase` / `DailyPhotoInterval` through reconciliation sync, manual allocation/review, exception presentation, and affected tests.
-- [ ] Identify and document only evidence-backed integration gaps and acceptance criteria.
-- [ ] Implement the minimal exception-first integration after the audit establishes scope.
-- [ ] Add targeted integration/regression tests for the proven gaps.
-- [ ] Run the full regression suite after implementation.
-- [ ] Review the final implementation diff before any commit/push request.
+- [ ] User reviews the focused application/test/documentation diff.
+- [ ] If review passes and the user explicitly authorizes it, create a Phase 16.10.3 checkpoint commit and push only to `origin/phase16-10-exception-first`.
+- [ ] Treat merge, production migration, deployment, and production verification as separate future actions requiring explicit authorization.
 
 ## Latest Verified Tests
 
-- Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test`
-- Result: `223 passed`, `1002 assertions`, `0 failed`
-- Duration: `17.09s`
-- Verified at: 2026-09-09 during this continuity audit.
-- Note: plain `php artisan test` was initially unavailable because `php` is not in `PATH`; the Laragon PHP 8.3.30 executable above completed the suite successfully.
+- Phase 16.10 + Workflow + Exception Center:
+  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test tests\Feature\CanonicalDailyPhotoFoundationTest.php tests\Feature\CanonicalDailyPhotoPairingTest.php tests\Feature\CanonicalDailyPhotoDownstreamIntegrationTest.php tests\Feature\DailyPhotoWorkflowTest.php tests\Feature\DailyImageExceptionCenterTest.php`
+  - Result: `50 passed`, `251 assertions`, `0 failed`, `2.97s`.
+- Reconciliation suite:
+  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test tests\Feature\Reconciliation tests\Unit\ReconciliationTimeAllocatorTest.php`
+  - Result: `32 passed`, `116 assertions`, `0 failed`, `1.42s`.
+- Full regression:
+  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test`
+  - Result: `231 passed`, `1052 assertions`, `0 failed`, `9.27s`.
+- Previous checkpoint baseline: `223 passed`, `1002 assertions`, `0 failed`.
 
 ## Latest Verified Findings
 
-### Phase 16.10.1 invariants
+### Source of truth and downstream contract
 
-- An OCR image-resolved machine is authoritative; sender/driver history is a deterministic fallback, and the observed asset code is retained.
-- Sender/driver resolution is evaluated at the OCR capture wall-clock date/time and refuses ambiguous machine history.
-- Work date comes from captured date, not Zalo send/arrival date.
-- Evidence without a resolved machine/date/time does not create a canonical case.
-- Case identity is assignment + work date when exactly one assignment matches; unresolved/ambiguous assignment uses an explicit machine + date unresolved-assignment scope rather than selecting randomly.
-- Repeated materialization is idempotent, and separate assignments on the same machine/day can produce separate cases.
-- Human correction records provenance and can materialize a previously unresolved case.
+- `DailyPhotoCase` is the canonical assignment/work-date scope and state source.
+- `DailyPhotoInterval` is the canonical deterministic pairing result; downstream no longer creates a second automatic pairing order when `daily_photos.enabled` is true.
+- `READY` supplies ordered canonical intervals to `DailyTimeAllocator` and records `canonical_interval_id` in reconciliation provenance.
+- `COLLECTING` supplies evidence for review but no intervals/allocation and therefore invents no hours.
+- `PAIRING_AMBIGUOUS` supplies diagnostics to the exception path but no intervals/allocation and therefore fails closed.
+- A `READY` interval that cannot satisfy existing allocator/assignment rules also fails closed instead of guessing.
 
-### Phase 16.10.2 invariants
+### Correction, requeue, and idempotency
 
-- Pairing is ordered by capture datetime, is independent of arrival/job order, supports multiple shifts without a fixed interval count, and retains odd evidence as unmatched.
-- Duplicate capture timestamps, active near-duplicate candidates, and ambiguous assignments block automatic pairing and produce explicit ambiguity diagnostics.
-- Recomputing unchanged evidence is idempotent and preserves existing interval identities.
-- Human time/machine/date correction, membership movement, and requeue trigger recomputation of affected cases; requeue detaches canonical membership.
-- Next-day Zalo transmission does not change capture-date grouping/pairing.
+- Human correction recomputes canonical membership/intervals and refreshes automatic downstream values.
+- Requeue detaches the evidence, recomputes the old case, and clears stale automatic hours through targeted reconciliation sync.
+- The targeted `workDate` sync bug was caused by `whereBetween` date-boundary comparison returning no reconciliation rows; `whereDate` comparisons now select the intended current/previous work date.
+- Canonical state and interval semantics are included in the evidence signature, so repeated unchanged sync is idempotent while correction/requeue changes are detected.
 
-### Downstream boundary for the next audit
+### Manual/reviewed safety
 
-- Canonical artifacts are currently referenced by materialization/pairing services and their tests.
-- `app/Services/Reconciliation/DailyPhotoSyncService.php` still sources reviewed `OcrJob` rows directly and independently auto-pairs only its conventional four-photo case.
-- Whether and how reconciliation, manual review, UI, or exception handling must consume canonical intervals is `NOT VERIFIED` until the Phase 16.10.3 audit is completed.
+- Rows with `manually_edited_at` or status `REVIEWED`, `CONFIRMED`, or `REJECTED` are not overwritten; changed evidence only sets `has_evidence_changes`.
+- `DailyPhotoWorkflowService::allocate()` retains explicit reviewed `OcrJob` candidates for human selection. Canonical intervals govern automatic pairing only.
+
+### Preserved Phase 16.10.1 / 16.10.2 invariants
+
+- Capture-date identity, authoritative/historical machine resolution, explicit assignment ambiguity, materialization idempotency, and correction provenance remain covered.
+- Capture-time ordering, arrival-order independence, odd evidence retention, multiple shifts, duplicate/near-duplicate ambiguity, interval identity stability, and correction/requeue recomputation remain covered.
 
 ## Blockers
 
-- None for the next read-only audit.
-- Implementation scope is intentionally not yet proven; do not treat the located consumer boundary as authorization to change behavior.
+- None for review.
 
 ## Do Not Do Yet
 
 - Do not redo Phase 16.10.1 or Phase 16.10.2.
-- Do not implement Phase 16.10.3 before completing and documenting the downstream audit and acceptance criteria.
-- Do not redesign UI unless the audit proves it is required.
-- Do not add CTMS integration unless it is proven to be a dependency.
-- Do not rewrite OCR, Collector, reconciliation, Zalo account/session handling, or automation workers.
-- Do not clean up, move, rename, or delete legacy documentation.
-- Do not migrate or modify production data/configuration, deploy, restart workers/Collector, commit, push, create/modify a PR, merge, reset, stash, or rewrite history without explicit authorization.
+- Do not add more Phase 16.10.3 implementation before reviewing the current diff unless a verified defect is found.
+- Do not commit, push, create/modify a PR, merge, deploy, migrate production, change production configuration, or restart production/runtime workers without a new explicit instruction.
+- Do not add CTMS integration, redesign OCR/Collector/UI, rewrite reconciliation, change Zalo sessions, or clean/move historical documentation.
 
 ## Phases Not Required to Resume Current Work
 
-- Phase 16.9.1 lease-safe TimeMark OCR and Phase 16.9.2 Zalo Collector reliability are present in Git history but are not direct dependencies of the Phase 16.10.3 downstream audit.
-- Older OCR, Collector, automation, intake, and unrelated reconciliation phase histories do not need to be read unless the audit discovers a direct dependency.
+- Phase 16.9.1 lease-safe OCR and Phase 16.9.2 Collector reliability are not prerequisites for reviewing this diff.
+- Older OCR, Collector, automation, intake, and unrelated phase histories do not need to be read unless review discovers a direct dependency.
 
 ## NEXT ACTION
 
-Start a fresh Phase 16.10.3 **read-only downstream integration audit**:
+Review the local Phase 16.10.3 diff without starting new implementation:
 
-1. Read `AGENTS.md`, this file, `docs/PHASE_INDEX.md`, `docs/phases/PHASE-16.10.3.md`, and the dependency records `docs/phases/PHASE-16.10.1.md` and `docs/phases/PHASE-16.10.2.md`.
-2. Verify Git before any edits: branch must be `phase16-10-exception-first`; HEAD must still be `c8e3796040809afa81840ed1423a3c7149e7aaa5` unless repository history shows an intentional newer commit; inspect `git status`, staged/unstaged diff, and preserve all local continuity changes.
-3. Trace, without modifying code, from `app/Models/DailyPhotoCase.php`, `app/Models/DailyPhotoInterval.php`, `app/Services/DailyPhotoCaseService.php`, and `app/Services/DailyPhotoPairingService.php` into `app/Services/Reconciliation/DailyPhotoSyncService.php`, `app/Services/DailyPhotoWorkflowService.php`, relevant controllers/views, and `tests/Feature/DailyPhotoWorkflowTest.php` plus directly affected reconciliation/exception tests.
-4. Produce an evidence table of current consumer, canonical source available, mismatch/gap (or no gap), preserved business rule, and required test. Distinguish VERIFIED findings from hypotheses.
-5. Update this checkpoint and `docs/phases/PHASE-16.10.3.md` with the proven scope and acceptance criteria. Do **not** implement until that audit is complete; do not redo 16.10.1/16.10.2.
+1. Read `AGENTS.md`, this file, `docs/PHASE_INDEX.md`, and `docs/phases/PHASE-16.10.3.md`.
+2. Verify branch `phase16-10-exception-first`, base HEAD `d358b87776ca220efd43c13bc06f522ff5466b83`, `git status`, `git diff --stat`, and the complete unstaged diff. Preserve all listed local changes.
+3. Confirm the diff only connects canonical cases/intervals to reconciliation, Exception Center, Archive, the minimal status filter/view text, tests, and continuity docs; verify no migration/config/production artifact exists.
+4. Use the recorded targeted and full-suite results as the latest VERIFIED baseline. Re-run tests only if the diff changes during review or fresh verification is required.
+5. If review passes, request or follow an explicit user instruction for the separate commit/push checkpoint. Do not commit, push, merge, or deploy merely from this NEXT ACTION.

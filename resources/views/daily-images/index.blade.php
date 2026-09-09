@@ -10,7 +10,7 @@
         <div>
             <div class="page-eyebrow">PHASE 15.4</div>
             <h1 class="page-title">Kho ảnh đầu ca – cuối ca</h1>
-            <p class="page-subtitle">Chỉ sử dụng ảnh hằng ngày đã hậu kiểm; ghép lần lượt 1–2, 3–4, 5–6 và 7–8.</p>
+            <p class="page-subtitle">Chỉ sử dụng ảnh hằng ngày đã hậu kiểm và các cặp canonical được xác định theo giờ chụp.</p>
         </div>
         <form method="GET" action="{{ route('daily-images.export') }}">
             @foreach ($filters as $key => $value)
@@ -65,7 +65,7 @@
                         <span>{{ $group['date_label'] }} · {{ $group['command_center'] }}</span>
                     </div>
                     <span class="archive-badge {{ $group['is_complete'] ? 'complete' : 'incomplete' }}">
-                        {{ $group['is_complete'] ? $group['session_count'].' ca đủ cặp' : ($group['has_duplicate_times'] ? 'Trùng giờ' : 'Thiếu một đầu ca') }}
+                        {{ $group['status_label'] ?? ($group['is_complete'] ? $group['session_count'].' ca đủ cặp' : ($group['has_duplicate_times'] ? 'Trùng giờ' : 'Thiếu một đầu ca')) }}
                     </span>
                 </header>
                 <div class="session-list">

@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\{OcrJob, ReconciliationPeriod, ReconciliationRow, User, ZaloAttachment, ZaloMessage};
-use App\Services\{AiReconciliationService, OpenClawCommandService, OcrJobService, DailyPhotoWorkflowService, ZaloSenderDriverService};
+use App\Services\{AiReconciliationService, DailyPhotoCaseService, OpenClawCommandService, OcrJobService, DailyPhotoWorkflowService, ZaloSenderDriverService};
 use App\Services\Reconciliation\{DailyPhotoSyncService, DailyTimeAllocator};
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -223,7 +223,10 @@ class DailyPhotoWorkflowTest extends TestCase
     {
         $message=ZaloMessage::create(['group_id'=>'group','message_id'=>(string)Str::uuid(),'sender_id'=>'sender-1','sent_at'=>'2026-09-05 07:00:00','received_at'=>now(),'status'=>'STORED']);
         $attachment=ZaloAttachment::create(['zalo_message_id'=>$message->id,'attachment_index'=>0,'storage_disk'=>'local','storage_path'=>'test/photo.jpg','sha256'=>hash('sha256',Str::uuid()),'mime_type'=>'image/jpeg','byte_size'=>10,'status'=>'STORED']);
-        return OcrJob::create(['zalo_attachment_id'=>$attachment->id,'document_type'=>'DAILY_TIMEMARK','status'=>'COMPLETED','machine_id'=>$row->machine_id,
+        $job = OcrJob::create(['zalo_attachment_id'=>$attachment->id,'document_type'=>'DAILY_TIMEMARK','status'=>'COMPLETED','machine_id'=>$row->machine_id,
             'confidence'=>0.99,'extracted_date'=>'2026-09-05','extracted_time'=>$time.':00','shift'=>$time<'11:00'?'MORNING':($time<'16:30'?'AFTERNOON':'EVENING_OT')])->fresh();
+        app(DailyPhotoCaseService::class)->materialize($job);
+
+        return $job->fresh(['dailyPhotoCase', 'dailyPhotoCaseEvidence']);
     }
 }
