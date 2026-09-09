@@ -156,6 +156,71 @@ cần xin phép.
 
 ## 6. Nguyên tắc đọc project và quản lý context
 
+## Project Continuity & Phase Management
+
+1. **Không phụ thuộc vào lịch sử chat.** Repository và trạng thái đã được xác minh là nguồn sự thật của dự án.
+
+2. Trước khi bắt đầu công việc phải đọc:
+
+   * `AGENTS.md`
+   * `docs/PROJECT_STATE.md`
+   * `docs/PHASE_INDEX.md`
+   * Phase hiện tại
+   * Dependencies/Related phases cần thiết
+   * Runbook liên quan nếu có.
+
+3. **Không đọc toàn bộ lịch sử Phase.** Chỉ đọc Phase hiện tại, dependency trực tiếp và tài liệu thực sự liên quan.
+
+4. Trước khi sửa code phải kiểm tra Git thực tế: branch, `git status`, commit gần nhất và thay đổi chưa commit. Không giả định trạng thái chỉ từ Markdown hoặc chat.
+
+5. Mỗi Phase phải có `docs/phases/PHASE-<VERSION>.md`, ghi tối thiểu:
+
+   * mục tiêu;
+   * scope;
+   * dependencies/related;
+   * checklist;
+   * thay đổi;
+   * test;
+   * quyết định kỹ thuật;
+   * vấn đề còn lại;
+   * kết quả.
+
+6. `docs/PROJECT_STATE.md` là **checkpoint hiện tại**, phải luôn cho biết:
+
+   * Current Phase;
+   * branch;
+   * bước đã hoàn thành;
+   * bước đang dừng;
+   * test gần nhất;
+   * blocker;
+   * **NEXT ACTION cụ thể**;
+   * việc chưa được phép làm.
+
+7. Không chờ hết Phase mới cập nhật trạng thái. Cập nhật `PROJECT_STATE.md` sau milestone quan trọng, PASS/FAIL, thay đổi hướng xử lý, trước khi đổi máy hoặc kết thúc phiên.
+
+8. **NEXT ACTION phải đủ để một Codex session mới tiếp tục ngay**, không dùng mô tả mơ hồ như “tiếp tục test” hoặc “tiếp tục Phase”.
+
+9. Khi kết thúc phiên phải cập nhật checkpoint và Phase hiện tại. Không để thông tin quan trọng chỉ tồn tại trong chat hoặc trên một máy local.
+
+10. Khi Phase hoàn thành:
+
+    * cập nhật file Phase;
+    * cập nhật `PHASE_INDEX.md`;
+    * cập nhật `PROJECT_STATE.md` sang trạng thái tiếp theo;
+    * chỉ đánh dấu `COMPLETED` khi các kiểm tra bắt buộc đã PASS.
+
+11. Các quy trình lặp lại như deploy, rollback, Collector restart, reconciliation và incident handling phải lưu trong `docs/runbooks/`, không copy lại toàn bộ vào từng Phase.
+
+12. Khi mất chat/context, Codex phải tự phục hồi từ repository: đọc State → Index → Current Phase → dependencies cần thiết → kiểm tra Git. Chỉ hỏi người dùng nếu repository vẫn không đủ thông tin.
+
+13. Không được tự kết luận `PASS`, `MERGED`, `DEPLOYED`, `COMPLETED` hoặc `PRODUCTION VERIFIED` khi chưa có bằng chứng. Nếu chưa xác minh, ghi `NOT VERIFIED`.
+
+14. Chi tiết quy trình quản lý Phase và cấu trúc tài liệu tuân theo:
+    `docs/runbooks/PHASE-MANAGEMENT.md`.
+
+**Nguyên tắc:** `Verified repository state > documentation > chat history > assumption`.
+
+
 ### 6.1. Không quét toàn bộ repository theo mặc định
 
 Bắt đầu từ điểm vào có khả năng liên quan nhất và mở rộng theo thứ tự:
