@@ -187,6 +187,85 @@ class HealthAgentTest(unittest.TestCase):
             self.assertEqual("2026-08-26T07:00:00+00:00", result["last_api_success_at"])
             self.assertEqual("2026-08-26T06:55:00+00:00", result["last_job_success_at"])
 
+    def test_zalo_process_alive_but_event_loop_stale_is_degraded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); health_path = root / "collector/data/health.json"
+            health_path.parent.mkdir(parents=True)
+            health_path.write_text(json.dumps({
+                "event_loop_at": "2026-09-09T00:00:00+00:00",
+                "listener_state": "CONNECTED",
+                "listener_probe_success_at": "2026-09-09T00:00:00+00:00",
+            }), encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789, api_stale_seconds=300)
+            health.task_reader.start = Mock()
+            result = health._task_snapshot(
+                health.definitions[0], {"state": "Running", "last_result": 267009}
+            )
+            self.assertEqual("DEGRADED", result["status"])
+            self.assertEqual("COLLECTOR_EVENT_LOOP_STALE", result["error_code"])
+            health.task_reader.start.assert_not_called()
+
+    def test_zalo_no_images_or_forwards_is_healthy_when_functional_probe_is_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); health_path = root / "collector/data/health.json"
+            health_path.parent.mkdir(parents=True)
+            current = datetime.now().astimezone().isoformat()
+            health_path.write_text(json.dumps({
+                "process_started_at": current,
+                "event_loop_at": current,
+                "listener_state": "CONNECTED",
+                "listener_connected_at": current,
+                "listener_probe_success_at": current,
+                "last_event_received_at": None,
+                "last_api_success_at": None,
+                "queue": {"QUEUED": 0, "RETRY": 0, "SENT": 4},
+            }), encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789, api_stale_seconds=300)
+            result = health._task_snapshot(
+                health.definitions[0], {"state": "Running", "last_result": 267009}
+            )
+            self.assertEqual("HEALTHY", result["status"])
+            self.assertIsNone(result["last_api_success_at"])
+            self.assertEqual(0, result["queue_depth"])
+
+    def test_zalo_disconnected_listener_is_degraded_even_while_task_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); health_path = root / "collector/data/health.json"
+            health_path.parent.mkdir(parents=True)
+            current = datetime.now().astimezone().isoformat()
+            health_path.write_text(json.dumps({
+                "event_loop_at": current,
+                "listener_state": "RECOVERING",
+                "listener_disconnected_at": current,
+                "queue": {"QUEUED": 2, "DOWNLOADED": 1, "FAILED": 1},
+            }), encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789)
+            result = health._task_snapshot(
+                health.definitions[0], {"state": "Running", "last_result": 267009}
+            )
+            self.assertEqual("DEGRADED", result["status"])
+            self.assertEqual("ZALO_LISTENER_RECOVERING", result["error_code"])
+            self.assertEqual(3, result["queue_depth"])
+            self.assertEqual(1, result["metrics"]["queue"]["FAILED"])
+
+    def test_zalo_stale_functional_probe_is_degraded_without_using_image_age(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); health_path = root / "collector/data/health.json"
+            health_path.parent.mkdir(parents=True)
+            current = datetime.now().astimezone().isoformat()
+            health_path.write_text(json.dumps({
+                "event_loop_at": current,
+                "listener_state": "CONNECTED",
+                "listener_probe_success_at": "2026-09-09T00:00:00+00:00",
+                "last_image_queued_at": "2026-09-09T00:00:00+00:00",
+            }), encoding="utf-8")
+            health = agent.HealthAgent(root, "127.0.0.1", 18789, api_stale_seconds=300)
+            result = health._task_snapshot(
+                health.definitions[0], {"state": "Running", "last_result": 267009}
+            )
+            self.assertEqual("DEGRADED", result["status"])
+            self.assertEqual("ZALO_LISTENER_PROBE_STALE", result["error_code"])
+
     def test_remote_actions_are_strictly_allowlisted(self):
         self.assertIn("Disable-ScheduledTask", agent.match_action("PAUSE", "MMTB-RapidOCRWorker"))
         self.assertIn("Start-ScheduledTask", agent.match_action("RETRY", "MMTB-RapidOCRWorker"))

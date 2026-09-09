@@ -1,6 +1,7 @@
-const IMAGE_EXTENSIONS = /\.(?:avif|gif|jpe?g|png|webp)(?:\?|$)/i;
+const IMAGE_EXTENSIONS = /\.(?:avif|gif|heic|heif|jpe?g|png|webp)(?:\?|$)/i;
 const PRIMARY_IMAGE_KEYS = new Set(["href", "url", "hdurl", "downloadurl", "src"]);
 const FALLBACK_IMAGE_KEYS = new Set(["thumb", "thumbnail"]);
+const IMAGE_METADATA_KEYS = new Set(["contenttype", "mimetype", "mime", "filename", "file_name", "name", "title"]);
 
 function parseJson(value) {
   if (typeof value !== "string") return value;
@@ -37,14 +38,32 @@ function collectUrls(value, primaryUrls, fallbackUrls, key = "") {
   }
 }
 
+function hasImageMetadata(value, key = "") {
+  const parsed = parseJson(value);
+  if (parsed !== value) return hasImageMetadata(parsed, key);
+  if (typeof value === "string") {
+    const normalizedKey = key.toLowerCase();
+    if (!IMAGE_METADATA_KEYS.has(normalizedKey)) return false;
+    return value.toLowerCase().startsWith("image/") || IMAGE_EXTENSIONS.test(value);
+  }
+  if (Array.isArray(value)) return value.some((item) => hasImageMetadata(item, key));
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([childKey, child]) => hasImageMetadata(child, childKey));
+}
+
 export function extractImageUrls(message) {
   if (!message || message.type !== 1 || typeof message.threadId !== "string") return [];
   const msgType = String(message.data?.msgType ?? "").toLowerCase();
-  if (!msgType.includes("photo") && !msgType.includes("image")) return [];
+  const nativeImage = /photo|image|album/.test(msgType);
+  const attachmentImage = /file|attachment/.test(msgType)
+    && hasImageMetadata([message.data?.content, message.data?.attachments, message.data?.attachment]);
+  if (!nativeImage && !attachmentImage) return [];
 
   const primaryUrls = new Set();
   const fallbackUrls = new Set();
   collectUrls(message.data?.content, primaryUrls, fallbackUrls);
+  collectUrls(message.data?.attachments, primaryUrls, fallbackUrls, "attachments");
+  collectUrls(message.data?.attachment, primaryUrls, fallbackUrls, "attachment");
   return [...(primaryUrls.size > 0 ? primaryUrls : fallbackUrls)];
 }
 

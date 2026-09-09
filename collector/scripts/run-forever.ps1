@@ -25,12 +25,21 @@ function Write-SupervisorLog([string]$Message) {
 }
 
 Set-Location $CollectorRoot
+$RestartDelaySeconds = 10
+$StableRuntimeSeconds = 300
+$MaximumRestartDelaySeconds = 300
 
 while ($true) {
     Rotate-Log
     Write-SupervisorLog "Starting Collector with $NodePath"
+    $StartedAt = Get-Date
     & $NodePath "src/index.js" *>> $LogPath
     $ExitCode = $LASTEXITCODE
-    Write-SupervisorLog "Collector exited with code $ExitCode. Restarting in 10 seconds."
-    Start-Sleep -Seconds 10
+    $RuntimeSeconds = ((Get-Date) - $StartedAt).TotalSeconds
+    if ($RuntimeSeconds -ge $StableRuntimeSeconds) {
+        $RestartDelaySeconds = 10
+    }
+    Write-SupervisorLog "Collector exited with code $ExitCode after $([int]$RuntimeSeconds)s. Restarting in ${RestartDelaySeconds}s."
+    Start-Sleep -Seconds $RestartDelaySeconds
+    $RestartDelaySeconds = [Math]::Min($RestartDelaySeconds * 2, $MaximumRestartDelaySeconds)
 }

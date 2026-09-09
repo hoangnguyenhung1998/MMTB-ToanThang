@@ -39,5 +39,12 @@ export function loadConfig() {
     queuePollMs: positiveInteger("COLLECTOR_QUEUE_POLL_MS", 5_000),
     queueMaxAttempts: positiveInteger("COLLECTOR_QUEUE_MAX_ATTEMPTS", 100),
     sentRetentionDays: positiveInteger("COLLECTOR_SENT_RETENTION_DAYS", 7),
+    listenerReconnectBaseMs: positiveInteger("COLLECTOR_LISTENER_RECONNECT_BASE_MS", 1_000),
+    listenerReconnectMaxMs: positiveInteger("COLLECTOR_LISTENER_RECONNECT_MAX_MS", 60_000),
+    listenerReconnectMaxAttempts: positiveInteger("COLLECTOR_LISTENER_RECONNECT_MAX_ATTEMPTS", 5),
+    listenerReconnectCooldownMs: positiveInteger("COLLECTOR_LISTENER_RECONNECT_COOLDOWN_MS", 5 * 60_000),
+    listenerProbeIntervalMs: positiveInteger("COLLECTOR_LISTENER_PROBE_INTERVAL_MS", 2 * 60_000),
+    listenerProbeTimeoutMs: positiveInteger("COLLECTOR_LISTENER_PROBE_TIMEOUT_MS", 30_000),
+    healthIntervalMs: positiveInteger("COLLECTOR_HEALTH_INTERVAL_MS", 30_000),
   });
 }

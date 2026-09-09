@@ -39,7 +39,7 @@ npm run check
 npm start
 ```
 
-On first run, scan `collector/data/qr.png` with the secondary Zalo account. Credentials are saved locally under `collector/data/` and never committed. Do not open Zalo Web with the same account while the collector is running.
+On first run, scan `collector/data/qr.png` with the secondary Zalo account. Credentials are saved locally under `collector/data/` and never committed. Do not open Zalo Web with the same account while the collector is running. The Collector enables `selfListen`, so images sent by the dedicated Collector account and by other group members follow the same allowlist and queue path.
 
 ## Multiple local Zalo accounts
 
@@ -128,7 +128,27 @@ COLLECTOR_RETRY_MAX_DELAY_MS=900000
 COLLECTOR_QUEUE_POLL_MS=5000
 COLLECTOR_QUEUE_MAX_ATTEMPTS=100
 COLLECTOR_SENT_RETENTION_DAYS=7
+COLLECTOR_LISTENER_RECONNECT_BASE_MS=1000
+COLLECTOR_LISTENER_RECONNECT_MAX_MS=60000
+COLLECTOR_LISTENER_RECONNECT_MAX_ATTEMPTS=5
+COLLECTOR_LISTENER_RECONNECT_COOLDOWN_MS=300000
+COLLECTOR_LISTENER_PROBE_INTERVAL_MS=120000
+COLLECTOR_LISTENER_PROBE_TIMEOUT_MS=30000
+COLLECTOR_HEALTH_INTERVAL_MS=30000
 ```
+
+## Functional listener health
+
+`collector/data/health.json` separates process/event-loop health, Zalo listener
+state, functional listener probes, queue counts, the last received event, and the
+last successful Laravel forward. A functional probe requests old group messages
+through the existing WebSocket and waits for the corresponding response; it does
+not enqueue old messages and does not require a new image to be posted.
+
+On disconnect or probe timeout the Collector reconnects with exponential backoff.
+Each recovery cycle is limited to five attempts, followed by a five-minute
+cooldown before another cycle. Event handlers are registered once, so reconnects
+do not duplicate listeners or queue entries.
 
 The queue protects images already received from Zalo when Laravel or the office computer is offline. It cannot capture messages while the Collector computer itself is powered off or disconnected from Zalo.
 
@@ -140,7 +160,7 @@ After `.env` is configured, QR login succeeds, and the durable queue is tested, 
 npm run autostart:install
 ```
 
-The task starts at Windows logon in a hidden PowerShell window. `run-forever.ps1` restarts the Node process 10 seconds after an unexpected exit. A process lock prevents a foreground Collector and the scheduled Collector from listening to the same Zalo account simultaneously.
+The task starts at Windows logon in a hidden PowerShell window. `run-forever.ps1` restarts the Node process after an unexpected exit with backoff from 10 seconds up to 5 minutes; a run lasting at least 5 minutes resets the delay. A process lock prevents a foreground Collector and the scheduled Collector from listening to the same Zalo account simultaneously.
 
 Check task state and the latest log lines:
 

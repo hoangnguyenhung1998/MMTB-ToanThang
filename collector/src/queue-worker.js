@@ -19,13 +19,14 @@ export class QueueWorker {
       }
       const result = await this.client.forwardStoredImage(job);
       this.queue.markCompleted(job.id);
-      this.health?.alive();
-      this.health?.jobSucceeded();
+      this.health?.laravelForwardSucceeded();
+      this.health?.eventLoopAlive(this.queue.stats());
       this.logger.log("Forwarded queued Zalo image", job.message_id, job.attachment_index,
         result?.data?.status ?? "OK");
       return "SENT";
     } catch (error) {
       const status = this.queue.markFailure(this.queue.get(claimed.id), error);
+      this.health?.eventLoopAlive(this.queue.stats());
       this.logger.error(`Queue job ${claimed.id} moved to ${status}:`, error.message);
       return status;
     } finally {

@@ -86,6 +86,34 @@ class AutomationHealthTest extends TestCase
         $this->assertSame(1, AutomationIncident::query()->where('type', 'OFFLINE')->count());
     }
 
+    public function test_zalo_functional_health_metrics_and_queue_state_are_preserved(): void
+    {
+        $this->node('secret-token');
+        $now = now()->toIso8601String();
+        $payload = ['agent_version' => '0.2.0', 'services' => [[
+            'service_key' => 'zalo-collector', 'name' => 'Zalo Collector',
+            'service_type' => 'ZALO_COLLECTOR', 'status' => 'DEGRADED',
+            'queue_depth' => 3, 'consecutive_errors' => 3,
+            'last_success_at' => $now, 'last_api_success_at' => null,
+            'error_code' => 'ZALO_LISTENER_PROBE_STALE',
+            'error_message' => 'Zalo listener functional probe đã stale.',
+            'metrics' => [
+                'listener_state' => 'CONNECTED', 'event_loop_at' => $now,
+                'listener_probe_success_at' => now()->subMinutes(6)->toIso8601String(),
+                'last_event_received_at' => null, 'last_laravel_forward_at' => null,
+                'queue' => ['QUEUED' => 2, 'RETRY' => 1, 'FAILED' => 0],
+            ],
+        ]]];
+
+        $this->withToken('secret-token')->postJson('/api/automation/v1/heartbeat', $payload)
+            ->assertOk()->assertJsonPath('services.0.status', 'DEGRADED');
+
+        $service = AutomationService::query()->where('service_key', 'zalo-collector')->sole();
+        $this->assertSame(3, $service->queue_depth);
+        $this->assertSame('CONNECTED', $service->metrics['listener_state']);
+        $this->assertSame('ZALO_LISTENER_PROBE_STALE', $service->last_error_code);
+    }
+
     public function test_authenticated_user_can_view_dashboard(): void
     {
         AutomationService::query()->create([
