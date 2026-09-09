@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.1.4"
+AGENT_VERSION = "0.2.0"
 TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 JOB_PATTERN = re.compile(r"(?:job|command)\s+#?(\d+)", re.IGNORECASE)
 SUCCESS_PATTERN = re.compile(r"\b(completed|sent|stored|started|connected)\b", re.IGNORECASE)
@@ -306,9 +306,19 @@ class HealthAgent:
         errors = max(log.consecutive_errors(self.error_fresh_seconds), 1 if status == "DEGRADED" else 0)
         api_age = iso_age_seconds(health.get("last_api_success_at"))
         current_job = health.get("current_job") if "current_job" in health else log.current_job()
-        if status == "HEALTHY" and not current_job and api_age is not None and api_age > self.api_stale_seconds:
+        error_code = None if status == "HEALTHY" else f"TASK_{state}"
+        queue_depth = None
+        if definition.service_type == "ZALO_COLLECTOR" and state == "RUNNING":
+            status, errors, error_code, error = self._zalo_functional_status(health, errors)
+            queue = health.get("queue") if isinstance(health.get("queue"), dict) else {}
+            queue_depth = sum(
+                max(0, int(queue.get(key, 0)))
+                for key in ("QUEUED", "DOWNLOADED", "SENDING", "RETRY")
+            )
+        elif status == "HEALTHY" and not current_job and api_age is not None and api_age > self.api_stale_seconds:
             status = "DEGRADED"; errors = max(errors, 3)
             error = f"Worker không xác nhận API/loop thành công trong {int(api_age // 60)} phút."
+            error_code = "WORKER_API_STALE"
         if status == "HEALTHY" and errors == 0:
             error = None
         metrics = {
@@ -319,17 +329,84 @@ class HealthAgent:
         }
         if definition.service_type == "ZALO_COLLECTOR":
             metrics.update(zalo_account_snapshot(self.root))
+            metrics.update(self._zalo_metrics(health))
         return {
             "service_key": definition.service_key, "name": definition.name,
             "service_type": definition.service_type, "status": status,
             "current_job": current_job,
             "current_job_started_at": health.get("current_job_started_at"),
+            "queue_depth": queue_depth,
             "consecutive_errors": errors,
-            "last_success_at": health.get("last_api_success_at") or log.last_success_at(),
+            "last_success_at": (
+                health.get("listener_probe_success_at") or health.get("listener_connected_at")
+                if definition.service_type == "ZALO_COLLECTOR"
+                else health.get("last_api_success_at") or log.last_success_at()
+            ),
             "last_api_success_at": health.get("last_api_success_at"),
             "last_job_success_at": health.get("last_job_success_at"),
-            "error_code": None if status == "HEALTHY" else f"TASK_{state}",
+            "error_code": error_code,
             "error_message": error, "metrics": metrics,
+        }
+
+    def _zalo_functional_status(self, health: dict[str, Any], errors: int) -> tuple[str, int, str | None, str | None]:
+        errors = max(errors, max(0, int(health.get("consecutive_listener_errors") or 0)))
+        event_loop_age = iso_age_seconds(health.get("event_loop_at"))
+        if event_loop_age is None:
+            return "DEGRADED", max(errors, 3), "COLLECTOR_HEARTBEAT_MISSING", "Collector chưa ghi functional heartbeat."
+        if event_loop_age > self.api_stale_seconds:
+            return (
+                "DEGRADED", max(errors, 3), "COLLECTOR_EVENT_LOOP_STALE",
+                f"Collector event loop không cập nhật trong {int(event_loop_age // 60)} phút.",
+            )
+
+        listener_state = str(health.get("listener_state") or "UNKNOWN").upper()
+        if listener_state != "CONNECTED":
+            message = health.get("listener_probe_error") or health.get("listener_error")
+            return (
+                "DEGRADED", max(errors, 3), f"ZALO_LISTENER_{listener_state}",
+                str(message or f"Zalo listener đang ở trạng thái {listener_state}.")[:1800],
+            )
+
+        probe_age = iso_age_seconds(health.get("listener_probe_success_at"))
+        connected_age = iso_age_seconds(health.get("listener_connected_at"))
+        if probe_age is None and (connected_age is None or connected_age > self.api_stale_seconds):
+            return "DEGRADED", max(errors, 3), "ZALO_LISTENER_PROBE_MISSING", "Zalo listener chưa xác nhận functional probe."
+        if probe_age is not None and probe_age > self.api_stale_seconds:
+            return (
+                "DEGRADED", max(errors, 3), "ZALO_LISTENER_PROBE_STALE",
+                f"Zalo listener không xác nhận functional probe trong {int(probe_age // 60)} phút.",
+            )
+        return "HEALTHY", errors, None, None
+
+    @staticmethod
+    def _zalo_metrics(health: dict[str, Any]) -> dict[str, Any]:
+        queue = health.get("queue") if isinstance(health.get("queue"), dict) else {}
+        ignored = health.get("ignored_messages") if isinstance(health.get("ignored_messages"), dict) else {}
+        ignored_types = health.get("ignored_message_types") if isinstance(health.get("ignored_message_types"), dict) else {}
+        return {
+            "process_started_at": health.get("process_started_at"),
+            "event_loop_at": health.get("event_loop_at"),
+            "event_loop_age_seconds": iso_age_seconds(health.get("event_loop_at")),
+            "listener_state": health.get("listener_state"),
+            "listener_connected_at": health.get("listener_connected_at"),
+            "listener_disconnected_at": health.get("listener_disconnected_at"),
+            "listener_error_at": health.get("listener_error_at"),
+            "listener_errors": health.get("listener_errors", 0),
+            "consecutive_listener_errors": health.get("consecutive_listener_errors", 0),
+            "listener_probe_success_at": health.get("listener_probe_success_at"),
+            "listener_probe_age_seconds": iso_age_seconds(health.get("listener_probe_success_at")),
+            "last_event_received_at": health.get("last_event_received_at"),
+            "last_event_type": health.get("last_event_type"),
+            "last_image_queued_at": health.get("last_image_queued_at"),
+            "last_laravel_forward_at": health.get("last_api_success_at"),
+            "reconnect_attempt": health.get("reconnect_attempt"),
+            "reconnect_delay_ms": health.get("reconnect_delay_ms"),
+            "recovery_cooldown": health.get("recovery_cooldown"),
+            "events_received": health.get("events_received", 0),
+            "images_queued": health.get("images_queued", 0),
+            "ignored_messages": ignored,
+            "ignored_message_types": ignored_types,
+            "queue": queue,
         }
 
     def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:

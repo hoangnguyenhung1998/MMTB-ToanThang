@@ -39,6 +39,20 @@ test("queue survives process restart and keeps downloaded bytes", (t) => {
   queue.close();
 });
 
+test("a job left SENDING is recovered safely after process restart", (t) => {
+  const directory = temporaryDirectory(t);
+  let queue = new QueueStore(directory, config);
+  queue.enqueue(metadata(), "https://example.test/a.jpg", 0);
+  assert.equal(queue.claimNext().status, "SENDING");
+  queue.close();
+
+  queue = new QueueStore(directory, config);
+  const recovered = queue.claimNext();
+  assert.equal(recovered.id, "message-1:0");
+  assert.equal(recovered.status, "SENDING");
+  queue.close();
+});
+
 test("duplicate Zalo message attachment is queued only once", (t) => {
   const queue = new QueueStore(temporaryDirectory(t), config);
   assert.equal(queue.enqueue(metadata(), "https://example.test/a.jpg", 0).inserted, true);

@@ -42,7 +42,7 @@
                 <table style="width:100%;border-collapse:collapse;min-width:1050px">
                     <thead><tr style="background:#f8fafc;color:#475569;font-size:12px;text-align:left">
                         <th style="padding:12px 16px">DỊCH VỤ</th><th style="padding:12px">TRẠNG THÁI</th>
-                        <th style="padding:12px">HEARTBEAT CUỐI</th><th style="padding:12px">API/LOOP CUỐI</th><th style="padding:12px">JOB THÀNH CÔNG</th>
+                        <th style="padding:12px">HEARTBEAT CUỐI</th><th style="padding:12px">API/FORWARD CUỐI</th><th style="padding:12px">JOB THÀNH CÔNG</th>
                         <th style="padding:12px">JOB HIỆN TẠI</th><th style="padding:12px">HÀNG ĐỢI</th>
                         <th style="padding:12px">LỖI LIÊN TIẾP</th><th style="padding:12px">LỖI GẦN NHẤT</th><th style="padding:12px 16px">ĐIỀU KHIỂN</th>
                     </tr></thead>
@@ -70,6 +70,11 @@
                                     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                                         <strong style="font-size:13px;color:#334155">Tài khoản Zalo đang chạy:</strong>
                                         <span style="font-size:13px;color:#0369a1;font-weight:750">{{ data_get($service->metrics, 'active_account_name', data_get($service->metrics, 'active_account_id', 'Chưa xác định')) }}</span>
+                                        <span style="font-size:12px;color:#475569">Listener: <strong>{{ data_get($service->metrics, 'listener_state', '—') }}</strong></span>
+                                        <span style="font-size:12px;color:#475569">Loop: <strong>{{ data_get($service->metrics, 'event_loop_at', '—') }}</strong></span>
+                                        <span style="font-size:12px;color:#475569">Probe: <strong>{{ data_get($service->metrics, 'listener_probe_success_at', '—') }}</strong></span>
+                                        <span style="font-size:12px;color:#475569">Event: <strong>{{ data_get($service->metrics, 'last_event_received_at', '—') }}</strong></span>
+                                        <span style="font-size:12px;color:#475569">Laravel: <strong>{{ data_get($service->metrics, 'last_laravel_forward_at', '—') }}</strong></span>
                                         <a href="{{ route('zalo-accounts.index') }}" style="margin-left:auto;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700">Quản lý tài khoản và nhóm</a>
                                     </div>
                                 </td>

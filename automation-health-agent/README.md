@@ -12,8 +12,11 @@ Agent đọc trạng thái Scheduled Task và log, đồng thời chỉ thực t
 nằm trong allowlist do Laravel gửi xuống.
 Chỉ các lỗi xuất hiện trong 10 phút gần nhất mới được tính là lỗi liên tiếp.
 
-Với Zalo Collector, heartbeat chỉ gửi mã hồ sơ, tên hiển thị, số nhóm và trạng
-thái sẵn sàng. Cookie, IMEI, User-Agent và QR luôn nằm trên laptop. Lệnh chuyển
+Với Zalo Collector, heartbeat gửi mã hồ sơ, tên hiển thị, số nhóm, event-loop,
+listener/probe, queue, lần nhận event và lần forward Laravel gần nhất. Collector
+chỉ bị coi là stale khi event-loop hoặc functional listener probe stale; việc lâu
+không có ảnh không tự tạo incident. Cookie, IMEI, User-Agent, QR và raw payload
+luôn nằm trên laptop. Lệnh chuyển
 tài khoản từ web chỉ nhận một `account_id` an toàn, gọi script cục bộ rồi khởi
 động lại đúng một Scheduled Task Collector.
 
