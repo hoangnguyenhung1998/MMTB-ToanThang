@@ -3,12 +3,16 @@
 namespace App\Services;
 
 use App\Models\DailyPhotoCase;
+use App\Models\DailyPhotoCaseEvidence;
+use App\Models\DailyPhotoInterval;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
 use Illuminate\Support\Facades\DB;
 
 class DailyPhotoCaseService
 {
+    public function __construct(private readonly DailyPhotoPairingService $pairing) {}
+
     public function materialize(OcrJob $job): ?DailyPhotoCase
     {
         if (! config('daily_photos.enabled')) {
@@ -22,6 +26,8 @@ class DailyPhotoCaseService
                 || ! $job->machine_id
                 || ! $job->extracted_date
                 || ! $job->extracted_time) {
+                $this->detach($job);
+
                 return null;
             }
 
@@ -61,10 +67,41 @@ class DailyPhotoCaseService
                 ],
             );
 
+            $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->first();
+            $oldCaseId = $membership?->daily_photo_case_id;
+            $caseIds = collect([$oldCaseId, $case->id])->filter()->unique()->sort()->values();
+            DailyPhotoCase::query()->whereKey($caseIds->all())->orderBy('id')->lockForUpdate()->get();
+            $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->lockForUpdate()->first();
+            if ($membership) {
+                if ($membership->daily_photo_case_id !== $case->id) {
+                    DailyPhotoInterval::query()
+                        ->where('start_evidence_id', $membership->id)
+                        ->orWhere('end_evidence_id', $membership->id)
+                        ->delete();
+                }
+                $membership->update([
+                    'daily_photo_case_id' => $case->id,
+                    'capture_datetime' => $captureAt,
+                    'assignment_resolution_status' => $assignmentStatus,
+                    'pairing_state' => DailyPhotoCaseEvidence::STATE_UNMATCHED,
+                    'pairing_diagnostic' => null,
+                ]);
+            } else {
+                $membership = DailyPhotoCaseEvidence::query()->create([
+                    'daily_photo_case_id' => $case->id,
+                    'ocr_job_id' => $job->id,
+                    'capture_datetime' => $captureAt,
+                    'assignment_resolution_status' => $assignmentStatus,
+                    'pairing_state' => DailyPhotoCaseEvidence::STATE_UNMATCHED,
+                ]);
+            }
+
             $metadata = $job->daily_metadata ?? [];
             $metadata['case_materialization'] = [
                 'version' => config('daily_photos.foundation_version'),
                 'daily_photo_case_id' => $case->id,
+                'daily_photo_case_evidence_id' => $membership->id,
+                'membership_status' => 'ACTIVE',
                 'scope_key' => $scopeKey,
                 'assignment_resolution_status' => $assignmentStatus,
                 'machine_assignment_id' => $assignment?->id,
@@ -77,7 +114,42 @@ class DailyPhotoCaseService
                 'daily_metadata' => $metadata,
             ]);
 
-            return $case;
+            $this->pairing->recomputeMany($caseIds->all());
+
+            return $case->fresh(['evidenceMemberships', 'intervals']);
+        }, 3);
+    }
+
+    public function detach(OcrJob $job): void
+    {
+        if (! config('daily_photos.enabled')) {
+            return;
+        }
+
+        DB::transaction(function () use ($job): void {
+            $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
+            $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->first();
+            $oldCaseId = $membership?->daily_photo_case_id;
+            if ($oldCaseId) {
+                DailyPhotoCase::query()->whereKey($oldCaseId)->lockForUpdate()->first();
+                $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->lockForUpdate()->first();
+                $membership?->delete();
+            }
+
+            $metadata = $job->daily_metadata ?? [];
+            if (isset($metadata['case_materialization'])) {
+                $metadata['case_materialization']['daily_photo_case_id'] = null;
+                $metadata['case_materialization']['daily_photo_case_evidence_id'] = null;
+                $metadata['case_materialization']['membership_status'] = 'DETACHED';
+            }
+            $job->update([
+                'daily_photo_case_id' => null,
+                'daily_metadata' => $metadata,
+            ]);
+
+            if ($oldCaseId) {
+                $this->pairing->recomputeMany([$oldCaseId]);
+            }
         }, 3);
     }
 }

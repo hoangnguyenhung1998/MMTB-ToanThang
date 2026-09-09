@@ -12,6 +12,8 @@ use Illuminate\Validation\ValidationException;
 
 class DailyPhotoWorkflowService
 {
+    public function __construct(private readonly DailyPhotoCaseService $dailyPhotoCases) {}
+
     public function requeue(OcrJob $job, string $type, int $userId): void
     {
         DB::transaction(function () use ($job, $type, $userId) {
@@ -22,6 +24,7 @@ class DailyPhotoWorkflowService
             $job->update(['document_type' => $type, 'status' => $type === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($type === 'UNKNOWN' ? 'EXCEPTION' : 'PENDING'),
                 'review_status' => 'PENDING', 'claimed_by' => null, 'claimed_at' => null, 'lease_expires_at' => null,
                 'error_message' => null, 'daily_photo_case_id' => null]);
+            $this->dailyPhotoCases->detach($job);
             $this->audit($userId, 'daily_photo.requeued', $job, $before, $job->fresh()->toArray());
             // Withdraw the previous automatic evidence while this job is under review.
             if ($job->machine_id && $job->extracted_date) {

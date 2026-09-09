@@ -10,6 +10,10 @@ class DailyPhotoCase extends Model
 {
     public const STATUS_COLLECTING = 'COLLECTING';
 
+    public const STATUS_READY = 'READY';
+
+    public const STATUS_PAIRING_AMBIGUOUS = 'PAIRING_AMBIGUOUS';
+
     protected $guarded = [];
 
     protected function casts(): array
@@ -17,6 +21,8 @@ class DailyPhotoCase extends Model
         return [
             'work_date' => 'date:Y-m-d',
             'source_metadata' => 'array',
+            'pairing_diagnostics' => 'array',
+            'pairing_computed_at' => 'datetime',
         ];
     }
 
@@ -33,5 +39,15 @@ class DailyPhotoCase extends Model
     public function ocrJobs(): HasMany
     {
         return $this->hasMany(OcrJob::class);
+    }
+
+    public function evidenceMemberships(): HasMany
+    {
+        return $this->hasMany(DailyPhotoCaseEvidence::class);
+    }
+
+    public function intervals(): HasMany
+    {
+        return $this->hasMany(DailyPhotoInterval::class)->orderBy('sequence');
     }
 }

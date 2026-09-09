@@ -108,6 +108,11 @@ class OcrJob extends Model
         return $this->belongsTo(DailyPhotoCase::class);
     }
 
+    public function dailyPhotoCaseEvidence(): HasOne
+    {
+        return $this->hasOne(DailyPhotoCaseEvidence::class);
+    }
+
     public function senderDriverLink(): BelongsTo
     {
         return $this->belongsTo(ZaloSenderDriverLink::class);

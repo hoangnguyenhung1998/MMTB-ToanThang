@@ -181,8 +181,12 @@ class OcrReviewService
             }
             $job->update($changes);
             $fresh = $job->fresh();
-            if ($fresh->document_type === 'DAILY_TIMEMARK' && $action !== 'reject') {
-                $this->dailyPhotoCases->materialize($fresh);
+            if ($fresh->document_type === 'DAILY_TIMEMARK') {
+                if ($action === 'reject') {
+                    $this->dailyPhotoCases->detach($fresh);
+                } else {
+                    $this->dailyPhotoCases->materialize($fresh);
+                }
             }
             ActivityLog::query()->create([
                 'user_id' => $user->id,
