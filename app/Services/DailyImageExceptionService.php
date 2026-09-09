@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\DailyPhotoCase;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
 use Carbon\CarbonImmutable;
@@ -42,6 +43,13 @@ class DailyImageExceptionService
     }
 
     public function groups(array $filters): Collection
+    {
+        return config('daily_photos.enabled')
+            ? $this->canonicalGroups($filters)
+            : $this->legacyGroups($filters);
+    }
+
+    private function legacyGroups(array $filters): Collection
     {
         [$from, $to] = $this->range($filters);
 
@@ -101,7 +109,77 @@ class DailyImageExceptionService
             ->values();
     }
 
-    private function machineDays(Collection $assignments, string $from, string $to): Collection
+    private function canonicalGroups(array $filters): Collection
+    {
+        [$from, $to] = $this->range($filters);
+
+        $assignments = MachineAssignment::query()
+            ->with(['machine:id,asset_code', 'commandCenter:id,name'])
+            ->whereDate('time_in', '<=', $to)
+            ->where(fn ($query) => $query->whereNull('time_out')->orWhereDate('time_out', '>=', $from))
+            ->when($filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
+            ->when($filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
+            ->orderBy('time_in')
+            ->get();
+
+        $machineDays = $this->machineDays($assignments, $from, $to, true);
+        $machineIds = $machineDays->pluck('machine_id')->unique()->values();
+        $assignmentIds = $machineDays->pluck('machine_assignment_id')->unique()->values();
+
+        $jobs = OcrJob::query()
+            ->where('document_type', 'DAILY_TIMEMARK')
+            ->whereIn('machine_id', $machineIds)
+            ->whereNotNull('extracted_date')
+            ->whereBetween('extracted_date', [$from, $to])
+            ->orderBy('extracted_time')
+            ->orderBy('id')
+            ->get()
+            ->groupBy(fn (OcrJob $job) => $job->machine_id.'|'.$job->extracted_date->format('Y-m-d'));
+
+        $cases = DailyPhotoCase::query()
+            ->with([
+                'evidenceMemberships.ocrJob',
+                'intervals.startEvidence.ocrJob',
+                'intervals.endEvidence.ocrJob',
+            ])
+            ->whereIn('machine_assignment_id', $assignmentIds)
+            ->whereBetween('work_date', [$from, $to])
+            ->get()
+            ->keyBy(fn (DailyPhotoCase $case) => $case->machine_assignment_id.'|'.$case->work_date->format('Y-m-d'));
+
+        return $machineDays
+            ->map(function (array $day) use ($jobs, $cases): array {
+                $dailyJobs = $jobs->get($day['machine_id'].'|'.$day['date'], collect());
+                $pending = $dailyJobs->where('review_status', 'PENDING')->count();
+                $case = $cases->get($day['machine_assignment_id'].'|'.$day['date']);
+                $approved = $case
+                    ? $case->evidenceMemberships->pluck('ocrJob')->filter()->whereIn('review_status', self::APPROVED)->values()
+                    : $dailyJobs->whereIn('review_status', self::APPROVED)->values();
+                $status = $this->canonicalStatus($case, $approved->count(), $pending);
+
+                return $day + [
+                    'approved_count' => $approved->count(),
+                    'pending_count' => $pending,
+                    'has_duplicate_times' => in_array('DUPLICATE_TIMESTAMP', $case?->pairing_diagnostics['codes'] ?? [], true),
+                    'status' => $status,
+                    'status_label' => $this->statusLabel($status),
+                    'is_exception' => $status !== 'AUTO_COMPLETE',
+                    'sessions' => $case?->intervals->values()->map(fn ($interval, int $index) => [
+                        'number' => $index + 1,
+                        'start' => $interval->startEvidence?->ocrJob,
+                        'end' => $interval->endEvidence?->ocrJob,
+                    ]) ?? collect(),
+                ];
+            })
+            ->when($filters['exception_status'] ?? null, fn (Collection $groups, string $status) => match ($status) {
+                'EXCEPTIONS' => $groups->where('is_exception', true),
+                default => $groups->where('status', $status),
+            })
+            ->sortBy(fn (array $group) => ($group['is_exception'] ? '0' : '1').'|'.$group['date'].'|'.$group['machine_code'])
+            ->values();
+    }
+
+    private function machineDays(Collection $assignments, string $from, string $to, bool $byAssignment = false): Collection
     {
         $rangeStart = CarbonImmutable::parse($from);
         $rangeEnd = CarbonImmutable::parse($to);
@@ -111,6 +189,7 @@ class DailyImageExceptionService
             $end = ($assignment->time_out ? CarbonImmutable::parse($assignment->time_out)->startOfDay() : $rangeEnd)->min($rangeEnd);
 
             return collect(CarbonPeriod::create($start, $end))->map(fn ($date) => [
+                'machine_assignment_id' => $assignment->id,
                 'machine_id' => $assignment->machine_id,
                 'machine_code' => $assignment->machine?->asset_code ?: 'CHUA-XAC-DINH',
                 'date' => $date->format('Y-m-d'),
@@ -119,8 +198,25 @@ class DailyImageExceptionService
                 'command_center' => $assignment->commandCenter?->name ?: 'Chưa xác định BCH',
             ])->all();
         })
-            ->keyBy(fn (array $day) => $day['machine_id'].'|'.$day['date'])
+            ->keyBy(fn (array $day) => ($byAssignment ? $day['machine_assignment_id'] : $day['machine_id']).'|'.$day['date'])
             ->values();
+    }
+
+    private function canonicalStatus(?DailyPhotoCase $case, int $approvedCount, int $pendingCount): string
+    {
+        if ($pendingCount > 0) return 'PENDING_REVIEW';
+        if (! $case) return $approvedCount > 0 ? 'PAIRING_AMBIGUOUS' : 'NO_IMAGES';
+
+        return match ($case->status) {
+            DailyPhotoCase::STATUS_READY => 'AUTO_COMPLETE',
+            DailyPhotoCase::STATUS_COLLECTING => 'MISSING_MARK',
+            DailyPhotoCase::STATUS_PAIRING_AMBIGUOUS => in_array(
+                'DUPLICATE_TIMESTAMP',
+                $case->pairing_diagnostics['codes'] ?? [],
+                true,
+            ) ? 'DUPLICATE_TIME' : 'PAIRING_AMBIGUOUS',
+            default => 'PAIRING_AMBIGUOUS',
+        };
     }
 
     private function status(int $approvedCount, int $pendingCount, bool $duplicate): string
@@ -144,6 +240,7 @@ class DailyImageExceptionService
             'DUPLICATE_TIME' => 'Trùng giờ',
             'MISSING_MARK' => 'Thiếu một đầu ca',
             'CTMS_PENDING' => 'Chờ CTMS xác nhận số ca',
+            'PAIRING_AMBIGUOUS' => 'Không thể ghép ảnh an toàn',
             default => 'Số lượng ảnh bất thường',
         };
     }

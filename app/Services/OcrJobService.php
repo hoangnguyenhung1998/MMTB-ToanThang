@@ -11,7 +11,11 @@ use Illuminate\Validation\ValidationException;
 
 class OcrJobService
 {
-    public function __construct(private readonly OcrProcessingRunService $processingRuns) {}
+    public function __construct(
+        private readonly OcrProcessingRunService $processingRuns,
+        private readonly DailyPhotoMachineResolutionService $machineResolver,
+        private readonly DailyPhotoCaseService $dailyPhotoCases,
+    ) {}
 
     public function enqueue(int $attachmentId): OcrJob
     {
@@ -98,24 +102,39 @@ class OcrJobService
                 ]);
             }
 
-            $assetCode = isset($data['asset_code'])
+            $observedAssetCode = isset($data['asset_code'])
                 ? strtoupper(trim((string) $data['asset_code']))
                 : null;
-            $machine = $assetCode
-                ? Machine::query()->where('asset_code', $assetCode)->first()
+            $observedAssetCode = $observedAssetCode === '' ? null : $observedAssetCode;
+            $imageMachine = $observedAssetCode
+                ? Machine::query()->where('asset_code', $observedAssetCode)->first()
                 : null;
-            $senderMachine = config('daily_photos.enabled') ? app(ZaloSenderDriverService::class)->resolve($job, $data['date'] ?? null, $data['time'] ?? null) : null;
-            $mappingUsed = ! $assetCode && $senderMachine;
-            if ($mappingUsed) {
-                $machine = $senderMachine;
-                $assetCode = $machine->asset_code;
-            }
+            $resolution = config('daily_photos.enabled')
+                ? $this->machineResolver->resolve($job, $observedAssetCode, $data['date'] ?? null, $data['time'] ?? null)
+                : [
+                    'observed_asset_code' => $observedAssetCode,
+                    'legacy_asset_code' => $observedAssetCode,
+                    'image_machine' => $imageMachine,
+                    'machine' => $imageMachine,
+                    'method' => $imageMachine ? DailyPhotoMachineResolutionService::IMAGE_ASSET : null,
+                    'sender_driver_link_id' => null,
+                    'machine_driver_history_id' => null,
+                    'metadata' => [
+                        'version' => config('daily_photos.foundation_version'),
+                        'image_asset_resolved_machine_id' => $imageMachine?->id,
+                    ],
+                ];
+            $machine = $resolution['machine'];
             $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
-            $exceptions = $this->detectExceptions($job, $data, $assetCode, $machine, $shift);
-            if ($senderMachine && $machine && $senderMachine->id !== $machine->id) {
-                $exceptions[] = 'SENDER_MACHINE_CONFLICT';
-            }
-            $metadata = ['machine_source' => $mappingUsed ? 'SENDER_ASSIGNMENT' : 'IMAGE', 'image_fingerprint' => $data['image_fingerprint'] ?? null];
+            $exceptions = $this->detectExceptions($job, $data, $observedAssetCode, $imageMachine, $machine, $shift);
+            $metadata = [
+                'machine_source' => match ($resolution['method']) {
+                    DailyPhotoMachineResolutionService::IMAGE_ASSET => 'IMAGE',
+                    DailyPhotoMachineResolutionService::SENDER_DRIVER_HISTORY => 'SENDER_ASSIGNMENT',
+                    default => 'UNRESOLVED',
+                },
+                'image_fingerprint' => $data['image_fingerprint'] ?? null,
+            ];
             if (config('daily_photos.enabled') && $machine && ! empty($data['date']) && ! empty($metadata['image_fingerprint'])) {
                 $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
                     ->whereKeyNot($job->id)->whereNotNull('daily_metadata')->get()->filter(function ($other) use ($metadata) {
@@ -139,7 +158,14 @@ class OcrJobService
                 'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
                 'extracted_date' => $data['date'] ?? null,
                 'extracted_time' => $data['time'] ?? null,
-                'asset_code' => $assetCode,
+                'asset_code' => $resolution['legacy_asset_code'],
+                'observed_asset_code' => $resolution['observed_asset_code'],
+                'machine_resolution_method' => $resolution['method'],
+                'machine_resolution_metadata' => $resolution['metadata'],
+                'sender_driver_link_id' => $resolution['sender_driver_link_id'],
+                'machine_driver_history_id' => $resolution['machine_driver_history_id'],
+                'machine_resolved_at' => $machine ? now() : null,
+                'daily_photo_case_id' => null,
                 'operator_name' => $data['operator_name'] ?? null,
                 'phone' => $data['phone'] ?? null,
                 'work_location' => $data['work_location'] ?? null,
@@ -154,7 +180,12 @@ class OcrJobService
 
             $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
 
-            return $job->fresh(['attachment.message', 'machine']);
+            $completed = $job->fresh(['attachment.message', 'machine']);
+            if (config('daily_photos.enabled')) {
+                $this->dailyPhotoCases->materialize($completed);
+            }
+
+            return $job->fresh(['attachment.message', 'machine', 'dailyPhotoCase']);
         }, 3);
 
         if (config('daily_photos.enabled') && $completed->machine_id && ! empty($data['date'])) {
@@ -393,8 +424,9 @@ class OcrJobService
     private function detectExceptions(
         OcrJob $job,
         array $data,
-        ?string $assetCode,
-        ?Machine $machine,
+        ?string $observedAssetCode,
+        ?Machine $imageMachine,
+        ?Machine $resolvedMachine,
         ?string $shift,
     ): array {
         $exceptions = [];
@@ -410,9 +442,9 @@ class OcrJobService
         } elseif ($shift === null) {
             $exceptions[] = 'UNCLASSIFIED_TIME';
         }
-        if ($assetCode === null || $assetCode === '') {
+        if (($observedAssetCode === null || $observedAssetCode === '') && !$resolvedMachine) {
             $exceptions[] = 'MISSING_ASSET_CODE';
-        } elseif (! $machine) {
+        } elseif ($observedAssetCode && !$imageMachine && !$resolvedMachine) {
             $exceptions[] = 'UNKNOWN_ASSET_CODE';
         }
 

@@ -35,6 +35,7 @@
             <option value="PENDING_REVIEW" @selected(($filters['exception_status'] ?? '') === 'PENDING_REVIEW')>Chờ hậu kiểm OCR</option>
             <option value="MISSING_MARK" @selected(($filters['exception_status'] ?? '') === 'MISSING_MARK')>Thiếu một đầu ca</option>
             <option value="DUPLICATE_TIME" @selected(($filters['exception_status'] ?? '') === 'DUPLICATE_TIME')>Trùng giờ</option>
+            <option value="PAIRING_AMBIGUOUS" @selected(($filters['exception_status'] ?? '') === 'PAIRING_AMBIGUOUS')>Không thể ghép an toàn</option>
             <option value="CTMS_PENDING" @selected(($filters['exception_status'] ?? '') === 'CTMS_PENDING')>2 ảnh – chờ CTMS</option>
             <option value="AUTO_COMPLETE" @selected(($filters['exception_status'] ?? '') === 'AUTO_COMPLETE')>Hoàn thành tự động</option>
         </select>

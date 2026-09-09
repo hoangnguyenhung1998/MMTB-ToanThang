@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\DailyPhotoCase;
 use App\Models\OcrJob;
 use Carbon\CarbonImmutable;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -113,6 +114,13 @@ class DailyImageArchiveService
             return $this->groupCache[$cacheKey];
         }
 
+        return $this->groupCache[$cacheKey] = config('daily_photos.enabled')
+            ? $this->canonicalGroups($filters)
+            : $this->legacyGroups($filters);
+    }
+
+    private function legacyGroups(array $filters): Collection
+    {
         [$from, $to] = $this->range($filters);
 
         $jobs = OcrJob::query()
@@ -131,7 +139,7 @@ class DailyImageArchiveService
             ->orderBy('machine_id')->orderBy('extracted_date')->orderBy('extracted_time')->orderBy('id')
             ->get();
 
-        return $this->groupCache[$cacheKey] = $jobs
+        return $jobs
             ->groupBy(fn (OcrJob $job) => $job->machine_id.'|'.$job->extracted_date->format('Y-m-d'))
             ->map(function (Collection $dailyJobs): array {
                 $first = $dailyJobs->first();
@@ -161,6 +169,76 @@ class DailyImageArchiveService
                     'session_count' => $sessions->filter(fn (array $session) => $session['end'] !== null)->count(),
                     'has_duplicate_times' => $hasDuplicateTimes,
                     'is_complete' => $isComplete,
+                    'sessions' => $sessions,
+                ];
+            })
+            ->filter(fn (array $group) => ! isset($filters['command_center_id'])
+                || ! $filters['command_center_id']
+                || (int) $group['command_center_id'] === (int) $filters['command_center_id'])
+            ->filter(fn (array $group) => ($filters['completeness'] ?? null) === null
+                || ($filters['completeness'] === 'complete' ? $group['is_complete'] : ! $group['is_complete']))
+            ->sortBy(fn (array $group) => $group['machine_code'].'|'.$group['date'])
+            ->values();
+    }
+
+    private function canonicalGroups(array $filters): Collection
+    {
+        [$from, $to] = $this->range($filters);
+
+        return DailyPhotoCase::query()
+            ->with([
+                'machine:id,asset_code',
+                'machineAssignment.commandCenter:id,name',
+                'evidenceMemberships.ocrJob.attachment:id,storage_disk,storage_path,original_name,mime_type',
+                'intervals.startEvidence.ocrJob.attachment:id,storage_disk,storage_path,original_name,mime_type',
+                'intervals.endEvidence.ocrJob.attachment:id,storage_disk,storage_path,original_name,mime_type',
+            ])
+            ->whereBetween('work_date', [$from, $to])
+            ->when($filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
+            ->orderBy('machine_id')
+            ->orderBy('work_date')
+            ->get()
+            ->map(function (DailyPhotoCase $case): array {
+                $sessions = $case->intervals->values()->map(fn ($interval, int $index) => [
+                    'number' => $index + 1,
+                    'start' => $interval->startEvidence?->ocrJob,
+                    'end' => $interval->endEvidence?->ocrJob,
+                ]);
+                $pairedEvidenceIds = $case->intervals
+                    ->flatMap(fn ($interval) => [$interval->start_evidence_id, $interval->end_evidence_id])
+                    ->all();
+                $unmatchedJobs = $case->evidenceMemberships
+                    ->whereNotIn('id', $pairedEvidenceIds)
+                    ->sortBy('capture_datetime')
+                    ->pluck('ocrJob')
+                    ->filter()
+                    ->values();
+                foreach ($unmatchedJobs as $job) {
+                    $sessions->push([
+                        'number' => $sessions->count() + 1,
+                        'start' => $job,
+                        'end' => null,
+                    ]);
+                }
+                $isComplete = $case->status === DailyPhotoCase::STATUS_READY;
+                $hasDuplicateTimes = in_array('DUPLICATE_TIMESTAMP', $case->pairing_diagnostics['codes'] ?? [], true);
+
+                return [
+                    'machine_id' => $case->machine_id,
+                    'machine_code' => $case->machine?->asset_code ?: 'CHUA-XAC-DINH',
+                    'date' => $case->work_date->format('Y-m-d'),
+                    'date_label' => $case->work_date->format('d/m/Y'),
+                    'command_center_id' => $case->machineAssignment?->command_center_id,
+                    'command_center' => $case->machineAssignment?->commandCenter?->name ?: 'CHUA-XAC-DINH-BCH',
+                    'image_count' => $case->evidenceMemberships->count(),
+                    'session_count' => $case->intervals->count(),
+                    'has_duplicate_times' => $hasDuplicateTimes,
+                    'is_complete' => $isComplete,
+                    'status_label' => match ($case->status) {
+                        DailyPhotoCase::STATUS_READY => $case->intervals->count().' ca đủ cặp',
+                        DailyPhotoCase::STATUS_COLLECTING => 'Chờ thêm ảnh',
+                        default => $hasDuplicateTimes ? 'Trùng giờ' : 'Không thể ghép an toàn',
+                    },
                     'sessions' => $sessions,
                 ];
             })

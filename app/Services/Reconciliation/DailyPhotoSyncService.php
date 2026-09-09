@@ -2,6 +2,8 @@
 
 namespace App\Services\Reconciliation;
 
+use App\Models\DailyPhotoCase;
+use App\Models\DailyPhotoInterval;
 use App\Models\OcrJob;
 use App\Models\ActivityLog;
 use App\Models\ReconciliationPeriod;
@@ -13,6 +15,9 @@ use Illuminate\Validation\ValidationException;
 class DailyPhotoSyncService
 {
     private ?Collection $cachedSources = null;
+
+    private ?Collection $cachedCases = null;
+
     public function __construct(private readonly DailyTimeAllocator $allocator) {}
 
     public function sources(ReconciliationRow $row, bool $includeNextDay = false): Collection
@@ -38,33 +43,34 @@ class DailyPhotoSyncService
 
     public function preview(ReconciliationRow $row): array
     {
-        $sources = $this->sources($row);
-        $points = $sources->unique(fn ($job) => substr($job->extracted_time, 0, 5))->values();
+        $case = $this->caseForRow($row);
+        $sources = $case ? $this->caseSources($case) : $this->sources($row);
         $intervals = [];
-        // Only the conventional four-photo, two-daytime-shift case is automatic.
-        // Missing endpoints, extra shifts and overnight work require explicit pairing.
-        if ($points->count() === 4 && $points[0]->shift === 'MORNING' && $points[2]->shift === 'AFTERNOON'
-            && in_array($points[1]->shift, ['MORNING', 'MIDDAY'], true)
-            && !$sources->contains(fn ($job) => data_get($job->daily_metadata, 'near_duplicate_ids', []) !== [])) {
-            foreach ([0 => 'regular_morning', 2 => 'regular_afternoon'] as $index => $kind) {
-                $intervals[] = ['kind' => $kind, 'start' => substr($points[$index]->extracted_time, 0, 5),
-                    'end' => substr($points[$index + 1]->extracted_time, 0, 5),
-                    'start_job_id' => $points[$index]->id, 'end_job_id' => $points[$index + 1]->id];
-            }
-        }
         $allocation = null;
-        $message = $sources->isEmpty() ? 'Chưa có ảnh ngày đủ mã máy, ngày và giờ.' : 'Cần kiểm tra ghép ca hoặc bổ sung ảnh. Ca 4 giờ chỉ là gợi ý, chưa tính công.';
-        if ($intervals) {
+        $message = $sources->isEmpty()
+            ? 'Chưa có ảnh ngày đủ mã máy, ngày và giờ.'
+            : 'Ảnh chưa có hồ sơ ghép canonical; cần kiểm tra trước khi tính công.';
+
+        if ($case?->status === DailyPhotoCase::STATUS_COLLECTING) {
+            $message = 'Đang chờ thêm ảnh để hoàn tất cặp giờ; chưa tự tính công.';
+        } elseif ($case?->status === DailyPhotoCase::STATUS_PAIRING_AMBIGUOUS) {
+            $codes = collect($case->pairing_diagnostics['codes'] ?? [])->implode(', ');
+            $message = 'Không thể ghép ảnh an toàn'.($codes ? ": {$codes}" : '').'; cần xử lý ngoại lệ.';
+        } elseif ($case?->status === DailyPhotoCase::STATUS_READY) {
             try {
+                $intervals = $case->intervals
+                    ->map(fn (DailyPhotoInterval $interval) => $this->canonicalInterval($interval))
+                    ->all();
                 $allocation = $this->allocator->allocate($intervals, true, $this->allocator->remainingRegularMinutes($row));
                 $this->allocator->assertWithinAssignment($allocation, $row);
-                $message = 'Đã phân bổ từ bốn mốc ảnh ngày. Có thể sửa ca và giờ trực tiếp.';
+                $message = 'Đã phân bổ từ các cặp ảnh canonical theo giờ chụp. Có thể sửa ca và giờ trực tiếp.';
             } catch (ValidationException $exception) {
                 $allocation = null;
                 $message = $exception->getMessage();
             }
         }
-        return compact('sources', 'intervals', 'allocation', 'message');
+
+        return compact('case', 'sources', 'intervals', 'allocation', 'message');
     }
 
     public function sync(ReconciliationPeriod $period, ?int $machineId = null, ?string $workDate = null): array
@@ -75,14 +81,25 @@ class DailyPhotoSyncService
             abort_unless(in_array($period->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
             $result = ['updated' => 0, 'protected' => 0, 'changed' => 0];
             $rows = $period->rows()->with('assignment')->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
-                ->when($workDate, fn ($q) => $q->whereBetween('work_date', [\Carbon\Carbon::parse($workDate)->subDay()->toDateString(), $workDate]))->lockForUpdate()->get();
+                ->when($workDate, fn ($q) => $q
+                    ->whereDate('work_date', '>=', \Carbon\Carbon::parse($workDate)->subDay()->toDateString())
+                    ->whereDate('work_date', '<=', $workDate))
+                ->lockForUpdate()->get();
             $this->cachedSources = OcrJob::query()->where('document_type', 'DAILY_TIMEMARK')
                 ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
                 ->whereBetween('extracted_date', [$period->date_from, $period->date_to])
-                ->when($workDate, fn ($q) => $q->whereBetween('extracted_date', [\Carbon\Carbon::parse($workDate)->subDay()->toDateString(), $workDate]))
+                ->when($workDate, fn ($q) => $q
+                    ->whereDate('extracted_date', '>=', \Carbon\Carbon::parse($workDate)->subDay()->toDateString())
+                    ->whereDate('extracted_date', '<=', $workDate))
                 ->whereIn('review_status', ['AUTO_APPROVED', 'APPROVED', 'CORRECTED'])->whereNotNull('extracted_time')
                 ->orderBy('extracted_date')->orderBy('extracted_time')->orderBy('id')->get()
                 ->groupBy(fn ($job) => $job->machine_id.'|'.$job->extracted_date->toDateString());
+            $this->cachedCases = DailyPhotoCase::query()
+                ->with($this->caseRelations())
+                ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
+                ->whereBetween('work_date', [$period->date_from, $period->date_to])
+                ->get()
+                ->keyBy(fn (DailyPhotoCase $case) => $this->caseKey($case->machine_assignment_id, $case->work_date->format('Y-m-d')));
             foreach ($rows as $row) {
                 $preview = $this->preview($row);
                 $sources = $preview['sources'];
@@ -123,6 +140,7 @@ class DailyPhotoSyncService
         });
         } finally {
             $this->cachedSources = null;
+            $this->cachedCases = null;
         }
     }
 
@@ -139,6 +157,106 @@ class DailyPhotoSyncService
         if ($extraIds) {
             $sources = $sources->concat(OcrJob::query()->whereIn('id', $extraIds)->get());
         }
-        return hash('sha256', $this->signature($sources->sortBy('id')).json_encode($sources->sortBy('id')->map(fn ($job) => [$job->id, $job->review_status, $job->document_type, $job->status])->values()->all()));
+        $case = $this->caseForRow($row);
+        $canonical = $case ? [
+            'id' => $case->id,
+            'status' => $case->status,
+            'policy' => $case->pairing_policy_version,
+            'diagnostics' => $case->pairing_diagnostics,
+            'intervals' => $case->intervals->map(fn (DailyPhotoInterval $interval) => [
+                $interval->id,
+                $interval->sequence,
+                $interval->start_evidence_id,
+                $interval->end_evidence_id,
+                $interval->raw_start_at->format('Y-m-d H:i:s'),
+                $interval->raw_end_at->format('Y-m-d H:i:s'),
+                $interval->status,
+                $interval->pairing_policy_version,
+            ])->values()->all(),
+        ] : null;
+
+        return hash('sha256', $this->signature($sources->sortBy('id')).json_encode([
+            'canonical-v1',
+            $canonical,
+            $sources->sortBy('id')->map(fn ($job) => [$job->id, $job->review_status, $job->document_type, $job->status])->values()->all(),
+        ]));
+    }
+
+    private function caseForRow(ReconciliationRow $row): ?DailyPhotoCase
+    {
+        $key = $this->caseKey($row->machine_assignment_id, $row->work_date->format('Y-m-d'));
+        if ($this->cachedCases !== null) {
+            return $this->cachedCases->get($key);
+        }
+
+        return DailyPhotoCase::query()
+            ->with($this->caseRelations())
+            ->where('machine_id', $row->machine_id)
+            ->where('machine_assignment_id', $row->machine_assignment_id)
+            ->whereDate('work_date', $row->work_date)
+            ->first();
+    }
+
+    private function caseSources(DailyPhotoCase $case): Collection
+    {
+        return $case->evidenceMemberships
+            ->sortBy('capture_datetime')
+            ->pluck('ocrJob')
+            ->filter()
+            ->whereIn('review_status', ['AUTO_APPROVED', 'APPROVED', 'CORRECTED'])
+            ->values();
+    }
+
+    private function canonicalInterval(DailyPhotoInterval $interval): array
+    {
+        $startJob = $interval->startEvidence?->ocrJob;
+        $endJob = $interval->endEvidence?->ocrJob;
+        $start = $interval->raw_start_at->format('H:i');
+        $end = $interval->raw_end_at->format('H:i');
+        $kind = $this->kindForStart($start);
+
+        if (! $startJob || ! $endJob || ! $kind) {
+            throw ValidationException::withMessages([
+                'intervals' => 'Cặp ảnh canonical thiếu nguồn hoặc không xác định được loại ca.',
+            ]);
+        }
+
+        return [
+            'kind' => $kind,
+            'start' => $start,
+            'end' => $end,
+            'start_date' => $interval->raw_start_at->format('Y-m-d'),
+            'end_date' => $interval->raw_end_at->format('Y-m-d'),
+            'start_job_id' => $startJob->id,
+            'end_job_id' => $endJob->id,
+            'canonical_interval_id' => $interval->id,
+        ];
+    }
+
+    private function kindForStart(string $time): ?string
+    {
+        $minutes = $this->allocator->minute($time);
+
+        return match (true) {
+            $minutes < 660 => 'regular_morning',
+            $minutes < 810 => 'overtime_lunch',
+            $minutes < 990 => 'regular_afternoon',
+            $minutes <= 1050 => 'overtime_afternoon',
+            $minutes > 1050 => 'overtime_evening',
+        };
+    }
+
+    private function caseKey(?int $assignmentId, string $workDate): string
+    {
+        return ($assignmentId ?: 'unresolved').'|'.$workDate;
+    }
+
+    private function caseRelations(): array
+    {
+        return [
+            'evidenceMemberships.ocrJob.attachment.message',
+            'intervals.startEvidence.ocrJob',
+            'intervals.endEvidence.ocrJob',
+        ];
     }
 }

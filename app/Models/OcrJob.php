@@ -16,6 +16,8 @@ class OcrJob extends Model
     {
         return [
             'daily_metadata' => 'array',
+            'machine_resolution_metadata' => 'array',
+            'machine_resolved_at' => 'datetime',
             'claimed_at' => 'datetime',
             'lease_expires_at' => 'datetime',
             'classification_confidence' => 'decimal:4',
@@ -99,6 +101,26 @@ class OcrJob extends Model
     public function machine(): BelongsTo
     {
         return $this->belongsTo(Machine::class);
+    }
+
+    public function dailyPhotoCase(): BelongsTo
+    {
+        return $this->belongsTo(DailyPhotoCase::class);
+    }
+
+    public function dailyPhotoCaseEvidence(): HasOne
+    {
+        return $this->hasOne(DailyPhotoCaseEvidence::class);
+    }
+
+    public function senderDriverLink(): BelongsTo
+    {
+        return $this->belongsTo(ZaloSenderDriverLink::class);
+    }
+
+    public function machineDriverHistory(): BelongsTo
+    {
+        return $this->belongsTo(MachineDriverHistory::class);
     }
 
     public function journalDocument(): HasOne

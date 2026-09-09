@@ -15,7 +15,7 @@ class IndexDailyImageArchiveRequest extends FormRequest
             'machine_id' => ['nullable', 'integer', 'exists:machines,id'],
             'command_center_id' => ['nullable', 'integer', 'exists:command_centers,id'],
             'completeness' => ['nullable', 'in:complete,incomplete'],
-            'exception_status' => ['nullable', 'in:EXCEPTIONS,AUTO_COMPLETE,NO_IMAGES,PENDING_REVIEW,DUPLICATE_TIME,MISSING_MARK,CTMS_PENDING,EXCESS_IMAGES'],
+            'exception_status' => ['nullable', 'in:EXCEPTIONS,AUTO_COMPLETE,NO_IMAGES,PENDING_REVIEW,DUPLICATE_TIME,MISSING_MARK,CTMS_PENDING,EXCESS_IMAGES,PAIRING_AMBIGUOUS'],
             'page' => ['nullable', 'integer', 'min:1'],
         ];
     }
