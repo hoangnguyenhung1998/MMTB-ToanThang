@@ -20,6 +20,13 @@ Make Daily Photo auto-first from OCR completion through canonical membership/pai
 - Archive rejected any incomplete/ambiguous group and dereferenced missing endpoints.
 - The sender settings required driver and effective dates, resolving machines indirectly through driver history.
 
+## Production Hotfix — allocate-times timeout
+
+- **Triệu chứng:** sau khi production chạy commit merge `eecee42`, thao tác “Cập nhật ảnh hằng ngày” của kỳ đối chiếu 8 trả HTTP 500 do vượt `max_execution_time=30s`. Log dừng trong Eloquent model hydration và Carbon formatting. Route chính xác của thao tác là `POST /reconciliation-periods/{reconciliationPeriod}/allocate-times`; literal GET tới URL này phải trả 405. Sau POST, trình duyệt được chuyển về GET `/reconciliation-periods/{reconciliationPeriod}` để render trang.
+- **Root cause:** Phase 16.10.4 thay truy vấn mốc OCR theo lô trên trang kỳ đối chiếu bằng `evidenceTimes()` trong vòng lặp từng dòng. Mỗi dòng lại tải canonical case cùng evidence/interval/OCR/attachment, tạo N+1 query và lặp hydrate/format Carbon. Cùng Phase, resync duyệt từng OCR trong kỳ, query assignment theo từng job và gọi canonical pairing sau từng job; nhiều evidence thuộc cùng case vì vậy bị tải và tái tính lặp theo cấp số cộng.
+- **Fix:** GET trang kỳ đối chiếu tải nguồn OCR và canonical case/evidence theo lô, giới hạn đúng machine/date của các dòng đang hiển thị, chỉ đọc dữ liệu và không gọi resync. POST cập nhật vẫn là hành động riêng; truy vấn OCR được thu hẹp sớm theo BCH khi có scope, assignment được eager-load, và các case bị ảnh hưởng chỉ được pairing lại một lần sau khi materialize xong toàn bộ evidence. Luồng bảo vệ dòng manual/reviewed/confirmed và luật canonical exception-first không thay đổi.
+- **Regression test:** test 30 dòng của một máy xác nhận allocate-times chỉ nhận POST, GET render không gọi `DailyPhotoResyncService`, không ghi bảng canonical và chỉ dùng bốn query canonical/OCR cố định. Test resync với bốn evidence cùng case xác nhận `recomputeMany()` chỉ chạy một lần và vẫn tạo đúng bốn membership/hai interval.
+
 ## Architecture before / after
 
 Before: OCR → canonical case/interval → READY + reviewed-source filter → existing reconciliation row; incomplete archive blocked export; sender → dated driver → dated machine.

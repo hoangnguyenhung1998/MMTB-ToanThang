@@ -14,9 +14,12 @@ use App\Models\ZaloAttachment;
 use App\Models\ZaloMessage;
 use App\Services\DailyImageArchiveService;
 use App\Services\DailyPhotoCaseService;
+use App\Services\DailyPhotoPairingService;
 use App\Services\OcrReviewService;
+use App\Services\Reconciliation\DailyPhotoResyncService;
 use App\Services\Reconciliation\DailyPhotoSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -105,6 +108,64 @@ class AutomaticDailyPhotoIntegrationTest extends TestCase
         $this->assertNull($outside->fresh()->daily_photo_case_id);
         $this->assertNull($other->fresh()->evidence_synced_at);
         $this->assertSame(['06:15', '11:10'], app(DailyPhotoSyncService::class)->evidenceTimes($row->fresh())->all());
+    }
+
+    public function test_allocate_times_is_post_only_and_period_get_batches_canonical_evidence_without_resync_or_writes(): void
+    {
+        [$period, $row] = $this->fixture('VT-XL1137');
+        $this->photo($row, '06:15');
+        foreach (range(1, 30) as $day) {
+            if ($day === 9) {
+                continue;
+            }
+            ReconciliationRow::query()->create([
+                'reconciliation_period_id' => $period->id,
+                'machine_id' => $row->machine_id,
+                'machine_assignment_id' => $row->machine_assignment_id,
+                'project_id' => $row->project_id,
+                'command_center_id' => $row->command_center_id,
+                'work_date' => sprintf('2026-09-%02d', $day),
+                'segment_start' => '00:00:00',
+                'segment_end' => '23:59:59',
+                'status' => 'DRAFT',
+            ]);
+        }
+
+        $user = User::factory()->create();
+        $this->mock(DailyPhotoResyncService::class, fn ($mock) => $mock->shouldNotReceive('sync'));
+        $queries = [];
+        DB::listen(function ($query) use (&$queries): void {
+            $queries[] = strtolower($query->sql);
+        });
+
+        $this->actingAs($user)
+            ->get(route('reconciliation-periods.allocate-times', $period))
+            ->assertMethodNotAllowed();
+        $this->get(route('reconciliation-periods.show', $period))
+            ->assertOk()
+            ->assertSee('06:15');
+
+        $canonicalReads = collect($queries)->filter(fn (string $sql) => str_contains($sql, 'daily_photo_cases')
+            || str_contains($sql, 'daily_photo_case_evidence')
+            || (str_contains($sql, 'from "ocr_jobs" where "document_type" =') && str_contains($sql, '"machine_id" in')));
+        $canonicalWrites = $canonicalReads->filter(fn (string $sql) => preg_match('/^\s*(insert|update|delete)\b/', $sql) === 1);
+
+        $this->assertLessThanOrEqual(4, $canonicalReads->count(), $canonicalReads->implode(PHP_EOL));
+        $this->assertCount(0, $canonicalWrites, $canonicalWrites->implode(PHP_EOL));
+    }
+
+    public function test_period_resync_recomputes_canonical_pairing_once_after_materializing_all_evidence(): void
+    {
+        [$period, $row] = $this->fixture('VT-XL1137');
+        $jobs = $this->photos($row, ['06:15', '11:10', '13:30', '17:30']);
+        $jobs->each(fn (OcrJob $job) => app(DailyPhotoCaseService::class)->detach($job));
+        $this->partialMock(DailyPhotoPairingService::class, fn ($mock) => $mock
+            ->shouldReceive('recomputeMany')->once()->passthru());
+
+        app(DailyPhotoResyncService::class)->sync($period);
+
+        $this->assertDatabaseCount('daily_photo_case_evidence', 4);
+        $this->assertDatabaseCount('daily_photo_intervals', 2);
     }
 
     public function test_resync_materializes_old_jobs_and_new_evidence_without_duplicate_rows_or_intervals(): void

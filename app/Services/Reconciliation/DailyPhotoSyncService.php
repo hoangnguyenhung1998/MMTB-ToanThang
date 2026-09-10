@@ -216,6 +216,51 @@ class DailyPhotoSyncService
             ->map(fn ($job) => substr((string) $job->extracted_time, 0, 5))->values();
     }
 
+    public function evidenceTimesForRows(Collection $rows): Collection
+    {
+        $rows = $rows->values();
+        if ($rows->isEmpty()) {
+            return collect();
+        }
+
+        $previousSources = $this->cachedSources;
+        $previousCases = $this->cachedCases;
+        $machineIds = $rows->pluck('machine_id')->filter()->unique()->values();
+        $workDates = $rows->map(fn (ReconciliationRow $row) => $row->work_date->toDateString())->unique()->values();
+
+        try {
+            $this->cachedSources = OcrJob::query()
+                ->where('document_type', 'DAILY_TIMEMARK')
+                ->whereIn('machine_id', $machineIds)
+                ->whereIn('extracted_date', $workDates)
+                ->where('status', 'COMPLETED')
+                ->where('review_status', '!=', 'REJECTED')
+                ->whereNotNull('extracted_time')
+                ->orderBy('extracted_date')
+                ->orderBy('extracted_time')
+                ->orderBy('id')
+                ->get()
+                ->groupBy(fn (OcrJob $job) => $job->machine_id.'|'.$job->extracted_date->toDateString());
+            $this->cachedCases = DailyPhotoCase::query()
+                ->with('evidenceMemberships.ocrJob')
+                ->whereIn('machine_id', $machineIds)
+                ->whereIn('work_date', $workDates)
+                ->get()
+                ->keyBy(fn (DailyPhotoCase $case) => $this->caseKey(
+                    $case->machine_id,
+                    $case->machine_assignment_id,
+                    $case->work_date->toDateString(),
+                ));
+
+            return $rows->mapWithKeys(fn (ReconciliationRow $row) => [
+                $row->id => $this->evidenceTimes($row),
+            ]);
+        } finally {
+            $this->cachedSources = $previousSources;
+            $this->cachedCases = $previousCases;
+        }
+    }
+
     public function signatureForRow(ReconciliationRow $row, Collection $sources, ?array $usedIds = null): string
     {
         // Include selected overnight evidence even if it has been withdrawn or reclassified.

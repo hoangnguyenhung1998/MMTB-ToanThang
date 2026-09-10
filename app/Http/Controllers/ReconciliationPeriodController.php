@@ -19,6 +19,7 @@ use App\Models\MachineAssignment;
 use App\Models\OcrJob;
 use App\Models\Project;
 use App\Models\ReconciliationPeriod;
+use App\Services\Reconciliation\DailyPhotoSyncService;
 use App\Services\Reconciliation\ReconciliationBchZipService;
 use App\Services\Reconciliation\ReconciliationCalculator;
 use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
@@ -144,7 +145,8 @@ class ReconciliationPeriodController extends Controller
     public function show(
         ShowReconciliationPeriodRequest $request,
         ReconciliationPeriod $reconciliationPeriod,
-        ReconciliationExportValidator $exportValidator
+        ReconciliationExportValidator $exportValidator,
+        DailyPhotoSyncService $dailyPhotoSyncService
     ): View {
         $filters = $request->validated();
 
@@ -214,21 +216,20 @@ class ReconciliationPeriodController extends Controller
         $rowCalculations = $rows->mapWithKeys(
             fn ($row) => [$row->id => $this->calculator->summaryFor($row)]
         );
-        $dailyTimesByJob = OcrJob::query()
-            ->whereIn('id', $rows->pluck('daily_ocr_job_ids')->flatten()->filter()->unique())
-            ->pluck('extracted_time', 'id');
-        $dailyEvidenceTimes = $rows->mapWithKeys(fn ($row) => [
-            $row->id => collect($row->daily_ocr_job_ids ?? [])
-                ->map(fn ($jobId) => $dailyTimesByJob->get($jobId))
-                ->filter()
-                ->map(fn ($time) => substr((string) $time, 0, 5))
-                ->unique()
-                ->sort()
-                ->values(),
-        ]);
         if (config('daily_photos.enabled')) {
+            $dailyEvidenceTimes = $dailyPhotoSyncService->evidenceTimesForRows($rows);
+        } else {
+            $dailyTimesByJob = OcrJob::query()
+                ->whereIn('id', $rows->pluck('daily_ocr_job_ids')->flatten()->filter()->unique())
+                ->pluck('extracted_time', 'id');
             $dailyEvidenceTimes = $rows->mapWithKeys(fn ($row) => [
-                $row->id => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->evidenceTimes($row),
+                $row->id => collect($row->daily_ocr_job_ids ?? [])
+                    ->map(fn ($jobId) => $dailyTimesByJob->get($jobId))
+                    ->filter()
+                    ->map(fn ($time) => substr((string) $time, 0, 5))
+                    ->unique()
+                    ->sort()
+                    ->values(),
             ]);
         }
 
