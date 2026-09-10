@@ -150,10 +150,10 @@ class DailyImageExceptionService
         return $machineDays
             ->map(function (array $day) use ($jobs, $cases): array {
                 $dailyJobs = $jobs->get($day['machine_id'].'|'.$day['date'], collect());
-                $pending = $dailyJobs->where('review_status', 'PENDING')->count();
+                $pending = $dailyJobs->where('status', '!=', 'COMPLETED')->count();
                 $case = $cases->get($day['machine_assignment_id'].'|'.$day['date']);
                 $approved = $case
-                    ? $case->evidenceMemberships->pluck('ocrJob')->filter()->whereIn('review_status', self::APPROVED)->values()
+                    ? $case->evidenceMemberships->pluck('ocrJob')->filter()->where('status', 'COMPLETED')->where('review_status', '!=', 'REJECTED')->values()
                     : $dailyJobs->whereIn('review_status', self::APPROVED)->values();
                 $status = $this->canonicalStatus($case, $approved->count(), $pending);
 
@@ -204,8 +204,12 @@ class DailyImageExceptionService
 
     private function canonicalStatus(?DailyPhotoCase $case, int $approvedCount, int $pendingCount): string
     {
-        if ($pendingCount > 0) return 'PENDING_REVIEW';
-        if (! $case) return $approvedCount > 0 ? 'PAIRING_AMBIGUOUS' : 'NO_IMAGES';
+        if (! $case && $pendingCount > 0) {
+            return 'PAIRING_AMBIGUOUS';
+        }
+        if (! $case) {
+            return $approvedCount > 0 ? 'PAIRING_AMBIGUOUS' : 'NO_IMAGES';
+        }
 
         return match ($case->status) {
             DailyPhotoCase::STATUS_READY => 'AUTO_COMPLETE',
@@ -221,12 +225,24 @@ class DailyImageExceptionService
 
     private function status(int $approvedCount, int $pendingCount, bool $duplicate): string
     {
-        if ($pendingCount > 0) return 'PENDING_REVIEW';
-        if ($approvedCount === 0) return 'NO_IMAGES';
-        if ($duplicate) return 'DUPLICATE_TIME';
-        if ($approvedCount % 2 !== 0) return 'MISSING_MARK';
-        if ($approvedCount === 2) return 'CTMS_PENDING';
-        if (in_array($approvedCount, [4, 6, 8], true)) return 'AUTO_COMPLETE';
+        if ($pendingCount > 0) {
+            return 'PENDING_REVIEW';
+        }
+        if ($approvedCount === 0) {
+            return 'NO_IMAGES';
+        }
+        if ($duplicate) {
+            return 'DUPLICATE_TIME';
+        }
+        if ($approvedCount % 2 !== 0) {
+            return 'MISSING_MARK';
+        }
+        if ($approvedCount === 2) {
+            return 'CTMS_PENDING';
+        }
+        if (in_array($approvedCount, [4, 6, 8], true)) {
+            return 'AUTO_COMPLETE';
+        }
 
         return 'EXCESS_IMAGES';
     }

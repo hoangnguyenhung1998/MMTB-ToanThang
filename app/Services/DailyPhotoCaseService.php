@@ -23,20 +23,20 @@ class DailyPhotoCaseService
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             if ($job->document_type !== 'DAILY_TIMEMARK'
                 || $job->status !== 'COMPLETED'
+                || $job->review_status === 'REJECTED'
                 || ! $job->machine_id
-                || ! $job->extracted_date
-                || ! $job->extracted_time) {
+                || ! $job->extracted_date) {
                 $this->detach($job);
 
                 return null;
             }
 
             $workDate = $job->extracted_date->format('Y-m-d');
-            $captureAt = $workDate.' '.substr((string) $job->extracted_time, 0, 8);
+            $captureAt = $job->extracted_time ? $workDate.' '.substr((string) $job->extracted_time, 0, 8) : null;
             $assignments = MachineAssignment::query()
                 ->where('machine_id', $job->machine_id)
-                ->where('time_in', '<=', $captureAt)
-                ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>', $captureAt))
+                ->where('time_in', '<=', $captureAt ?? $workDate.' 23:59:59')
+                ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>', $captureAt ?? $workDate.' 00:00:00'))
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();

@@ -10,7 +10,7 @@
         <div>
             <div class="page-eyebrow">PHASE 15.4</div>
             <h1 class="page-title">Kho ảnh đầu ca – cuối ca</h1>
-            <p class="page-subtitle">Chỉ sử dụng ảnh hằng ngày đã hậu kiểm và các cặp canonical được xác định theo giờ chụp.</p>
+            <p class="page-subtitle">Xuất các ảnh hiện có theo máy/BCH, kèm ghi chú số lượng ảnh còn thiếu.</p>
         </div>
         <form method="GET" action="{{ route('daily-images.export') }}">
             @foreach ($filters as $key => $value)
@@ -75,7 +75,7 @@
                             @foreach ([['label' => 'Đầu ca', 'job' => $session['start']], ['label' => 'Cuối ca', 'job' => $session['end']]] as $mark)
                                 <div class="time-mark {{ $mark['job'] ? '' : 'empty' }}">
                                     @if ($mark['job'])
-                                        <a href="{{ route('ocr-reviews.show', $mark['job']) }}" title="Mở hậu kiểm OCR job #{{ $mark['job']->id }}">
+                                        <a href="{{ route('ocr-reviews.image', $mark['job']) }}" title="Xem ảnh gốc" target="_blank" rel="noopener">
                                             <img src="{{ route('ocr-reviews.image', $mark['job']) }}" alt="{{ $mark['label'] }} {{ substr($mark['job']->extracted_time, 0, 5) }}" loading="lazy">
                                         </a>
                                         <span>{{ $mark['label'] }} <strong>{{ substr($mark['job']->extracted_time, 0, 5) }}</strong></span>
@@ -89,7 +89,7 @@
                 </div>
             </article>
         @empty
-            <div class="app-card archive-empty">Chưa có ảnh hằng ngày đã duyệt theo bộ lọc.</div>
+            <div class="app-card archive-empty">Chưa có ảnh hằng ngày theo bộ lọc.</div>
         @endforelse
     </section>
 

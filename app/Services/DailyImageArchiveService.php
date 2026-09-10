@@ -49,10 +49,10 @@ class DailyImageArchiveService
     {
         $groups = $this->groups($filters);
         if ($groups->isEmpty()) {
-            throw ValidationException::withMessages(['archive' => 'Không có ảnh hằng ngày đã duyệt theo bộ lọc.']);
+            throw ValidationException::withMessages(['archive' => 'Không có ảnh hằng ngày theo bộ lọc.']);
         }
 
-        $invalid = $groups->where('is_complete', false);
+        $invalid = config('daily_photos.enabled') ? collect() : $groups->where('is_complete', false);
         if ($invalid->isNotEmpty()) {
             throw ValidationException::withMessages([
                 'archive' => "Còn {$invalid->count()} máy/ngày thiếu cặp hoặc trùng giờ. Hãy xử lý trước khi xuất.",
@@ -64,18 +64,27 @@ class DailyImageArchiveService
             throw new RuntimeException('Không thể tạo file ZIP tạm.');
         }
 
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         if ($zip->open($path, ZipArchive::OVERWRITE) !== true) {
             @unlink($path);
             throw new RuntimeException('Không thể mở file ZIP.');
         }
 
+        $exportedCounts = [];
         foreach ($groups as $group) {
+            $dayKey = $group['machine_id'].'|'.$group['date'];
+            $exportedCounts[$dayKey] ??= 0;
             foreach ($group['sessions'] as $session) {
                 foreach ([['job' => $session['start'], 'role' => 'DAU-CA'], ['job' => $session['end'], 'role' => 'CUOI-CA']] as $image) {
                     $job = $image['job'];
+                    if (! $job) {
+                        continue;
+                    }
                     $attachment = $job->attachment;
                     if (! $attachment || ! Storage::disk($attachment->storage_disk)->exists($attachment->storage_path)) {
+                        if (config('daily_photos.enabled')) {
+                            continue;
+                        }
                         $zip->close();
                         @unlink($path);
                         throw ValidationException::withMessages([
@@ -92,13 +101,25 @@ class DailyImageArchiveService
                         $group['date'],
                         $this->safe($group['machine_code']),
                         $session['number'],
-                        $image['role'],
-                        str_replace(':', '-', substr((string) $job->extracted_time, 0, 5)),
+                        $session['end'] ? $image['role'] : 'MOC-ANH',
+                        str_replace(':', '-', substr((string) $job->extracted_time, 0, 5)).'_JOB-'.$job->id,
                         $extension,
                     );
                     $zip->addFromString($file, Storage::disk($attachment->storage_disk)->get($attachment->storage_path));
+                    $exportedCounts[$dayKey]++;
                 }
             }
+        }
+        if (config('daily_photos.enabled')) {
+            $notes = [];
+            foreach ($groups->groupBy(fn ($group) => $group['machine_id'].'|'.$group['date']) as $key => $dailyGroups) {
+                $first = $dailyGroups->first();
+                $missing = max(0, 4 - $exportedCounts[$key]);
+                if ($missing) {
+                    $notes[] = "{$first['date_label']} – {$first['machine_code']}: thiếu {$missing} ảnh";
+                }
+            }
+            $zip->addFromString('GHI-CHU-THIEU-ANH.txt', implode("\r\n", $notes));
         }
         $zip->close();
 
@@ -186,6 +207,7 @@ class DailyImageArchiveService
         [$from, $to] = $this->range($filters);
 
         return DailyPhotoCase::query()
+            ->has('evidenceMemberships')
             ->with([
                 'machine:id,asset_code',
                 'machineAssignment.commandCenter:id,name',
@@ -256,19 +278,23 @@ class DailyImageArchiveService
         if (! empty($filters['date_from']) || ! empty($filters['date_to'])) {
             $from = CarbonImmutable::parse($filters['date_from'] ?? $filters['date_to'])->startOfDay();
             $to = CarbonImmutable::parse($filters['date_to'] ?? $filters['date_from'])->endOfDay();
+
             return [$from->toDateString(), $to->toDateString()];
         }
 
         $month = CarbonImmutable::createFromFormat('Y-m', $filters['month'] ?? now()->format('Y-m'));
+
         return [$month->startOfMonth()->toDateString(), $month->endOfMonth()->toDateString()];
     }
 
     private function assignmentAt(OcrJob $job, string $date)
     {
         $day = CarbonImmutable::parse($date);
+
         return $job->machine?->assignments->first(function ($assignment) use ($day): bool {
             $from = CarbonImmutable::parse($assignment->time_in)->startOfDay();
             $to = $assignment->time_out ? CarbonImmutable::parse($assignment->time_out)->endOfDay() : null;
+
             return $from->lte($day) && (! $to || $to->gte($day));
         });
     }

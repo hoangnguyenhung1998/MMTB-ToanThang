@@ -67,7 +67,7 @@ class CanonicalDailyPhotoDownstreamIntegrationTest extends TestCase
         app(DailyPhotoSyncService::class)->sync($period);
 
         $this->assertSame(DailyPhotoCase::STATUS_COLLECTING, $job->dailyPhotoCase->status);
-        $this->assertSame('DAILY_REVIEW', $row->fresh()->evidence_status);
+        $this->assertSame('DAILY_PARTIAL', $row->fresh()->evidence_status);
         $this->assertNull($row->fresh()->regular_minutes);
         $this->assertSame([], $row->fresh()->daily_intervals);
     }
@@ -141,7 +141,7 @@ class CanonicalDailyPhotoDownstreamIntegrationTest extends TestCase
         $this->assertSame(DailyPhotoCase::STATUS_COLLECTING, $case->status);
         $this->assertCount(1, $case->evidenceMemberships);
         $fresh = $row->fresh();
-        $this->assertSame('DAILY_REVIEW', $fresh->evidence_status);
+        $this->assertSame('DAILY_PARTIAL', $fresh->evidence_status);
         $this->assertNull($fresh->regular_minutes);
         $this->assertSame([], $fresh->daily_intervals);
         $this->assertSame('PENDING', $jobs->last()->fresh()->status);

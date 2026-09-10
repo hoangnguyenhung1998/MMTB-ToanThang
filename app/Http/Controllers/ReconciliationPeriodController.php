@@ -21,9 +21,9 @@ use App\Models\Project;
 use App\Models\ReconciliationPeriod;
 use App\Services\Reconciliation\ReconciliationBchZipService;
 use App\Services\Reconciliation\ReconciliationCalculator;
+use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use App\Services\Reconciliation\ReconciliationExportValidator;
 use App\Services\Reconciliation\ReconciliationPeriodService;
-use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -37,8 +37,7 @@ class ReconciliationPeriodController extends Controller
     public function __construct(
         private readonly ReconciliationPeriodService $periodService,
         private readonly ReconciliationCalculator $calculator
-    ) {
-    }
+    ) {}
 
     public function index(IndexReconciliationPeriodsRequest $request): View
     {
@@ -47,8 +46,8 @@ class ReconciliationPeriodController extends Controller
         $periods = ReconciliationPeriod::query()
             ->withCount('rows')
             ->with('creator:id,name')
-            ->when(!empty($filters['status']), fn ($query) => $query->where('status', $filters['status']))
-            ->when(!empty($filters['type']), fn ($query) => $query->where('type', $filters['type']))
+            ->when(! empty($filters['status']), fn ($query) => $query->where('status', $filters['status']))
+            ->when(! empty($filters['type']), fn ($query) => $query->where('type', $filters['type']))
             ->latest('date_from')
             ->latest('id')
             ->paginate(20)
@@ -71,9 +70,11 @@ class ReconciliationPeriodController extends Controller
             $before = $reconciliationPeriod->rows()->count();
             $period = $this->periodService->syncMonthly($reconciliationPeriod);
             $added = $period->rows()->count() - $before;
+
             return back()->with('success', "Đã bổ sung {$added} dòng còn thiếu; giữ nguyên các dòng hiện có.");
         } catch (Throwable $exception) {
             report($exception);
+
             return back()->with('error', $exception->getMessage());
         }
     }
@@ -83,9 +84,11 @@ class ReconciliationPeriodController extends Controller
         Gate::authorize('appendMachines', $reconciliationPeriod);
         try {
             $result = $repair->repair($reconciliationPeriod, auth()->id());
+
             return back()->with('success', "Đã khôi phục {$result['repaired']} liên kết và dọn {$result['removed']} dòng nháp hết hiệu lực; còn {$result['unresolved']} dòng cần kiểm tra. Không thay đổi giờ làm.");
         } catch (Throwable $exception) {
             report($exception);
+
             return back()->with('error', $exception->getMessage());
         }
     }
@@ -111,9 +114,11 @@ class ReconciliationPeriodController extends Controller
                     $evidenceSync->sync($reconciliationPeriod, $result['machine_id'], $date);
                 }
             }
+
             return back()->with('success', "Đã phục hồi BCH cho {$result['updated']} dòng và đồng bộ lại OCR; {$result['protected']} dòng đã sửa/duyệt được giữ nguyên.");
         } catch (Throwable $exception) {
             report($exception);
+
             return back()->with('error', $exception->getMessage());
         }
     }
@@ -140,8 +145,7 @@ class ReconciliationPeriodController extends Controller
         ShowReconciliationPeriodRequest $request,
         ReconciliationPeriod $reconciliationPeriod,
         ReconciliationExportValidator $exportValidator
-    ): View
-    {
+    ): View {
         $filters = $request->validated();
 
         $reconciliationPeriod->loadCount('rows')->load('creator:id,name');
@@ -166,15 +170,15 @@ class ReconciliationPeriodController extends Controller
                 'reviewer:id,name',
                 'confirmer:id,name',
             ])
-            ->when(!empty($filters['machine_id']), fn ($query) => $query->where('machine_id', (int) $filters['machine_id']))
-            ->when(!empty($filters['project_id']), fn ($query) => $query->where('project_id', (int) $filters['project_id']))
-            ->when(!empty($filters['command_center_id']), fn ($query) => $query->where('command_center_id', (int) $filters['command_center_id']))
-            ->when(!empty($filters['work_date']), fn ($query) => $query->whereDate('work_date', $filters['work_date']))
-            ->when(!empty($filters['date_from']), fn ($query) => $query->whereDate('work_date', '>=', $filters['date_from']))
-            ->when(!empty($filters['date_to']), fn ($query) => $query->whereDate('work_date', '<=', $filters['date_to']))
-            ->when(!empty($filters['row_status']), fn ($query) => $query->where('status', $filters['row_status']))
-            ->when(!empty($filters['change_type']), fn ($query) => $query->where('change_type', $filters['change_type']))
-            ->when(!empty($filters['q']), function ($query) use ($filters) {
+            ->when(! empty($filters['machine_id']), fn ($query) => $query->where('machine_id', (int) $filters['machine_id']))
+            ->when(! empty($filters['project_id']), fn ($query) => $query->where('project_id', (int) $filters['project_id']))
+            ->when(! empty($filters['command_center_id']), fn ($query) => $query->where('command_center_id', (int) $filters['command_center_id']))
+            ->when(! empty($filters['work_date']), fn ($query) => $query->whereDate('work_date', $filters['work_date']))
+            ->when(! empty($filters['date_from']), fn ($query) => $query->whereDate('work_date', '>=', $filters['date_from']))
+            ->when(! empty($filters['date_to']), fn ($query) => $query->whereDate('work_date', '<=', $filters['date_to']))
+            ->when(! empty($filters['row_status']), fn ($query) => $query->where('status', $filters['row_status']))
+            ->when(! empty($filters['change_type']), fn ($query) => $query->where('change_type', $filters['change_type']))
+            ->when(! empty($filters['q']), function ($query) use ($filters) {
                 $keyword = '%'.$filters['q'].'%';
 
                 $query->where(function ($inner) use ($keyword) {
@@ -222,6 +226,11 @@ class ReconciliationPeriodController extends Controller
                 ->sort()
                 ->values(),
         ]);
+        if (config('daily_photos.enabled')) {
+            $dailyEvidenceTimes = $rows->mapWithKeys(fn ($row) => [
+                $row->id => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->evidenceTimes($row),
+            ]);
+        }
 
         $machineIds = $reconciliationPeriod->rows()
             ->whereNotNull('machine_id')
@@ -353,9 +362,12 @@ class ReconciliationPeriodController extends Controller
         ReconciliationEvidenceSyncService $evidenceSyncService
     ): RedirectResponse {
         try {
-            $result = $evidenceSyncService->sync($reconciliationPeriod);
+            $scope = $request->validate(['command_center_id' => ['nullable', 'integer', 'exists:command_centers,id']]);
+            $result = config('daily_photos.enabled')
+                ? app(\App\Services\Reconciliation\DailyPhotoResyncService::class)->sync($reconciliationPeriod, isset($scope['command_center_id']) ? (int) $scope['command_center_id'] : null)
+                : $evidenceSyncService->sync($reconciliationPeriod);
 
-            return back()->with('success', "Đã đồng bộ {$result['updated']} dòng; bảo vệ {$result['protected']} dòng đã sửa hoặc xác nhận.");
+            return back()->with('success', 'Đã cập nhật '.($result['updated_days'] ?? $result['updated']).' ngày/máy; '.($result['partial'] ?? 0).' phần thiếu; '.($result['exception'] ?? 0)." ngoại lệ; bỏ qua {$result['protected']} dòng đã sửa hoặc duyệt.");
         } catch (Throwable $exception) {
             report($exception);
 
@@ -423,7 +435,7 @@ class ReconciliationPeriodController extends Controller
         $validation = $exportValidator->validate($reconciliationPeriod);
         abort_unless($validation['can_export'], 422, 'Chưa thể xuất: kỳ đối chiếu còn lỗi bắt buộc phải sửa.');
         abort_if(
-            $validation['warnings']->isNotEmpty() && !$request->boolean('acknowledge_warnings'),
+            $validation['warnings']->isNotEmpty() && ! $request->boolean('acknowledge_warnings'),
             422,
             'Kỳ đối chiếu còn cảnh báo. Hãy kiểm tra và xác nhận vẫn xuất.'
         );
