@@ -110,7 +110,8 @@ class OcrJobService
                 ? Machine::query()->where('asset_code', $observedAssetCode)->first()
                 : null;
             $resolution = config('daily_photos.enabled')
-                ? $this->machineResolver->resolve($job, $observedAssetCode, $data['date'] ?? null, $data['time'] ?? null)
+                ? $this->machineResolver->resolve($job, $observedAssetCode, $data['date'] ?? null, $data['time'] ?? null,
+                    (float) $data['confidence'] >= (float) config('ocr.minimum_confidence'))
                 : [
                     'observed_asset_code' => $observedAssetCode,
                     'legacy_asset_code' => $observedAssetCode,
@@ -131,6 +132,7 @@ class OcrJobService
                 'machine_source' => match ($resolution['method']) {
                     DailyPhotoMachineResolutionService::IMAGE_ASSET => 'IMAGE',
                     DailyPhotoMachineResolutionService::SENDER_DRIVER_HISTORY => 'SENDER_ASSIGNMENT',
+                    DailyPhotoMachineResolutionService::SENDER_MAPPING => 'SENDER_MAPPING',
                     default => 'UNRESOLVED',
                 },
                 'image_fingerprint' => $data['image_fingerprint'] ?? null,
@@ -155,7 +157,7 @@ class OcrJobService
                 'daily_metadata' => $metadata,
                 'machine_id' => $machine?->id,
                 'document_type' => 'DAILY_TIMEMARK',
-                'status' => $exceptions === [] ? 'COMPLETED' : 'EXCEPTION',
+                'status' => $exceptions === [] || (config('daily_photos.enabled') && $machine && ! empty($data['date']) && $exceptions === ['MISSING_TIME']) ? 'COMPLETED' : 'EXCEPTION',
                 'extracted_date' => $data['date'] ?? null,
                 'extracted_time' => $data['time'] ?? null,
                 'asset_code' => $resolution['legacy_asset_code'],
@@ -442,9 +444,9 @@ class OcrJobService
         } elseif ($shift === null) {
             $exceptions[] = 'UNCLASSIFIED_TIME';
         }
-        if (($observedAssetCode === null || $observedAssetCode === '') && !$resolvedMachine) {
+        if (($observedAssetCode === null || $observedAssetCode === '') && ! $resolvedMachine) {
             $exceptions[] = 'MISSING_ASSET_CODE';
-        } elseif ($observedAssetCode && !$imageMachine && !$resolvedMachine) {
+        } elseif ($observedAssetCode && ! $imageMachine && ! $resolvedMachine) {
             $exceptions[] = 'UNKNOWN_ASSET_CODE';
         }
 

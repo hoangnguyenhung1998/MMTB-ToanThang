@@ -36,7 +36,7 @@
     <div class="daily-review-workspace">
         <div class="daily-editor-column">
         <section class="app-card daily-review-form">
-            <div class="ocr-card-head"><strong>Chỉnh sửa ảnh hằng ngày</strong><span>Hậu kiểm: {{ $job->review_status }}</span></div>
+            <div class="ocr-card-head"><strong>Chỉnh sửa ảnh hằng ngày</strong><span>Chỉnh sửa ngoại lệ khi cần</span></div>
             <form method="POST" action="{{ route('ocr-reviews.update', $job) }}">
             @csrf @method('PUT')
             <div class="daily-form-grid">
@@ -49,7 +49,7 @@
                 <label class="daily-wide-field"><span>Ghi chú hậu kiểm</span><textarea name="review_notes" rows="2">{{ $job->review_notes }}</textarea></label>
             </div>
             <div class="daily-review-actions">
-                <button class="btn btn-success" name="action" value="approve">Duyệt đúng</button>
+
                 <button class="btn btn-primary" name="action" value="correct">Lưu chỉnh sửa</button>
                 <button class="btn btn-danger" name="action" value="reject">Từ chối</button>
             </div>

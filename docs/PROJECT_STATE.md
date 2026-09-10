@@ -1,111 +1,58 @@
 # Project State
 
-- Updated: 2026-09-09 22:04:36 +07:00
-- Current Phase: Phase 16.10.3 — Canonical Daily Photo Downstream Integration
-- Current Branch: `phase16-10-exception-first` (VERIFIED)
-- Current HEAD: `d358b87776ca220efd43c13bc06f522ff5466b83` — `docs: add project continuity checkpoint for phase 16.10` (VERIFIED)
-- Current Status: `IN PROGRESS` — implementation and tests are VERIFIED locally; user review and any later commit/push remain pending.
-- Working Tree: MODIFIED intentionally with Phase 16.10.3 application, test, and continuity-documentation changes. Nothing is staged, committed, or pushed for this Phase.
+- Updated: 2026-09-10
+- Current Phase: 16.10.4 — Automatic Daily Photo reconciliation and Zalo machine mapping
+- Status: COMPLETED locally — implementation, tests and continuity documentation verified.
+- Branch: `phase16-10-exception-first`
+- Verified parent/base: `d36cfc1` — Phase 16.10.3, fetched and fast-forwarded from GitHub before edits. The initial working tree was clean.
+- Phase checkpoint: local commit containing this document, message `feat: automate daily photo reconciliation and zalo machine mapping`. Resolve its hash with `git log -1 -- docs/phases/PHASE-16.10.4.md`; the final task report records the resulting hash.
+- Remote publication / PR / merge / production deployment / production backfill / runtime restart: NOT PERFORMED and not authorized.
 
-## Objective
+## Verified result
 
-Make canonical `DailyPhotoCase` / `DailyPhotoInterval` the only automatic downstream pairing source while preserving exception-first behavior: `READY` cases may populate reconciliation deterministically; `COLLECTING` waits without inventing hours; `PAIRING_AMBIGUOUS` fails closed and remains on the exception path.
+- OCR completion automatically materializes canonical evidence and creates/updates reconciliation rows in open periods, without reviewed/confirmed/four-photo gates.
+- COLLECTING uses certain intervals and retains unmatched marks; unknown times remain NULL. Ambiguity remains fail-closed.
+- Existing `DailyTimeAllocator` owns rounding, the 420-minute daily HC budget, OT, assignment boundaries and overlap validation.
+- Scoped “Cập nhật ảnh hằng ngày” resync operates on the current period and selected BCH, preserves resolved historical machines and protects manual/reviewed/confirmed rows.
+- Evidence display reads current canonical sources independently of protected row provenance.
+- Zalo mapping UI requires sender and machine only. Confident OCR learns missing defaults, image code wins for its evidence, and receipt-effective history handles fallback and delayed OCR. Existing legacy mappings and HUMAN corrections remain auditable.
+- Archive exports available originals including partial/ambiguous evidence and more than four photos, with exact count-only missing notes. Missing physical originals do not block other images.
+- Default Daily Photo review controls/navigation have been removed; explicit correction remains available.
 
-## Dependencies
+## Latest verified checks
 
-- Phase 16.10.1 — Canonical Daily Photo Foundation (`af417bb1c7ffee88dd25266ae78e5e40aff953cc`) — VERIFIED.
-- Phase 16.10.2 — Deterministic Daily Photo Pairing (`c8e3796040809afa81840ed1423a3c7149e7aaa5`) — VERIFIED.
-- Continuity checkpoint (`d358b87776ca220efd43c13bc06f522ff5466b83`) — VERIFIED current base.
+PHP executable: `C:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe`.
 
-## Related
+| Command / check | Result |
+|---|---|
+| `artisan test --compact --filter='AutomaticDailyPhoto|CanonicalDailyPhoto|DailyPhotoWorkflow|DailyImageArchive|DailyImageException|DailyTimeAllocator'` | PASS: 75 tests, 418 assertions, 10.93s |
+| `artisan test --compact tests/Feature/Reconciliation tests/Unit/ReconciliationTimeAllocatorTest.php` | PASS: 32 tests, 116 assertions, 3.39s |
+| `artisan test --compact` | PASS: 250 tests, 1187 assertions, 24.58s |
+| Pint `--test` on changed non-Blade PHP files | PASS: 16 files |
+| PHP `-l` on those files | PASS |
+| `npm run build` | PASS: 60 modules |
+| OCR list JavaScript with removed bulk controls | PASS in Node VM |
+| `git diff --check` | PASS |
 
-- Phase 16.9 — Daily Photos (`docs/phase-16-9-daily-photos.md`) — RELATED. Existing rounding, explicit manual allocation, protected-row, archive, and exception behavior was preserved where compatible.
-- Reconciliation evidence sync is a downstream consumer, not a replacement for the canonical pairing source.
+Tests used SQLite in-memory databases. No migration was applied to the application's normal database. Build emitted an existing Browserslist data-age warning; dependencies were not upgraded.
 
-## Completed / Verified Steps
+## Database / rollout
 
-- [x] Traced `DailyPhotoCase` → `DailyPhotoInterval` → `DailyPhotoSyncService` → `DailyPhotoWorkflowService` → Daily Image Exception Center / Archive → reconciliation.
-- [x] Proved that automatic reconciliation, Exception Center, and Archive independently re-paired reviewed `OcrJob` rows instead of consuming canonical intervals.
-- [x] Replaced automatic legacy pairing with canonical case/interval consumption when daily-photo mode is enabled; legacy behavior remains behind the disabled feature path.
-- [x] Implemented fail-closed handling for `COLLECTING`, `PAIRING_AMBIGUOUS`, and canonical intervals that cannot be safely allocated.
-- [x] Preserved explicit manual source selection and protected manual/reviewed reconciliation rows.
-- [x] Added correction/requeue refresh coverage and fixed filtered downstream sync to compare date columns with `whereDate`.
-- [x] Added downstream integration coverage for one, two, and three shifts; collecting; ambiguity; idempotency; correction; requeue; protected rows; Exception Center; and Archive.
-- [x] Ran Phase 16.10, DailyPhotoWorkflow, DailyImageExceptionCenter, reconciliation, and full Laravel regression suites successfully.
+- New migration: `2026_09_10_000001_create_zalo_sender_machine_mappings.php` adds sender-machine history and allows NULL capture datetime for date-only evidence.
+- Existing mappings/timestamps are retained; no mass data rewrite.
+- Later deployment requires migration before code activation. No Collector/OCR worker contract change or Phase-specific restart is needed.
+- Older 16.10.3 pairing assumes non-null capture timestamps: after date-only data exists, do not blindly roll code back. Preserve the nullable-aware reader or prepare a separate safe rollback. Details are in the Phase document.
 
-## Current Step
+## Limitations / blockers
 
-Implementation and automated verification are complete locally. The uncommitted diff is being handed off for user review; Phase 16.10.3 has not been committed, pushed, merged, or deployed.
-
-## Remaining Steps
-
-- [ ] User reviews the focused application/test/documentation diff.
-- [ ] If review passes and the user explicitly authorizes it, create a Phase 16.10.3 checkpoint commit and push only to `origin/phase16-10-exception-first`.
-- [ ] Treat merge, production migration, deployment, and production verification as separate future actions requiring explicit authorization.
-
-## Latest Verified Tests
-
-- Phase 16.10 + Workflow + Exception Center:
-  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test tests\Feature\CanonicalDailyPhotoFoundationTest.php tests\Feature\CanonicalDailyPhotoPairingTest.php tests\Feature\CanonicalDailyPhotoDownstreamIntegrationTest.php tests\Feature\DailyPhotoWorkflowTest.php tests\Feature\DailyImageExceptionCenterTest.php`
-  - Result: `50 passed`, `251 assertions`, `0 failed`, `2.97s`.
-- Reconciliation suite:
-  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test tests\Feature\Reconciliation tests\Unit\ReconciliationTimeAllocatorTest.php`
-  - Result: `32 passed`, `116 assertions`, `0 failed`, `1.42s`.
-- Full regression:
-  - Command: `D:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe artisan test`
-  - Result: `231 passed`, `1052 assertions`, `0 failed`, `9.27s`.
-- Previous checkpoint baseline: `223 passed`, `1002 assertions`, `0 failed`.
-
-## Latest Verified Findings
-
-### Source of truth and downstream contract
-
-- `DailyPhotoCase` is the canonical assignment/work-date scope and state source.
-- `DailyPhotoInterval` is the canonical deterministic pairing result; downstream no longer creates a second automatic pairing order when `daily_photos.enabled` is true.
-- `READY` supplies ordered canonical intervals to `DailyTimeAllocator` and records `canonical_interval_id` in reconciliation provenance.
-- `COLLECTING` supplies evidence for review but no intervals/allocation and therefore invents no hours.
-- `PAIRING_AMBIGUOUS` supplies diagnostics to the exception path but no intervals/allocation and therefore fails closed.
-- A `READY` interval that cannot satisfy existing allocator/assignment rules also fails closed instead of guessing.
-
-### Correction, requeue, and idempotency
-
-- Human correction recomputes canonical membership/intervals and refreshes automatic downstream values.
-- Requeue detaches the evidence, recomputes the old case, and clears stale automatic hours through targeted reconciliation sync.
-- The targeted `workDate` sync bug was caused by `whereBetween` date-boundary comparison returning no reconciliation rows; `whereDate` comparisons now select the intended current/previous work date.
-- Canonical state and interval semantics are included in the evidence signature, so repeated unchanged sync is idempotent while correction/requeue changes are detected.
-
-### Manual/reviewed safety
-
-- Rows with `manually_edited_at` or status `REVIEWED`, `CONFIRMED`, or `REJECTED` are not overwritten; changed evidence only sets `has_evidence_changes`.
-- `DailyPhotoWorkflowService::allocate()` retains explicit reviewed `OcrJob` candidates for human selection. Canonical intervals govern automatic pairing only.
-
-### Preserved Phase 16.10.1 / 16.10.2 invariants
-
-- Capture-date identity, authoritative/historical machine resolution, explicit assignment ambiguity, materialization idempotency, and correction provenance remain covered.
-- Capture-time ordering, arrival-order independence, odd evidence retention, multiple shifts, duplicate/near-duplicate ambiguity, interval identity stability, and correction/requeue recomputation remain covered.
-
-## Blockers
-
-- None for review.
-
-## Do Not Do Yet
-
-- Do not redo Phase 16.10.1 or Phase 16.10.2.
-- Do not add more Phase 16.10.3 implementation before reviewing the current diff unless a verified defect is found.
-- Do not commit, push, create/modify a PR, merge, deploy, migrate production, change production configuration, or restart production/runtime workers without a new explicit instruction.
-- Do not add CTMS integration, redesign OCR/Collector/UI, rewrite reconciliation, change Zalo sessions, or clean/move historical documentation.
-
-## Phases Not Required to Resume Current Work
-
-- Phase 16.9.1 lease-safe OCR and Phase 16.9.2 Collector reliability are not prerequisites for reviewing this diff.
-- Older OCR, Collector, automation, intake, and unrelated phase histories do not need to be read unless review discovers a direct dependency.
+- No outstanding failing automated check or implementation blocker.
+- Needs an existing GENERATED/REVIEWING reconciliation period. Missing/ambiguous assignment remains an exception rather than an invented BCH.
+- Existing allocator limits on disjoint same-kind intervals remain explicit exceptions; canonical evidence has no four-photo cap.
+- Live browser layout, production SQL engine and production-scale performance: NOT VERIFIED.
 
 ## NEXT ACTION
 
-Review the local Phase 16.10.3 diff without starting new implementation:
-
-1. Read `AGENTS.md`, this file, `docs/PHASE_INDEX.md`, and `docs/phases/PHASE-16.10.3.md`.
-2. Verify branch `phase16-10-exception-first`, base HEAD `d358b87776ca220efd43c13bc06f522ff5466b83`, `git status`, `git diff --stat`, and the complete unstaged diff. Preserve all listed local changes.
-3. Confirm the diff only connects canonical cases/intervals to reconciliation, Exception Center, Archive, the minimal status filter/view text, tests, and continuity docs; verify no migration/config/production artifact exists.
-4. Use the recorded targeted and full-suite results as the latest VERIFIED baseline. Re-run tests only if the diff changes during review or fresh verification is required.
-5. If review passes, request or follow an explicit user instruction for the separate commit/push checkpoint. Do not commit, push, merge, or deploy merely from this NEXT ACTION.
+1. Inspect the latest local Phase 16.10.4 checkpoint (`git status --short --branch`, `git log -1`, and `docs/phases/PHASE-16.10.4.md`). Do not repeat implementation.
+2. Optionally verify the local UI with representative data: one/three/four marks, selected-BCH resync, changed evidence on a manual row, partial ZIP notes, and sender mapping change with delayed OCR.
+3. Wait for explicit user authorization before push/PR/merge/deploy or production/runtime actions. If deployment is authorized later, follow the migration/rollback requirements above and the deployment runbook.
+4. Do not start a new Phase automatically.

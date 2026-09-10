@@ -65,9 +65,10 @@ class DailyPhotoPairingService
 
         $intervals = [];
         $pairedMembershipIds = [];
-        for ($index = 0; $index + 1 < $memberships->count(); $index += 2) {
-            $start = $memberships[$index];
-            $end = $memberships[$index + 1];
+        $timed = $memberships->whereNotNull('capture_datetime')->values();
+        for ($index = 0; $index + 1 < $timed->count(); $index += 2) {
+            $start = $timed[$index];
+            $end = $timed[$index + 1];
             if ($start->capture_datetime->greaterThanOrEqualTo($end->capture_datetime)) {
                 $ambiguity = [
                     'codes' => ['INVALID_ORDER'],
@@ -103,11 +104,11 @@ class DailyPhotoPairingService
 
         $this->replaceIntervalsIfChanged($case, $intervals);
         $this->updateMembershipStates($memberships, $pairedMembershipIds, []);
-        $status = $memberships->isNotEmpty() && $memberships->count() % 2 === 0
+        $status = $timed->isNotEmpty() && $timed->count() === $memberships->count() && $timed->count() % 2 === 0
             ? DailyPhotoCase::STATUS_READY
             : DailyPhotoCase::STATUS_COLLECTING;
         $this->updateCase($case, $status, $memberships, $intervals, [
-            'codes' => $memberships->count() % 2 === 1 ? ['ODD_EVIDENCE_COUNT'] : [],
+            'codes' => array_merge($timed->count() % 2 === 1 ? ['ODD_EVIDENCE_COUNT'] : [], $timed->count() !== $memberships->count() ? ['MISSING_CAPTURE_TIME'] : []),
             'evidence' => [],
             'details' => [],
         ]);
@@ -131,6 +132,7 @@ class DailyPhotoPairingService
         }
 
         $duplicateTimestamps = $memberships
+            ->whereNotNull('capture_datetime')
             ->groupBy(fn (DailyPhotoCaseEvidence $membership) => $membership->capture_datetime->format('Y-m-d H:i:s'))
             ->filter(fn (Collection $group) => $group->count() > 1);
         if ($duplicateTimestamps->isNotEmpty()) {

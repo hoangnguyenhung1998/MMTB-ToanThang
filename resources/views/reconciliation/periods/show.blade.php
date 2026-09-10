@@ -62,10 +62,10 @@
 
             @if (in_array($reconciliationPeriod->status, ['GENERATED', 'REVIEWING']))
                 <form method="POST"
-                      action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}"
-                      onsubmit="return confirm('Đồng bộ giờ từ ảnh hằng ngày? Dòng đã sửa, duyệt hoặc xác nhận sẽ được giữ nguyên.')">
+                      action="{{ route('reconciliation-periods.allocate-times', $reconciliationPeriod) }}">
                     @csrf
-                    <button class="btn btn-outline-primary" type="submit">Đồng bộ giờ ảnh ngày</button>
+                    <input type="hidden" name="command_center_id" value="{{ request('command_center_id') }}">
+                    <button class="btn btn-outline-primary" type="submit">Cập nhật ảnh hằng ngày</button>
                 </form>
             @endif
 
@@ -481,7 +481,7 @@
                         <th rowspan="2">Công việc</th>
                         <th rowspan="2">Nguồn</th>
                         <th rowspan="2">Trạng thái</th>
-                        <th rowspan="2">Chi tiết</th>
+                        <th rowspan="2">Thao tác</th>
                     </tr>
                     <tr>
                         <th>Bắt đầu</th><th>Kết thúc</th><th>Tổng</th>
@@ -565,7 +565,7 @@
                                 };
                             @endphp
                             <td>
-                                <span class="badge text-bg-{{ $evidenceColor }}" title="{{ $row->evidence_summary }}">{{ ['DAILY_READY'=>'Đã phân bổ ảnh ngày','DAILY_CONFIRMED'=>'Đã xác nhận ca','DAILY_REVIEW'=>'Cần kiểm tra ca','NO_EVIDENCE'=>'Chưa có ảnh'][$row->evidence_status] ?? $row->evidence_status }}</span>
+                                <span class="badge text-bg-{{ $evidenceColor }}" title="{{ $row->evidence_summary }}">{{ ['DAILY_READY'=>'Đã phân bổ ảnh ngày','DAILY_CONFIRMED'=>'Đã xác nhận ca','DAILY_PARTIAL'=>'Đã nhận mốc ảnh','DAILY_REVIEW'=>'Ngoại lệ ghép ảnh','NO_EVIDENCE'=>'Chưa có ảnh'][$row->evidence_status] ?? $row->evidence_status }}</span>
                                 @if ($row->has_evidence_changes)
                                     <span class="badge text-bg-danger" title="Có ảnh hoặc kết quả OCR mới sau lần sửa/xác nhận">Có dữ liệu mới</span>
                                 @endif
@@ -584,7 +584,7 @@
                                             @endif
                                         @endforeach
                                         <button class="btn btn-sm btn-primary" type="submit" name="submit_action" value="save">Lưu</button>
-                                        @if ($reconciliationPeriod->status === 'REVIEWING')
+                                        @if (!config('daily_photos.enabled') && $reconciliationPeriod->status === 'REVIEWING')
                                             <button class="btn btn-sm btn-success" type="submit" name="submit_action" value="quick_confirm"
                                                     onclick="return confirm('Lưu dữ liệu và xác nhận dòng này?')">
                                                 Lưu & xác nhận
@@ -592,7 +592,7 @@
                                         @endif
                                     </form>
                                 @endif
-                                <a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">Chi tiết</a>
+                                @unless(config('daily_photos.enabled'))<a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $row]) }}" class="btn btn-sm btn-outline-primary">Chi tiết</a>@endunless
                             </td>
                         </tr>
                     @empty

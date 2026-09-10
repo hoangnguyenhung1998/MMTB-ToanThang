@@ -20,8 +20,8 @@
     <header class="page-header">
         <div>
             <div class="page-eyebrow">PHASE 13.4.2.1</div>
-            <h1 class="page-title">Dashboard hậu kiểm OCR</h1>
-            <p class="page-subtitle">Ưu tiên ngoại lệ, duyệt theo lô và kiểm tra nhanh theo máy/ngày.</p>
+            <h1 class="page-title">{{ config('daily_photos.enabled') ? 'Ảnh và ngoại lệ OCR' : 'Dashboard hậu kiểm OCR' }}</h1>
+            <p class="page-subtitle">Theo dõi ảnh theo máy/ngày và chỉnh sửa khi có ngoại lệ.</p>
         </div>
         <span class="ocr-total">{{ $jobs->total() }} kết quả theo bộ lọc</span>
     </header>
@@ -30,6 +30,7 @@
         <div class="alert alert-success">{{ session('success') }}</div>
     @endif
 
+    @unless(config('daily_photos.enabled'))
     <section class="ocr-review-stats">
         @foreach ($reviewLabels as $status => $label)
             <a href="{{ route('ocr-reviews.index', array_merge(request()->except('page'), ['review_status' => $status])) }}"
@@ -40,17 +41,19 @@
         @endforeach
     </section>
 
+    @endunless
     <form method="GET" action="{{ route('ocr-reviews.index') }}" class="app-card ocr-filter-card">
         <div class="ocr-filter-grid">
             <input name="q" value="{{ $filters['q'] ?? '' }}" placeholder="Mã máy, người gửi hoặc mã tin nhắn">
 
-            <select name="review_status">
+            @unless(config('daily_photos.enabled'))<select name="review_status">
                 <option value="">Tất cả trạng thái hậu kiểm</option>
                 @foreach ($reviewLabels as $status => $label)
                     <option value="{{ $status }}" @selected(($filters['review_status'] ?? '') === $status)>{{ $label }}</option>
                 @endforeach
             </select>
 
+            @endunless
             <select name="document_type">
                 <option value="">Tất cả loại ảnh</option>
                 @foreach ($typeLabels as $type => $label)
@@ -78,7 +81,7 @@
         <div class="ocr-section-head">
             <div>
                 <strong>Tổng quan ảnh hằng ngày theo máy</strong>
-                <span>Máy có ảnh chờ duyệt được đưa lên trước.</span>
+                <span>Ảnh đủ dữ liệu tự động được cập nhật vào Đối chiếu.</span>
             </div>
             <form method="GET" action="{{ route('ocr-reviews.index') }}">
                 @foreach (request()->except(['overview_date', 'page']) as $key => $value)
@@ -92,7 +95,7 @@
                 <div class="ocr-machine-group {{ $group['pending'] > 0 ? 'needs-review' : '' }}">
                     <strong>{{ $group['machine'] }}</strong>
                     <span>{{ $group['date'] }} · {{ $group['total'] }} ảnh</span>
-                    <small>{{ $group['completed'] }} đã đạt · {{ $group['pending'] }} cần duyệt · {{ $group['exceptions'] }} ngoại lệ</small>
+                    <small>{{ $group['total'] }} ảnh đã nhận · {{ $group['exceptions'] }} ngoại lệ OCR</small>
                 </div>
             @empty
                 <div class="ocr-empty-group">Chưa có ảnh hằng ngày trong ngày đã chọn.</div>
@@ -102,7 +105,7 @@
 
     <form method="POST" action="{{ route('ocr-reviews.bulk') }}" id="bulkReviewForm">
         @csrf
-        <section class="app-card ocr-bulk-bar">
+        @unless(config('daily_photos.enabled'))<section class="app-card ocr-bulk-bar">
             <label><input type="checkbox" id="selectAllJobs"> Chọn tất cả trang này</label>
             <span id="selectedCount">0 job được chọn</span>
             <select name="action" required>
@@ -113,6 +116,7 @@
             <button class="btn btn-primary" type="submit">Áp dụng hàng loạt</button>
         </section>
 
+        @endunless
         <section class="app-card table-card">
             <div class="table-scroll">
                 <table class="table table-modern ocr-table">
@@ -121,22 +125,24 @@
                         <th></th>
                         <th>Job</th>
                         <th>Loại ảnh</th>
-                        <th>Hậu kiểm</th>
+                        <th>Dữ liệu ảnh</th>
                         <th>OCR</th>
                         <th>Mã máy</th>
                         <th>Ngày / giờ</th>
                         <th>Người gửi</th>
                         <th>Độ tin cậy</th>
-                        <th class="sticky-action">Chi tiết</th>
+                        <th class="sticky-action">Thao tác</th>
                     </tr>
                     </thead>
                     <tbody>
                     @forelse ($jobs as $job)
                         <tr class="{{ $job->review_status === 'PENDING' ? 'row-pending' : '' }}">
-                            <td><input class="job-checkbox" type="checkbox" name="job_ids[]" value="{{ $job->id }}"></td>
+                            <td>@unless(config('daily_photos.enabled'))<input class="job-checkbox" type="checkbox" name="job_ids[]" value="{{ $job->id }}">@endunless</td>
                             <td><strong>#{{ $job->id }}</strong></td>
                             <td>{{ $typeLabels[$job->document_type] ?? $job->document_type }}</td>
-                            <td><span class="review-badge review-{{ strtolower($job->review_status) }}">{{ $reviewLabels[$job->review_status] ?? $job->review_status }}</span></td>
+                            <td>@if(config('daily_photos.enabled') && $job->document_type === 'DAILY_TIMEMARK')
+                                {{ $job->status === 'COMPLETED' ? 'Đã nhận dữ liệu ảnh' : 'Ngoại lệ / đang xử lý' }}
+                            @else<span class="review-badge review-{{ strtolower($job->review_status) }}">{{ $reviewLabels[$job->review_status] ?? $job->review_status }}</span>@endif</td>
                             <td>{{ $job->status }}</td>
                             <td class="machine-code">{{ $job->asset_code ?: $job->machine?->asset_code ?: '—' }}</td>
                             <td>
@@ -145,7 +151,7 @@
                             </td>
                             <td>{{ $job->attachment?->message?->sender_name ?: '—' }}</td>
                             <td>{{ $job->confidence !== null ? number_format((float) $job->confidence * 100, 0).'%' : '—' }}</td>
-                            <td class="sticky-action"><a class="btn btn-sm btn-outline-primary" href="{{ route('ocr-reviews.show', $job) }}">Xem</a></td>
+                            <td class="sticky-action"><a class="btn btn-sm btn-outline-primary" href="{{ route('ocr-reviews.show', $job) }}">{{ $job->document_type === 'DAILY_TIMEMARK' ? 'Sửa dữ liệu' : 'Xem' }}</a></td>
                         </tr>
                     @empty
                         <tr><td colspan="10" class="ocr-empty">Không có kết quả OCR phù hợp.</td></tr>
@@ -189,6 +195,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const checkboxes = [...document.querySelectorAll('.job-checkbox')];
     const counter = document.getElementById('selectedCount');
     const form = document.getElementById('bulkReviewForm');
+    if (!selectAll || !counter) return;
 
     const updateCount = () => {
         const count = checkboxes.filter(checkbox => checkbox.checked).length;
