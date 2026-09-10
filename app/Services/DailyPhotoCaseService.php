@@ -13,13 +13,13 @@ class DailyPhotoCaseService
 {
     public function __construct(private readonly DailyPhotoPairingService $pairing) {}
 
-    public function materialize(OcrJob $job): ?DailyPhotoCase
+    public function materialize(OcrJob $job, bool $recompute = true): ?DailyPhotoCase
     {
         if (! config('daily_photos.enabled')) {
             return null;
         }
 
-        return DB::transaction(function () use ($job): ?DailyPhotoCase {
+        return DB::transaction(function () use ($job, $recompute): ?DailyPhotoCase {
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             if ($job->document_type !== 'DAILY_TIMEMARK'
                 || $job->status !== 'COMPLETED'
@@ -113,6 +113,10 @@ class DailyPhotoCaseService
                 'daily_photo_case_id' => $case->id,
                 'daily_metadata' => $metadata,
             ]);
+
+            if (! $recompute) {
+                return $case;
+            }
 
             $this->pairing->recomputeMany($caseIds->all());
 
