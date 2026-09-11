@@ -2,8 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\CommandCenter;
 use App\Models\Machine;
+use App\Models\MachineAssignment;
 use App\Models\OcrJob;
+use App\Models\Project;
+use App\Models\ReconciliationPeriod;
+use App\Models\ReconciliationRow;
 use App\Models\User;
 use App\Models\ZaloAttachment;
 use App\Models\ZaloMessage;
@@ -127,6 +132,44 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame(0, $second['total']);
         $this->assertSame('COMPLETED', $job->fresh()->status);
         $this->assertDatabaseCount('daily_photo_case_evidence', 1);
+    }
+
+    public function test_repeating_same_recovery_does_not_duplicate_evidence_membership_case_or_reconciliation_row(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $project = Project::query()->create(['name' => 'Dự án recovery']);
+        $commandCenter = CommandCenter::query()->create(['name' => 'BCH recovery']);
+        MachineAssignment::query()->create([
+            'machine_id' => $machine->id,
+            'project_id' => $project->id,
+            'command_center_id' => $commandCenter->id,
+            'time_in' => '2026-09-01 00:00:00',
+        ]);
+        ReconciliationPeriod::query()->create([
+            'name' => 'Tháng 9/2026',
+            'type' => 'MONTHLY',
+            'date_from' => '2026-09-01',
+            'date_to' => '2026-09-30',
+            'status' => 'GENERATED',
+        ]);
+        $job = $this->exceptionJob('idempotent-recovery', 'BAD-CODE');
+        $this->mapping($job, $machine);
+
+        $first = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'idempotent-recovery']);
+        $caseId = $job->fresh()->daily_photo_case_id;
+        $membershipId = DB::table('daily_photo_case_evidence')->sole()->id;
+        $rowId = ReconciliationRow::query()->sole()->id;
+        $second = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'idempotent-recovery']);
+
+        $this->assertSame(1, $first['recovered']);
+        $this->assertSame(0, $second['total']);
+        $this->assertDatabaseCount('ocr_jobs', 1);
+        $this->assertDatabaseCount('daily_photo_cases', 1);
+        $this->assertDatabaseCount('daily_photo_case_evidence', 1);
+        $this->assertDatabaseCount('reconciliation_rows', 1);
+        $this->assertSame($caseId, $job->fresh()->daily_photo_case_id);
+        $this->assertSame($membershipId, DB::table('daily_photo_case_evidence')->sole()->id);
+        $this->assertSame($rowId, ReconciliationRow::query()->sole()->id);
     }
 
     public function test_recovery_never_overwrites_reviewed_or_human_data(): void
