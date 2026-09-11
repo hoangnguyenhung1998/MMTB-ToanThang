@@ -208,9 +208,10 @@ class DailyPhotoBacklogService
         $rows = $jobs->map(function (OcrJob $job) use ($mappings): array {
             $message = $job->attachment?->message;
             $asset = $this->assetCodes->resolve($job->observed_asset_code ?? $job->asset_code);
-            $candidates = ($mappings->get($message?->sender_id) ?? collect())->filter(fn ($mapping): bool => $message?->received_at
-                && $mapping->valid_from->lte($message->received_at)
-                && (! $mapping->valid_to || $mapping->valid_to->gt($message->received_at)))->values();
+            $candidates = $this->mappingCandidates(
+                $mappings->get($message?->sender_id) ?? collect(),
+                $message?->received_at,
+            );
             $mapping = $candidates->count() === 1 ? $candidates->first() : null;
             $frozen = $job->machine_resolution_method && $job->machine_id ? $job->machine : null;
             $machine = $frozen ?: ($asset['status'] === 'MATCHED' ? $asset['machine'] : ($asset['status'] === 'AMBIGUOUS' ? null : $mapping?->machine));
@@ -219,7 +220,10 @@ class DailyPhotoBacklogService
                 : ($asset['machine'] ? DailyPhotoMachineResolutionService::IMAGE_ASSET : ($mapping ? DailyPhotoMachineResolutionService::SENDER_MAPPING : null));
             $reasons = $this->currentReasons($job, $asset, $machine, $candidates->count());
             $protected = $this->isProtected($job);
-            $confident = (float) $job->confidence >= (float) config('ocr.minimum_confidence');
+            // An explicit sender mapping replaces only the unreliable machine
+            // candidate; present date/time values are retained without invention.
+            $confident = (float) $job->confidence >= (float) config('ocr.minimum_confidence')
+                || $method === DailyPhotoMachineResolutionService::SENDER_MAPPING;
             $completeFields = $machine && $job->extracted_date && $job->extracted_time;
             $retryableFields = ! $completeFields
                 && $asset['status'] !== 'AMBIGUOUS'
@@ -268,6 +272,28 @@ class DailyPhotoBacklogService
 
             return $row;
         })->filter(fn (array $row): bool => $row['in_scope'])->values();
+    }
+
+    private function mappingCandidates(Collection $history, $receivedAt): Collection
+    {
+        if (! $receivedAt) {
+            return collect();
+        }
+
+        $effective = $history->filter(fn (ZaloSenderMachineMapping $mapping): bool => $mapping->valid_from->lte($receivedAt)
+            && (! $mapping->valid_to || $mapping->valid_to->gt($receivedAt)))->values();
+        if ($effective->isNotEmpty()) {
+            return $effective;
+        }
+
+        // Backlog-only exception: messages older than the first mapping may use
+        // that first mapping, but only when it is uniquely identifiable.
+        $first = $history->first();
+        if (! $first?->valid_from || ! $receivedAt->lt($first->valid_from)) {
+            return collect();
+        }
+
+        return $history->filter(fn (ZaloSenderMachineMapping $mapping): bool => $mapping->valid_from->equalTo($first->valid_from))->values();
     }
 
     private function currentReasons(OcrJob $job, array $asset, $machine, int $mappingCandidates): array

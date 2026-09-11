@@ -2,11 +2,11 @@
 
 - Updated: 2026-09-11
 - Current Phase: 16.10.5 — Auto Recovery OCR & Exception Backlog
-- Status: COMPLETED locally — implementation, regression tests and continuity documentation verified.
-- Branch: `phase16-10-5-auto-recovery`
-- Verified parent/base: `8db9f8c` — merge hotfix Phase 16.10.4.
+- Status: COMPLETED locally — first-mapping backlog hotfix and regression tests verified.
+- Branch: `hotfix/phase-16-10-5-first-mapping-backlog`
+- Verified parent/base: `3aa10f3` — Phase 16.10.5 plus direct idempotency regression.
 - Initial working tree: clean.
-- Phase checkpoint: local commit containing this document, message `feat: add OCR exception auto recovery backlog`. Resolve its hash with `git log -1 -- docs/phases/PHASE-16.10.5.md`; the final task report records the resulting hash.
+- Hotfix checkpoint: local commit containing this document, message `fix: allow first sender mapping to recover old OCR backlog`. Resolve its hash with `git log -1 -- docs/phases/PHASE-16.10.5.md`; the final task report records the resulting hash.
 - Push / PR / merge / production deploy / production migration / backlog recovery / runtime restart: NOT PERFORMED and not authorized.
 
 ## Completed milestone
@@ -19,6 +19,8 @@
 - Added sender dashboard counts and an explicit `XỬ LÝ ẢNH ĐANG CHỜ` action; saving mapping does not run recovery.
 - Added read-only `ocr:daily-backlog-report` and shared chunked/idempotent backlog analysis/recovery service.
 - Added additive provenance migration; no data backfill exists in the migration.
+- Hotfix: backlog report/explicit recovery may use the unique first mapping for messages received before that mapping began; later mappings remain strictly receipt-effective and overlap remains fail-closed.
+- Hotfix: an explicit mapping can recover invalid-machine rows whose aggregate confidence is low while preserving existing date/time and the one-retry limit for missing fields.
 
 ## Latest verified checks
 
@@ -26,7 +28,9 @@ PHP executable: `C:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe`.
 
 | Command / check | Result |
 |---|---|
-| Full Laravel `artisan test --compact` | PASS: 264 tests, 1,275 assertions |
+| Backlog targeted `AutoRecoveryBacklogTest` | PASS: 14 tests, 86 assertions |
+| Existing receipt-history targeted regression | PASS: 1 test, 12 assertions |
+| Full Laravel `artisan test --compact` | PASS: 269 tests, 1,310 assertions |
 | OCR worker `python -m unittest discover -s ocr-worker/tests -p test_*.py` | PASS: 38 tests |
 | 1,000-evidence backlog report query-count guard | PASS within targeted suite |
 | Pint `--test` on changed non-Blade PHP files | PASS: 18 files |
@@ -59,7 +63,7 @@ Tests use SQLite in-memory databases. No migration was applied to the applicatio
 
 ## NEXT ACTION
 
-1. Inspect the latest local Phase 16.10.5 checkpoint (`git status --short --branch`, `git log -1`, and `docs/phases/PHASE-16.10.5.md`). Do not repeat implementation.
-2. Optionally verify the local sender dashboard, pending summary, explicit recovery button and normalized Exception Center labels with representative data.
+1. Inspect the latest local first-mapping backlog hotfix (`git status --short --branch`, `git log -1`, and `docs/phases/PHASE-16.10.5.md`). Do not repeat implementation.
+2. Before any authorized production recovery, run the read-only sender report and confirm the expected mapped/auto/manual counts; recovery remains an explicit operator action.
 3. Wait for explicit user authorization before push/PR/merge/deploy or production/runtime actions. If deployment is authorized later, follow the maintenance/migration/worker ordering and rollback requirements in the Phase document.
 4. Do not start a new Phase automatically.
