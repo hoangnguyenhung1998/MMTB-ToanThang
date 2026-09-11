@@ -75,6 +75,25 @@ class OcrJobTest extends TestCase
         ]);
     }
 
+    public function test_targeted_retry_claim_exposes_focus_and_initial_extraction(): void
+    {
+        $job = $this->createJob();
+        $job->update([
+            'document_type' => 'DAILY_TIMEMARK',
+            'status' => 'RETRY',
+            'ocr_retry_reason' => 'date,time',
+            'ocr_retry_attempts' => 1,
+            'ocr_initial_extraction' => ['asset_code' => 'T-XX0717'],
+        ]);
+
+        $this->withToken('test-ocr-token')->postJson('/api/ocr/v1/jobs/claim', [
+            'worker_id' => 'worker-1',
+            'document_types' => ['DAILY_TIMEMARK'],
+        ])->assertOk()
+            ->assertJsonPath('job.retry_focus', ['date', 'time'])
+            ->assertJsonPath('job.prior_extraction.asset_code', 'T-XX0717');
+    }
+
     public function test_successful_result_is_matched_to_machine_and_classified(): void
     {
         Machine::query()->create([
@@ -205,8 +224,8 @@ class OcrJobTest extends TestCase
 
         $this->assertEqualsCanonicalizing([
             'LOW_CONFIDENCE',
-            'UNCLASSIFIED_TIME',
-            'UNKNOWN_ASSET_CODE',
+            'CAPTURE_TIME_MISSING',
+            'MACHINE_OCR_INVALID',
         ], $response->json('job.exceptions'));
     }
 

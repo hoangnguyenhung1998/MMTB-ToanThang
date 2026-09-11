@@ -15,14 +15,16 @@ class DailyPhotoMachineResolutionService
 
     public const SENDER_MAPPING = 'SENDER_MAPPING';
 
-    public function __construct(private readonly ZaloSenderDriverService $senderResolver) {}
+    public function __construct(
+        private readonly ZaloSenderDriverService $senderResolver,
+        private readonly AssetCodeResolver $assetCodes,
+    ) {}
 
     public function resolve(OcrJob $job, mixed $assetCode, ?string $date, ?string $time, bool $learn = false): array
     {
-        $observed = $this->normalizeAssetCode($assetCode);
-        $imageMachine = $observed
-            ? Machine::query()->where('asset_code', $observed)->first()
-            : null;
+        $asset = $this->assetCodes->resolve($assetCode);
+        $observed = $asset['observed'];
+        $imageMachine = $asset['machine'];
         $sender = $this->senderResolver->resolveWithProvenance($job, $date, $time);
         $senderMachine = $sender['machine'];
 
@@ -35,6 +37,10 @@ class DailyPhotoMachineResolutionService
         if ($mapping) {
             $senderMachine = $mapping->machine;
         }
+        if ($asset['status'] === 'AMBIGUOUS') {
+            $senderMachine = null;
+            $mapping = null;
+        }
         // Persisted evidence resolution survives OCR retries and later mapping edits.
         $frozen = $job->machine_resolution_method && $job->machine_id
             ? Machine::find($job->machine_id) : null;
@@ -43,6 +49,7 @@ class DailyPhotoMachineResolutionService
                 'observed_asset_code' => $observed ?? $job->observed_asset_code,
                 'legacy_asset_code' => $job->asset_code,
                 'image_machine' => $imageMachine, 'machine' => $frozen,
+                'asset_resolution_status' => $asset['status'],
                 'method' => $job->machine_resolution_method,
                 'sender_driver_link_id' => $job->sender_driver_link_id,
                 'machine_driver_history_id' => $job->machine_driver_history_id,
@@ -64,6 +71,7 @@ class DailyPhotoMachineResolutionService
             'legacy_asset_code' => $observed ?: $senderMachine?->asset_code,
             'image_machine' => $imageMachine,
             'machine' => $machine,
+            'asset_resolution_status' => $asset['status'],
             'method' => $method,
             'sender_driver_link_id' => $usedSender ? $sender['link']?->id : null,
             'machine_driver_history_id' => $usedSender ? $sender['history']?->id : null,
@@ -73,6 +81,10 @@ class DailyPhotoMachineResolutionService
                 'capture_timezone' => config('daily_photos.capture_timezone'),
                 'sender_machine_mapping_id' => $mapping?->id,
                 'image_asset_resolved_machine_id' => $imageMachine?->id,
+                'observed_asset_normalized_key' => $asset['normalized_key'],
+                'image_asset_resolution_status' => $asset['status'],
+                'image_asset_candidate_machine_ids' => $asset['candidate_machine_ids'],
+                'image_asset_candidate_codes' => $asset['candidate_asset_codes'],
                 'sender_resolution_status' => $candidates->count() > 1 ? 'AMBIGUOUS_MAPPING' : ($mapping ? 'RESOLVED' : $sender['status']),
                 'sender_resolution_machine_id' => $senderMachine?->id,
                 'sender_driver_link_id' => $sender['link']?->id,
@@ -83,15 +95,5 @@ class DailyPhotoMachineResolutionService
                 'sender_candidate_machine_ids' => $sender['candidate_machine_ids'],
             ],
         ];
-    }
-
-    private function normalizeAssetCode(mixed $assetCode): ?string
-    {
-        if ($assetCode === null) {
-            return null;
-        }
-        $normalized = strtoupper(trim((string) $assetCode));
-
-        return $normalized === '' ? null : $normalized;
     }
 }

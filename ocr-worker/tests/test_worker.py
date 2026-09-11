@@ -48,7 +48,7 @@ class WorkerClient:
 
 
 class BlockingRecognizer:
-    def recognize(self, image_path, progress=None):
+    def recognize(self, image_path, progress=None, focus=None):
         time.sleep(0.05)
         if progress:
             progress("finished", 0, "asset", 50)

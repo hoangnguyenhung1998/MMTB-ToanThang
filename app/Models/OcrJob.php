@@ -4,8 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class OcrJob extends Model
@@ -16,6 +16,8 @@ class OcrJob extends Model
     {
         return [
             'daily_metadata' => 'array',
+            'ocr_initial_extraction' => 'array',
+            'ocr_retry_attempts' => 'integer',
             'machine_resolution_metadata' => 'array',
             'machine_resolved_at' => 'datetime',
             'claimed_at' => 'datetime',
@@ -55,19 +57,23 @@ class OcrJob extends Model
         $reviewStatus = $job->review_status ?? 'PENDING';
 
         // A failed re-OCR must not approve fields retained from the previous attempt.
-        if (config('daily_photos.enabled') && $job->status === 'FAILED') return;
+        if (config('daily_photos.enabled') && $job->status === 'FAILED') {
+            return;
+        }
 
         if ($job->reviewed_at
             || ! in_array($reviewStatus, ['PENDING', 'AUTO_APPROVED'], true)
-            || ! in_array($job->status, ['COMPLETED','EXCEPTION','FAILED'], true)) return;
+            || ! in_array($job->status, ['COMPLETED', 'EXCEPTION', 'FAILED'], true)) {
+            return;
+        }
 
         if ($job->document_type === 'DAILY_TIMEMARK') {
             $isComplete = $job->machine_id
                 && $job->extracted_date
                 && $job->extracted_time
                 && $job->machine()->exists()
-                && (!config('daily_photos.enabled') || ((float) $job->confidence >= (float) config('ocr.minimum_confidence')
-                    && !array_intersect($job->exceptions ?? [], ['SENDER_MACHINE_CONFLICT', 'AMBIGUOUS_TIME', 'AMBIGUOUS_DATE'])));
+                && (! config('daily_photos.enabled') || ((float) $job->confidence >= (float) config('ocr.minimum_confidence')
+                    && ! array_intersect($job->exceptions ?? [], ['SENDER_MACHINE_CONFLICT', 'AMBIGUOUS_TIME', 'AMBIGUOUS_DATE'])));
 
             $updates = [
                 'status' => $isComplete ? 'COMPLETED' : $job->status,
@@ -90,8 +96,15 @@ class OcrJob extends Model
         ]);
     }
 
-    public function reviewer(): BelongsTo { return $this->belongsTo(User::class, 'reviewed_by'); }
-    public function activities(): MorphMany { return $this->morphMany(ActivityLog::class, 'subject')->latest('occurred_at'); }
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewed_by');
+    }
+
+    public function activities(): MorphMany
+    {
+        return $this->morphMany(ActivityLog::class, 'subject')->latest('occurred_at');
+    }
 
     public function attachment(): BelongsTo
     {

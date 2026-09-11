@@ -1,0 +1,286 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Machine;
+use App\Models\OcrJob;
+use App\Models\User;
+use App\Models\ZaloAttachment;
+use App\Models\ZaloMessage;
+use App\Models\ZaloSenderMachineMapping;
+use App\Services\DailyPhotoBacklogService;
+use App\Services\OcrJobService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Tests\TestCase;
+
+class AutoRecoveryBacklogTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config(['daily_photos.enabled' => true, 'ocr.max_attempts' => 3, 'ocr.minimum_confidence' => 0.8]);
+        Storage::fake('local');
+    }
+
+    public function test_invalid_ocr_machine_falls_back_to_receipt_effective_sender_mapping(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->pendingJob('giang-ha');
+        $this->mapping($job, $machine);
+
+        $completed = $this->complete($job, ['asset_code' => '7X-XL13', 'date' => '2026-09-10', 'time' => '06:15:00']);
+
+        $this->assertSame('COMPLETED', $completed->status);
+        $this->assertSame($machine->id, $completed->machine_id);
+        $this->assertSame('SENDER_MAPPING', $completed->machine_resolution_method);
+        $this->assertSame('7X-XL13', $completed->observed_asset_code);
+        $this->assertNull($completed->exceptions);
+    }
+
+    public function test_valid_image_machine_wins_without_changing_sender_mapping(): void
+    {
+        $mapped = $this->machine('VT-XL1137');
+        $image = $this->machine('T-XL0345');
+        $job = $this->pendingJob('sender-helper');
+        $mapping = $this->mapping($job, $mapped);
+
+        $completed = $this->complete($job, ['asset_code' => 't xl 0345', 'date' => '2026-09-10', 'time' => '06:15:00']);
+
+        $this->assertSame($image->id, $completed->machine_id);
+        $this->assertSame('IMAGE_ASSET', $completed->machine_resolution_method);
+        $this->assertSame($mapped->id, $mapping->fresh()->machine_id);
+        $this->assertDatabaseCount('zalo_sender_machine_mappings', 1);
+    }
+
+    public function test_missing_machine_uses_mapping_but_missing_mapping_retries_then_fails_closed(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $mappedJob = $this->pendingJob('mapped');
+        $this->mapping($mappedJob, $machine);
+        $mapped = $this->complete($mappedJob, ['date' => '2026-09-10', 'time' => '07:00:00']);
+        $this->assertSame('COMPLETED', $mapped->status);
+        $this->assertSame($machine->id, $mapped->machine_id);
+
+        $unmappedJob = $this->pendingJob('unmapped');
+        $retry = $this->complete($unmappedJob, ['date' => '2026-09-10', 'time' => '07:30:00']);
+        $this->assertSame('RETRY', $retry->status);
+        $this->assertSame('machine', $retry->ocr_retry_reason);
+
+        $failed = $this->complete($retry, []);
+        $this->assertSame('EXCEPTION', $failed->status);
+        $this->assertContains('SENDER_MAPPING_MISSING', $failed->exceptions);
+        $this->assertContains('OCR_RETRY_FAILED', $failed->exceptions);
+    }
+
+    public function test_targeted_time_retry_preserves_initial_fields_and_continues_automatically(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->pendingJob('time-retry');
+
+        $retry = $this->complete($job, ['asset_code' => 'T.XX.0717', 'date' => '2026-09-10']);
+        $this->assertSame('RETRY', $retry->status);
+        $this->assertSame('time', $retry->ocr_retry_reason);
+
+        $completed = $this->complete($retry, ['time' => '11:10:00']);
+        $this->assertSame('COMPLETED', $completed->status);
+        $this->assertSame($machine->id, $completed->machine_id);
+        $this->assertSame('2026-09-10', $completed->extracted_date->format('Y-m-d'));
+        $this->assertSame('OCR_RETRY', $completed->ocr_final_source);
+        $this->assertSame('11:10:00', data_get($completed->daily_metadata, 'ocr_recovery.final_chosen_result.time'));
+    }
+
+    public function test_collision_remains_machine_ambiguous_even_when_sender_has_mapping(): void
+    {
+        $first = $this->machine('T-XX0717');
+        $this->machine('T XX 0717');
+        $job = $this->pendingJob('collision');
+        $this->mapping($job, $first);
+
+        $completed = $this->complete($job, ['asset_code' => 'T_XX_0717', 'date' => '2026-09-10', 'time' => '06:15:00']);
+
+        $this->assertSame('EXCEPTION', $completed->status);
+        $this->assertNull($completed->machine_id);
+        $this->assertContains('MACHINE_AMBIGUOUS', $completed->exceptions);
+        $this->assertSame(0, app(DailyPhotoBacklogService::class)->report(['sender_id' => 'collision'])['auto_recoverable']);
+    }
+
+    public function test_creating_mapping_does_not_recover_backlog_until_explicit_action_and_action_is_idempotent(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->exceptionJob('new-mapping', '7X-XL13');
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->post(route('daily-photos.link'), ['sender_id' => 'new-mapping', 'machine_id' => $machine->id])
+            ->assertRedirect()->assertSessionHas('success');
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->actingAs($user)->get(route('daily-photos.settings'))->assertOk()
+            ->assertSee('1 ảnh đang chờ')->assertSee('XỬ LÝ ẢNH ĐANG CHỜ');
+
+        $first = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'new-mapping']);
+        $second = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'new-mapping']);
+        $this->assertSame(1, $first['recovered']);
+        $this->assertSame(0, $second['total']);
+        $this->assertSame('COMPLETED', $job->fresh()->status);
+        $this->assertDatabaseCount('daily_photo_case_evidence', 1);
+    }
+
+    public function test_recovery_never_overwrites_reviewed_or_human_data(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->exceptionJob('protected', null);
+        $this->mapping($job, $machine);
+        $job->update(['review_status' => 'CORRECTED', 'reviewed_at' => now(), 'machine_resolution_method' => 'HUMAN']);
+
+        $result = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'protected']);
+
+        $this->assertSame(1, $result['skipped_protected']);
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertSame('HUMAN', $job->fresh()->machine_resolution_method);
+    }
+
+    public function test_backlog_report_is_read_only_and_classifies_sender_and_reason(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $mapped = $this->exceptionJob('mapped-report', 'BAD-CODE');
+        $unmapped = $this->exceptionJob('unmapped-report', null);
+        $this->mapping($mapped, $machine);
+        $before = OcrJob::query()->orderBy('id')->get()->map->getAttributes();
+
+        $report = app(DailyPhotoBacklogService::class)->report();
+
+        $this->assertSame(2, $report['total']);
+        $this->assertSame(1, $report['mapped']);
+        $this->assertSame(1, $report['unmapped']);
+        $this->assertArrayHasKey('MACHINE_OCR_INVALID', $report['by_reason']);
+        $this->assertArrayHasKey('SENDER_MAPPING_MISSING', $report['by_reason']);
+        $this->assertEquals($before, OcrJob::query()->orderBy('id')->get()->map->getAttributes());
+        $this->artisan('ocr:daily-backlog-report')->assertSuccessful();
+        $this->assertEquals($before, OcrJob::query()->orderBy('id')->get()->map->getAttributes());
+    }
+
+    public function test_report_batches_one_thousand_evidence_without_n_plus_one(): void
+    {
+        $now = now();
+        $messages = $attachments = $jobs = [];
+        foreach (range(1, 1000) as $index) {
+            $messages[] = ['group_id' => 'batch', 'message_id' => "message-{$index}", 'sender_id' => 'batch-sender', 'sender_name' => 'Batch', 'sent_at' => $now, 'received_at' => $now, 'status' => 'STORED', 'created_at' => $now, 'updated_at' => $now];
+        }
+        foreach (array_chunk($messages, 100) as $chunk) {
+            DB::table('zalo_messages')->insert($chunk);
+        }
+        foreach (DB::table('zalo_messages')->where('group_id', 'batch')->orderBy('id')->pluck('id') as $index => $messageId) {
+            $attachments[] = ['zalo_message_id' => $messageId, 'attachment_index' => 0, 'original_name' => 'a.jpg', 'storage_disk' => 'local', 'storage_path' => "batch/{$index}.jpg", 'sha256' => hash('sha256', (string) $index), 'mime_type' => 'image/jpeg', 'byte_size' => 1, 'status' => 'STORED', 'created_at' => $now, 'updated_at' => $now];
+        }
+        foreach (array_chunk($attachments, 250) as $chunk) {
+            DB::table('zalo_attachments')->insert($chunk);
+        }
+        foreach (DB::table('zalo_attachments')->where('storage_path', 'like', 'batch/%')->orderBy('id')->pluck('id') as $attachmentId) {
+            $jobs[] = ['zalo_attachment_id' => $attachmentId, 'document_type' => 'DAILY_TIMEMARK', 'status' => 'EXCEPTION', 'review_status' => 'PENDING', 'attempts' => 1, 'confidence' => 0.99, 'exceptions' => json_encode(['MISSING_ASSET_CODE']), 'created_at' => $now, 'updated_at' => $now];
+        }
+        foreach (array_chunk($jobs, 250) as $chunk) {
+            DB::table('ocr_jobs')->insert($chunk);
+        }
+
+        $queries = [];
+        DB::listen(function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+        $report = app(DailyPhotoBacklogService::class)->report();
+
+        $this->assertSame(1000, $report['total']);
+        $this->assertLessThanOrEqual(15, count($queries), implode(PHP_EOL, $queries));
+    }
+
+    private function machine(string $assetCode): Machine
+    {
+        return Machine::query()->create([
+            'asset_code' => $assetCode,
+            'chassis_no' => 'CHASSIS-'.Str::uuid(),
+            'company' => 'VINCONS',
+            'status' => 'ACTIVE',
+        ]);
+    }
+
+    private function pendingJob(string $sender): OcrJob
+    {
+        return $this->job($sender, 'PENDING', null);
+    }
+
+    private function exceptionJob(string $sender, ?string $asset): OcrJob
+    {
+        return $this->job($sender, 'EXCEPTION', $asset, [
+            'extracted_date' => '2026-09-10',
+            'extracted_time' => '06:15:00',
+            'confidence' => 0.99,
+            'attempts' => 1,
+            'exceptions' => [$asset ? 'UNKNOWN_ASSET_CODE' : 'MISSING_ASSET_CODE'],
+        ]);
+    }
+
+    private function job(string $sender, string $status, ?string $asset, array $extra = []): OcrJob
+    {
+        $message = ZaloMessage::query()->create([
+            'group_id' => 'auto-recovery',
+            'message_id' => (string) Str::uuid(),
+            'sender_id' => $sender,
+            'sender_name' => $sender,
+            'sent_at' => '2026-09-10 06:00:00',
+            'received_at' => '2026-09-10 06:01:00',
+            'status' => 'STORED',
+        ]);
+        $path = 'test/'.Str::uuid().'.jpg';
+        Storage::disk('local')->put($path, 'image');
+        $attachment = ZaloAttachment::query()->create([
+            'zalo_message_id' => $message->id,
+            'attachment_index' => 0,
+            'original_name' => 'image.jpg',
+            'storage_disk' => 'local',
+            'storage_path' => $path,
+            'sha256' => hash('sha256', $path),
+            'mime_type' => 'image/jpeg',
+            'byte_size' => 5,
+            'status' => 'STORED',
+        ]);
+
+        return OcrJob::query()->create([
+            'zalo_attachment_id' => $attachment->id,
+            'document_type' => 'DAILY_TIMEMARK',
+            'status' => $status,
+            'review_status' => 'PENDING',
+            'asset_code' => $asset,
+            'observed_asset_code' => $asset,
+            ...$extra,
+        ])->fresh(['attachment.message']);
+    }
+
+    private function mapping(OcrJob $job, Machine $machine): ZaloSenderMachineMapping
+    {
+        return ZaloSenderMachineMapping::query()->create([
+            'sender_id' => $job->attachment->message->sender_id,
+            'active_sender_id' => $job->attachment->message->sender_id,
+            'machine_id' => $machine->id,
+            'valid_from' => $job->attachment->message->received_at->copy()->subMinute(),
+            'source' => 'MANUAL_CORRECTION',
+        ]);
+    }
+
+    private function complete(OcrJob $job, array $payload): OcrJob
+    {
+        $service = app(OcrJobService::class);
+        if ($job->status !== 'PROCESSING') {
+            $job = $service->claim('recovery-test', ['DAILY_TIMEMARK']);
+        }
+
+        return $service->complete($job, [
+            'worker_id' => 'recovery-test',
+            'attempt' => $job->attempts,
+            'confidence' => 0.99,
+            ...$payload,
+        ]);
+    }
+}

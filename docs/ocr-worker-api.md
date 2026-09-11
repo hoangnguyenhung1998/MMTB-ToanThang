@@ -37,7 +37,9 @@ Claim only the types supported by that worker:
 
 The valid types are `UNKNOWN`, `DAILY_TIMEMARK`, and `WEEKLY_JOURNAL`. Omitting `document_types` remains supported for backward compatibility.
 
-The claim response includes `attempt`, legacy `attempts`, `max_attempts`, `lease_seconds`, and `lease_expires_at`. `attempt` increments atomically on every claim/reclaim.
+The claim response includes `attempt`, legacy `attempts`, `max_attempts`, `lease_seconds`, `lease_expires_at`, `retry_focus`, and `prior_extraction`. `attempt` increments atomically on every claim/reclaim.
+
+For one bounded automatic field retry, `retry_focus` contains only the missing targets (`machine`, `date`, and/or `time`). The worker narrows the image regions it scans accordingly. Laravel merges the targeted result with `prior_extraction`, remains authoritative for the final machine/date/time decision, and never schedules a second automatic field retry.
 
 ## Renew a lease
 
@@ -88,6 +90,8 @@ If classification is uncertain, submit `UNKNOWN`; Laravel stores the job as `EXC
 ```
 
 Laravel assigns one deterministic shift: `MORNING`, `MIDDAY`, `AFTERNOON`, `AFTERNOON_OT`, or `EVENING_OT`.
+
+Machine codes are compared through a case-insensitive canonical key that removes whitespace and common separators (`- . _ / : ;`). A key must identify exactly one catalog machine. Unknown candidates may fall back to the sender mapping effective at message receipt; normalized catalog collisions remain exceptions.
 
 ## Complete a weekly journal
 

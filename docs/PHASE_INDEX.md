@@ -8,10 +8,11 @@
 | 16.10.2 | Deterministic Daily Photo Pairing | VERIFIED | Phase 16.10.1 | Phase 16.9 | `c8e3796` | `docs/phases/PHASE-16.10.2.md` |
 | 16.10.3 | Canonical Daily Photo Downstream Integration | VERIFIED in Git at task start | Phase 16.10.1; Phase 16.10.2 | Phase 16.9 | `d36cfc1` | `docs/phases/PHASE-16.10.3.md` |
 | 16.10.4 | Automatic Daily Photo reconciliation and Zalo machine mapping | COMPLETED locally — 250 tests / 1187 assertions PASS | Phase 16.10.1; Phase 16.10.2; Phase 16.10.3 | Phase 16.9 | Local checkpoint; `git log -1 -- docs/phases/PHASE-16.10.4.md` | `docs/phases/PHASE-16.10.4.md` |
+| 16.10.5 | Auto Recovery OCR & Exception Backlog | COMPLETED locally — 264 tests / 1,275 assertions PASS | Phase 16.10.4 | OCR worker; Exception Center; reconciliation sync | Local checkpoint; `git log -1 -- docs/phases/PHASE-16.10.5.md` | `docs/phases/PHASE-16.10.5.md` |
 
 ## Relationship
 
-`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping`
+`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog`
 
 - 16.10.1 is a dependency because 16.10.3 must consume and preserve canonical case identity and resolution provenance.
 - 16.10.2 is a dependency because 16.10.3 must consume and preserve canonical evidence/interval/ambiguity semantics.

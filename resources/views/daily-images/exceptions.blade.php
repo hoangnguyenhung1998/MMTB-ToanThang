@@ -49,7 +49,9 @@
                 <div class="exception-identity"><strong>{{ $group['machine_code'] }}</strong><span>{{ $group['date_label'] }} · {{ $group['command_center'] }}</span></div>
                 <div class="exception-count"><strong>{{ $group['approved_count'] }}</strong><span>ảnh hợp lệ</span></div>
                 <div class="exception-count"><strong>{{ $group['pending_count'] }}</strong><span>chờ duyệt</span></div>
-                <span class="exception-badge">{{ $group['status_label'] }}</span>
+                <div><span class="exception-badge">{{ $group['status_label'] }}</span>
+                    @if(!empty($group['reason_labels']))<small class="d-block mt-1 text-muted">{{ collect($group['reason_labels'])->map(fn($label, $code) => $code.': '.$label)->implode(' · ') }}</small>@endif
+                </div>
                 <div class="exception-actions">
                     @if($group['approved_count'] > 0)
                         <a class="btn btn-sm btn-outline-primary" href="{{ route('daily-images.index', ['date_from' => $group['date'], 'date_to' => $group['date'], 'machine_id' => $group['machine_id']]) }}">Xem ảnh</a>

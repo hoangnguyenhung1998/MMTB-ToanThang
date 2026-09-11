@@ -40,6 +40,10 @@ class OcrJobController extends Controller
                 'max_attempts' => max(1, (int) config('ocr.max_attempts')),
                 'lease_seconds' => max(1, (int) config('ocr.lease_seconds')),
                 'lease_expires_at' => $job->lease_expires_at?->toIso8601String(),
+                'retry_focus' => filled($job->ocr_retry_reason)
+                    ? array_values(array_filter(explode(',', $job->ocr_retry_reason)))
+                    : [],
+                'prior_extraction' => $job->ocr_initial_extraction,
                 'image_url' => route('api.ocr.jobs.image', [
                     'ocrJob' => $job,
                     'worker_id' => $request->validated('worker_id'),

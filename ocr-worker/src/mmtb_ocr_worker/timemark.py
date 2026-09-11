@@ -48,6 +48,7 @@ class TimeMarkRecognizer:
         self,
         path: Path,
         progress: Callable[[str, int, str, int | None], None] | None = None,
+        focus: list[str] | None = None,
     ) -> TimeMarkResult:
         image = read_image(path)
         best_asset: tuple[str | None, float, str] = (None, 0.0, "")
@@ -58,6 +59,7 @@ class TimeMarkRecognizer:
         work_location = None
         confidences: list[float] = []
         debug_parts: list[str] = []
+        requested = set(focus or ["machine", "date", "time"])
 
         for angle in (0, 180, 90, 270):
             rotated = rotate(image, angle)
@@ -68,6 +70,13 @@ class TimeMarkRecognizer:
                 ("lower_full", region(rotated, 0.00, 0.38, 1.00, 1.00)),
                 ("full", rotated),
             ]
+            if focus:
+                allowed = {"left_overlay", "lower_full", "full"}
+                if "machine" in requested:
+                    allowed.add("asset")
+                if requested.intersection({"date", "time"}):
+                    allowed.add("time_date")
+                candidates = [candidate for candidate in candidates if candidate[0] in allowed]
             for region_name, candidate in candidates:
                 if progress is not None:
                     progress("started", angle, region_name, None)
@@ -95,14 +104,11 @@ class TimeMarkRecognizer:
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
 
-                if (
-                    best_asset[0]
-                    and captured_date
-                    and captured_time
-                    and best_asset[1] >= 0.85
-                ):
+                if self._requested_fields_found(requested, best_asset, captured_date, captured_time):
                     break
-            if captured_date and captured_time:
+            if (focus and self._requested_fields_found(requested, best_asset, captured_date, captured_time)) or (
+                not focus and captured_date and captured_time
+            ):
                 break
 
         average_ocr = sum(confidences) / len(confidences) if confidences else 0.0
@@ -117,6 +123,14 @@ class TimeMarkRecognizer:
             work_location=work_location,
             confidence=confidence,
             raw_text="\n\n".join(debug_parts),
+        )
+
+    @staticmethod
+    def _requested_fields_found(requested, best_asset, captured_date, captured_time) -> bool:
+        return bool(
+            ("machine" not in requested or (best_asset[0] and best_asset[1] >= 0.85))
+            and ("date" not in requested or captured_date)
+            and ("time" not in requested or captured_time)
         )
 
     @staticmethod
