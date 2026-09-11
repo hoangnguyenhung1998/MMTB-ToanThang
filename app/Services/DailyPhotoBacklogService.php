@@ -220,10 +220,6 @@ class DailyPhotoBacklogService
                 : ($asset['machine'] ? DailyPhotoMachineResolutionService::IMAGE_ASSET : ($mapping ? DailyPhotoMachineResolutionService::SENDER_MAPPING : null));
             $reasons = $this->currentReasons($job, $asset, $machine, $candidates->count());
             $protected = $this->isProtected($job);
-            // An explicit sender mapping replaces only the unreliable machine
-            // candidate; present date/time values are retained without invention.
-            $confident = (float) $job->confidence >= (float) config('ocr.minimum_confidence')
-                || $method === DailyPhotoMachineResolutionService::SENDER_MAPPING;
             $completeFields = $machine && $job->extracted_date && $job->extracted_time;
             $retryableFields = ! $completeFields
                 && $asset['status'] !== 'AMBIGUOUS'
@@ -243,7 +239,6 @@ class DailyPhotoBacklogService
                 'reasons' => $reasons,
                 'protected' => $protected,
                 'recoverable_fields' => $completeFields || $retryableFields,
-                'confident' => $confident,
                 'action' => $completeFields ? 'RECOVER' : 'RETRY',
             ];
         });
@@ -267,7 +262,7 @@ class DailyPhotoBacklogService
             $inScope = ! $scopeRequested || ($row['machine'] && $date && ($assignments->get($row['machine']->id) ?? collect())
                 ->contains(fn (MachineAssignment $assignment): bool => $assignment->time_in->lte($date.' 23:59:59')
                     && (! $assignment->time_out || $assignment->time_out->gt($date.' 00:00:00'))));
-            $row['auto_recoverable'] = ! $row['protected'] && $row['confident'] && $inScope && $row['recoverable_fields'];
+            $row['auto_recoverable'] = ! $row['protected'] && $inScope && $row['recoverable_fields'];
             $row['in_scope'] = $inScope;
 
             return $row;
@@ -319,7 +314,7 @@ class DailyPhotoBacklogService
             });
         }
 
-        return $reasons->unique()->values()->all() ?: ['OTHER'];
+        return $reasons->unique()->values()->all();
     }
 
     private function isProtected(OcrJob $job): bool

@@ -71,9 +71,7 @@ class OcrJob extends Model
             $isComplete = $job->machine_id
                 && $job->extracted_date
                 && $job->extracted_time
-                && $job->machine()->exists()
-                && (! config('daily_photos.enabled') || ((float) $job->confidence >= (float) config('ocr.minimum_confidence')
-                    && ! array_intersect($job->exceptions ?? [], ['SENDER_MACHINE_CONFLICT', 'AMBIGUOUS_TIME', 'AMBIGUOUS_DATE'])));
+                && $job->machine()->exists();
 
             $updates = [
                 'status' => $isComplete ? 'COMPLETED' : $job->status,

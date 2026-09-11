@@ -223,7 +223,6 @@ class OcrJobTest extends TestCase
             ->assertJsonPath('job.status', 'EXCEPTION');
 
         $this->assertEqualsCanonicalizing([
-            'LOW_CONFIDENCE',
             'CAPTURE_TIME_MISSING',
             'MACHINE_OCR_INVALID',
         ], $response->json('job.exceptions'));

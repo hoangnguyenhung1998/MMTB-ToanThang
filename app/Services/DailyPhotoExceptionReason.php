@@ -17,22 +17,23 @@ class DailyPhotoExceptionReason
         'DUPLICATE_TIMESTAMP' => 'Trùng thời điểm ảnh',
         'PAIRING_AMBIGUOUS' => 'Không thể ghép ảnh an toàn',
         'OCR_RETRY_FAILED' => 'OCR có mục tiêu vẫn không đủ dữ liệu',
-        'LOW_CONFIDENCE' => 'Độ tin cậy thấp',
         'OTHER' => 'Ngoại lệ khác',
     ];
 
     public function forJob(OcrJob $job): array
     {
         return collect($job->exceptions ?? [])
-            ->map(fn (string $reason): string => $this->normalize($reason, $job))
+            ->map(fn (string $reason): ?string => $this->normalize($reason, $job))
+            ->filter()
             ->unique()
             ->values()
             ->all();
     }
 
-    public function normalize(string $reason, ?OcrJob $job = null): string
+    public function normalize(string $reason, ?OcrJob $job = null): ?string
     {
         return match ($reason) {
+            'LOW_CONFIDENCE' => null,
             'MISSING_DATE' => 'CAPTURE_DATE_MISSING',
             'MISSING_TIME', 'MISSING_CAPTURE_TIME', 'UNCLASSIFIED_TIME', 'AMBIGUOUS_TIME' => 'CAPTURE_TIME_MISSING',
             'MISSING_ASSET_CODE' => 'SENDER_MAPPING_MISSING',
@@ -44,7 +45,7 @@ class DailyPhotoExceptionReason
             'MACHINE_OCR_INVALID', 'MACHINE_NOT_FOUND', 'MACHINE_AMBIGUOUS',
             'SENDER_MAPPING_MISSING', 'CAPTURE_TIME_MISSING', 'CAPTURE_DATE_MISSING',
             'ASSIGNMENT_AMBIGUOUS', 'DUPLICATE_TIMESTAMP', 'PAIRING_AMBIGUOUS',
-            'OCR_RETRY_FAILED', 'LOW_CONFIDENCE' => $reason,
+            'OCR_RETRY_FAILED' => $reason,
             default => 'OTHER',
         };
     }
