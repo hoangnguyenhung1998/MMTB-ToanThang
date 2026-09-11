@@ -134,6 +134,138 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertDatabaseCount('daily_photo_case_evidence', 1);
     }
 
+    public function test_first_mapping_can_recover_older_invalid_low_confidence_backlog_only_after_explicit_action(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->exceptionJob('first-mapping-backlog', '7X-XL13');
+        $job->update([
+            'confidence' => 0.5,
+            'exceptions' => ['LOW_CONFIDENCE', 'UNKNOWN_ASSET_CODE'],
+        ]);
+        ZaloSenderMachineMapping::query()->create([
+            'sender_id' => 'first-mapping-backlog',
+            'active_sender_id' => 'first-mapping-backlog',
+            'machine_id' => $machine->id,
+            'valid_from' => '2026-09-11 09:32:00',
+            'source' => 'MANUAL_CORRECTION',
+        ]);
+
+        $report = app(DailyPhotoBacklogService::class)->report(['sender_id' => 'first-mapping-backlog']);
+
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertSame(1, $report['mapped']);
+        $this->assertSame(1, $report['auto_recoverable']);
+        $this->assertSame($machine->id, $report['rows']->sole()['machine']->id);
+
+        $result = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'first-mapping-backlog']);
+
+        $this->assertSame(1, $result['recovered']);
+        $this->assertSame('COMPLETED', $job->fresh()->status);
+        $this->assertSame($machine->id, $job->fresh()->machine_id);
+        $this->assertSame('SENDER_MAPPING', $job->fresh()->machine_resolution_method);
+    }
+
+    public function test_first_mapping_old_backlog_with_missing_time_queues_only_one_targeted_retry(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->exceptionJob('first-mapping-retry', '7X-XL13');
+        $job->update([
+            'extracted_time' => null,
+            'confidence' => 0.5,
+            'exceptions' => ['LOW_CONFIDENCE', 'UNKNOWN_ASSET_CODE', 'MISSING_TIME'],
+        ]);
+        ZaloSenderMachineMapping::query()->create([
+            'sender_id' => 'first-mapping-retry',
+            'active_sender_id' => 'first-mapping-retry',
+            'machine_id' => $machine->id,
+            'valid_from' => '2026-09-11 09:32:00',
+            'source' => 'MANUAL_CORRECTION',
+        ]);
+
+        $report = app(DailyPhotoBacklogService::class)->report(['sender_id' => 'first-mapping-retry']);
+        $first = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'first-mapping-retry']);
+        $second = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'first-mapping-retry']);
+
+        $this->assertSame(1, $report['auto_recoverable']);
+        $this->assertSame('RETRY', $report['rows']->sole()['action']);
+        $this->assertSame(1, $first['queued_retry']);
+        $this->assertSame(0, $second['total']);
+        $this->assertSame('RETRY', $job->fresh()->status);
+        $this->assertSame('time', $job->fresh()->ocr_retry_reason);
+        $this->assertSame(1, $job->fresh()->ocr_retry_attempts);
+    }
+
+    public function test_mapping_changes_use_receipt_windows_and_never_retroactively_apply_current_mapping(): void
+    {
+        $machineA = $this->machine('T-XX0717');
+        $machineB = $this->machine('T-XL0345');
+        $jobs = collect([
+            '2026-09-03 06:01:00' => $this->exceptionJob('mapping-history', null),
+            '2026-09-08 06:01:00' => $this->exceptionJob('mapping-history', null),
+            '2026-09-11 06:01:00' => $this->exceptionJob('mapping-history', null),
+        ]);
+        foreach ($jobs as $receivedAt => $job) {
+            $job->attachment->message->update(['received_at' => $receivedAt]);
+            $job->update(['extracted_date' => substr($receivedAt, 0, 10)]);
+        }
+        ZaloSenderMachineMapping::query()->create([
+            'sender_id' => 'mapping-history',
+            'machine_id' => $machineA->id,
+            'valid_from' => '2026-09-01 00:00:00',
+            'valid_to' => '2026-09-10 00:00:00',
+            'source' => 'MANUAL_CORRECTION',
+        ]);
+        ZaloSenderMachineMapping::query()->create([
+            'sender_id' => 'mapping-history',
+            'active_sender_id' => 'mapping-history',
+            'machine_id' => $machineB->id,
+            'valid_from' => '2026-09-10 00:00:00',
+            'source' => 'MANUAL_CORRECTION',
+        ]);
+
+        $report = app(DailyPhotoBacklogService::class)->report(['sender_id' => 'mapping-history']);
+        $resolvedByJob = $report['rows']->keyBy(fn (array $row): int => $row['job']->id)
+            ->map(fn (array $row): int => $row['machine']->id);
+
+        $this->assertSame($machineA->id, $resolvedByJob[$jobs['2026-09-03 06:01:00']->id]);
+        $this->assertSame($machineA->id, $resolvedByJob[$jobs['2026-09-08 06:01:00']->id]);
+        $this->assertSame($machineB->id, $resolvedByJob[$jobs['2026-09-11 06:01:00']->id]);
+
+        app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'mapping-history']);
+
+        $this->assertSame($machineA->id, $jobs['2026-09-03 06:01:00']->fresh()->machine_id);
+        $this->assertSame($machineA->id, $jobs['2026-09-08 06:01:00']->fresh()->machine_id);
+        $this->assertSame($machineB->id, $jobs['2026-09-11 06:01:00']->fresh()->machine_id);
+    }
+
+    public function test_overlapping_mapping_history_is_not_auto_recoverable(): void
+    {
+        $machineA = $this->machine('T-XX0717');
+        $machineB = $this->machine('T-XL0345');
+        $job = $this->exceptionJob('overlapping-history', 'BAD-CODE');
+        foreach ([
+            [$machineA, '2026-09-01 00:00:00', '2026-09-20 00:00:00'],
+            [$machineB, '2026-09-05 00:00:00', '2026-09-15 00:00:00'],
+        ] as [$machine, $validFrom, $validTo]) {
+            ZaloSenderMachineMapping::query()->create([
+                'sender_id' => 'overlapping-history',
+                'machine_id' => $machine->id,
+                'valid_from' => $validFrom,
+                'valid_to' => $validTo,
+                'source' => 'MANUAL_CORRECTION',
+            ]);
+        }
+
+        $report = app(DailyPhotoBacklogService::class)->report(['sender_id' => 'overlapping-history']);
+        $result = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'overlapping-history']);
+
+        $this->assertSame(0, $report['mapped']);
+        $this->assertSame(0, $report['auto_recoverable']);
+        $this->assertContains('MACHINE_AMBIGUOUS', $report['rows']->sole()['reasons']);
+        $this->assertSame(1, $result['still_exception']);
+        $this->assertNull($job->fresh()->machine_id);
+    }
+
     public function test_repeating_same_recovery_does_not_duplicate_evidence_membership_case_or_reconciliation_row(): void
     {
         $machine = $this->machine('T-XX0717');

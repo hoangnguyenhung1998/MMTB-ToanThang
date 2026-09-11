@@ -1,9 +1,9 @@
 # Phase 16.10.5 — Auto Recovery OCR & Exception Backlog
 
-- Status: COMPLETED locally — implementation, regression tests and continuity documentation verified.
+- Status: COMPLETED locally — first-mapping backlog hotfix and regression tests verified.
 - Date: 2026-09-11
-- Branch: `phase16-10-5-auto-recovery`
-- Verified base: `8db9f8c` — merged Phase 16.10.4 hotfix.
+- Branch: `hotfix/phase-16-10-5-first-mapping-backlog`
+- Verified base: `3aa10f3` — Phase 16.10.5 plus direct idempotency regression.
 - Dependency: [16.10.4](PHASE-16.10.4.md).
 - Remote publication / merge / deployment / production recovery: NOT PERFORMED.
 
@@ -65,9 +65,16 @@ A normalized catalog collision is `MACHINE_AMBIGUOUS` and does not fall through 
 
 - Resolution remains start-inclusive/end-exclusive at message receipt time.
 - Later mapping edits begin at the edit time; delayed processing of an older message keeps the mapping effective at receipt.
-- First manual onboarding starts at the sender's earliest recorded message so the operator's explicit mapping can cover an existing waiting queue. Saving still does not run recovery.
+- In the backlog report/explicit recovery only, a message older than the first mapping may use that uniquely identifiable first mapping. Saving still does not run recovery.
+- A second or later mapping is never applied retroactively: normal receipt windows remain start-inclusive/end-exclusive, and overlapping candidates fail closed.
 - Automatic OCR learning does not replace any existing direct mapping.
 - Existing frozen resolution and `HUMAN` provenance remain authoritative on retry/reprocess.
+
+## First-mapping backlog hotfix
+
+Production-shaped mappings created after an existing exception queue had `valid_from` later than every old message, so the original strict receipt-window lookup reported all rows as unmapped. `DailyPhotoBacklogService` now applies one narrowly scoped exception: when no normal receipt-window candidate exists and the message predates all history, the earliest mapping is eligible only if it is unique. This rule is used by the read-only backlog report and the operator-triggered recovery action; it does not change live OCR resolution or automatically process data when a mapping is saved.
+
+Valid OCR machine matches still win, normalized OCR ambiguity never falls back, later mapping windows remain historical, and protected data remains untouched. A unique explicit sender mapping may anchor recovery when the aggregate OCR confidence is low because the machine candidate was invalid; existing date/time values are retained, while missing date/time still queues the existing single targeted retry.
 
 ## Exception reasons
 
@@ -143,7 +150,9 @@ Rollback must stop/revert the new worker before reverting Laravel. Migration rol
 
 Latest verified evidence:
 
-- Full Laravel suite: 264 tests, 1,275 assertions PASS.
+- Backlog targeted suite: 14 tests, 86 assertions PASS.
+- Existing receipt-history regression: 1 test, 12 assertions PASS.
+- Full Laravel suite: 269 tests, 1,310 assertions PASS.
 - OCR worker `unittest`: 38 tests PASS.
 - Pint `--test`: 18 changed PHP files PASS.
 - PHP `-l`: 18 changed PHP files PASS.
