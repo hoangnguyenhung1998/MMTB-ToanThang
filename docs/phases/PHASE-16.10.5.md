@@ -1,6 +1,6 @@
 # Phase 16.10.5 — Auto Recovery OCR & Exception Backlog
 
-- Status: COMPLETED locally — first-mapping backlog hotfix and regression tests verified.
+- Status: COMPLETED locally — first-mapping backlog and Daily Photo confidence hotfixes verified.
 - Date: 2026-09-11
 - Branch: `hotfix/phase-16-10-5-first-mapping-backlog`
 - Verified base: `3aa10f3` — Phase 16.10.5 plus direct idempotency regression.
@@ -74,13 +74,19 @@ A normalized catalog collision is `MACHINE_AMBIGUOUS` and does not fall through 
 
 Production-shaped mappings created after an existing exception queue had `valid_from` later than every old message, so the original strict receipt-window lookup reported all rows as unmapped. `DailyPhotoBacklogService` now applies one narrowly scoped exception: when no normal receipt-window candidate exists and the message predates all history, the earliest mapping is eligible only if it is unique. This rule is used by the read-only backlog report and the operator-triggered recovery action; it does not change live OCR resolution or automatically process data when a mapping is saved.
 
-Valid OCR machine matches still win, normalized OCR ambiguity never falls back, later mapping windows remain historical, and protected data remains untouched. A unique explicit sender mapping may anchor recovery when the aggregate OCR confidence is low because the machine candidate was invalid; existing date/time values are retained, while missing date/time still queues the existing single targeted retry.
+Valid OCR machine matches still win, normalized OCR ambiguity never falls back, later mapping windows remain historical, and protected data remains untouched. A unique explicit sender mapping may anchor recovery when the machine candidate is invalid; existing date/time values are retained, while missing date/time still queues the existing single targeted retry.
+
+## Daily Photo confidence hotfix
+
+OCR confidence remains stored and available as technical telemetry, but it is no longer a Daily Photo business rule. Daily TimeMark processing, automatic review and backlog recovery now require only a unique valid machine plus valid extracted date and time. Low confidence does not create an exception, block canonical/reconciliation processing, prevent a targeted missing-field retry, make a row manual, or appear as a Daily Photo operational reason. Historical `LOW_CONFIDENCE` values are ignored at read time so otherwise complete old exceptions can be explicitly recovered.
+
+This change is limited to Laravel Daily Photo business logic. Weekly Journal confidence handling, the OCR worker payload/response, API fields, database columns and schema are unchanged.
 
 ## Exception reasons
 
 Daily-photo operational reasons are standardized and labeled:
 
-`MACHINE_OCR_INVALID`, `MACHINE_NOT_FOUND`, `MACHINE_AMBIGUOUS`, `SENDER_MAPPING_MISSING`, `CAPTURE_TIME_MISSING`, `CAPTURE_DATE_MISSING`, `ASSIGNMENT_AMBIGUOUS`, `DUPLICATE_TIMESTAMP`, `PAIRING_AMBIGUOUS`, `OCR_RETRY_FAILED`, `LOW_CONFIDENCE`, `OTHER`.
+`MACHINE_OCR_INVALID`, `MACHINE_NOT_FOUND`, `MACHINE_AMBIGUOUS`, `SENDER_MAPPING_MISSING`, `CAPTURE_TIME_MISSING`, `CAPTURE_DATE_MISSING`, `ASSIGNMENT_AMBIGUOUS`, `DUPLICATE_TIMESTAMP`, `PAIRING_AMBIGUOUS`, `OCR_RETRY_FAILED`, `OTHER`.
 
 Legacy reason strings are mapped at read time. Pairing diagnostics are converted into the same vocabulary in Exception Center without rewriting history.
 
@@ -142,6 +148,9 @@ Rollback must stop/revert the new worker before reverting Laravel. Migration rol
 - [x] Targeted time retry success and failure provenance.
 - [x] Receipt-time mapping history regression retained.
 - [x] Mapping save does not recover; explicit action is idempotent.
+- [x] Low-confidence Daily Photo with unique machine/date/time continues canonical reconciliation.
+- [x] Historical low-confidence-only exception is ignored and remains explicitly recoverable.
+- [x] Low confidence does not suppress the one targeted retry for a genuinely missing field.
 - [x] Reviewed/HUMAN evidence protection.
 - [x] Read-only report no mutation.
 - [x] 1,000-evidence query-count guard.
@@ -150,12 +159,12 @@ Rollback must stop/revert the new worker before reverting Laravel. Migration rol
 
 Latest verified evidence:
 
-- Backlog targeted suite: 14 tests, 86 assertions PASS.
+- Daily Photo targeted regression set: 78 tests, 478 assertions PASS.
 - Existing receipt-history regression: 1 test, 12 assertions PASS.
-- Full Laravel suite: 269 tests, 1,310 assertions PASS.
+- Full Laravel suite: 270 tests, 1,322 assertions PASS.
 - OCR worker `unittest`: 38 tests PASS.
-- Pint `--test`: 18 changed PHP files PASS.
-- PHP `-l`: 18 changed PHP files PASS.
+- Pint `--test`: 8 current hotfix PHP files PASS.
+- PHP `-l`: 8 current hotfix PHP files PASS.
 - Python `compileall`: PASS.
 - Frontend `npm run build`: PASS, 60 modules transformed; existing Browserslist data-age warning only.
 - `git diff --check`: PASS.

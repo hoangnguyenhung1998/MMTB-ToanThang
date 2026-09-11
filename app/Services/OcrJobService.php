@@ -113,8 +113,13 @@ class OcrJobService
                 : null;
             $observedAssetCode = $observedAssetCode === '' ? null : $observedAssetCode;
             $resolution = config('daily_photos.enabled')
-                ? $this->machineResolver->resolve($job, $observedAssetCode, $data['date'] ?? null, $data['time'] ?? null,
-                    (float) $data['confidence'] >= (float) config('ocr.minimum_confidence'))
+                ? $this->machineResolver->resolve(
+                    $job,
+                    $observedAssetCode,
+                    $data['date'] ?? null,
+                    $data['time'] ?? null,
+                    true,
+                )
                 : ($legacyAsset = app(AssetCodeResolver::class)->resolve($observedAssetCode)) + [
                     'observed_asset_code' => $observedAssetCode,
                     'legacy_asset_code' => $observedAssetCode,
@@ -456,9 +461,6 @@ class OcrJobService
     {
         $exceptions = [];
 
-        if ((float) $data['confidence'] < (float) config('ocr.minimum_confidence')) {
-            $exceptions[] = 'LOW_CONFIDENCE';
-        }
         if (empty($data['date'])) {
             $exceptions[] = 'CAPTURE_DATE_MISSING';
         }
@@ -482,8 +484,7 @@ class OcrJobService
 
     private function retryFocus(OcrJob $job, array $data, array $resolution, array $exceptions): array
     {
-        if ((float) $data['confidence'] < (float) config('ocr.minimum_confidence')
-            || (int) $job->ocr_retry_attempts >= 1
+        if ((int) $job->ocr_retry_attempts >= 1
             || (int) $job->attempts >= max(1, (int) config('ocr.max_attempts'))) {
             return [];
         }

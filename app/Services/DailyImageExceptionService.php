@@ -158,8 +158,8 @@ class DailyImageExceptionService
                 $status = $this->canonicalStatus($case, $approved->count(), $pending);
                 $reasonCodes = $dailyJobs->flatMap(fn (OcrJob $job) => app(DailyPhotoExceptionReason::class)->forJob($job));
                 $reasonCodes->push(...collect($case?->pairing_diagnostics['codes'] ?? [])
-                    ->map(fn (string $code) => app(DailyPhotoExceptionReason::class)->normalize($code))
-                    ->filter(fn (string $code) => isset(DailyPhotoExceptionReason::LABELS[$code])));
+                    ->map(fn (string $code): ?string => app(DailyPhotoExceptionReason::class)->normalize($code))
+                    ->filter(fn (?string $code): bool => $code !== null && isset(DailyPhotoExceptionReason::LABELS[$code])));
                 if ($status !== 'AUTO_COMPLETE' && $reasonCodes->isEmpty()) {
                     $reasonCodes->push(match ($status) {
                         'DUPLICATE_TIME' => 'DUPLICATE_TIMESTAMP',

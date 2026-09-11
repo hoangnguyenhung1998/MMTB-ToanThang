@@ -54,10 +54,12 @@ class AutoRecoveryBacklogTest extends TestCase
         $job = $this->pendingJob('sender-helper');
         $mapping = $this->mapping($job, $mapped);
 
-        $completed = $this->complete($job, ['asset_code' => 't xl 0345', 'date' => '2026-09-10', 'time' => '06:15:00']);
+        $completed = $this->complete($job, ['asset_code' => 't xl 0345', 'date' => '2026-09-10', 'time' => '06:15:00', 'confidence' => 0.1]);
 
+        $this->assertSame('COMPLETED', $completed->status);
         $this->assertSame($image->id, $completed->machine_id);
         $this->assertSame('IMAGE_ASSET', $completed->machine_resolution_method);
+        $this->assertNull($completed->exceptions);
         $this->assertSame($mapped->id, $mapping->fresh()->machine_id);
         $this->assertDatabaseCount('zalo_sender_machine_mappings', 1);
     }
@@ -72,7 +74,7 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame($machine->id, $mapped->machine_id);
 
         $unmappedJob = $this->pendingJob('unmapped');
-        $retry = $this->complete($unmappedJob, ['date' => '2026-09-10', 'time' => '07:30:00']);
+        $retry = $this->complete($unmappedJob, ['date' => '2026-09-10', 'time' => '07:30:00', 'confidence' => 0.1]);
         $this->assertSame('RETRY', $retry->status);
         $this->assertSame('machine', $retry->ocr_retry_reason);
 
@@ -80,6 +82,7 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('EXCEPTION', $failed->status);
         $this->assertContains('SENDER_MAPPING_MISSING', $failed->exceptions);
         $this->assertContains('OCR_RETRY_FAILED', $failed->exceptions);
+        $this->assertNotContains('LOW_CONFIDENCE', $failed->exceptions);
     }
 
     public function test_targeted_time_retry_preserves_initial_fields_and_continues_automatically(): void
@@ -87,11 +90,11 @@ class AutoRecoveryBacklogTest extends TestCase
         $machine = $this->machine('T-XX0717');
         $job = $this->pendingJob('time-retry');
 
-        $retry = $this->complete($job, ['asset_code' => 'T.XX.0717', 'date' => '2026-09-10']);
+        $retry = $this->complete($job, ['asset_code' => 'T.XX.0717', 'date' => '2026-09-10', 'confidence' => 0.1]);
         $this->assertSame('RETRY', $retry->status);
         $this->assertSame('time', $retry->ocr_retry_reason);
 
-        $completed = $this->complete($retry, ['time' => '11:10:00']);
+        $completed = $this->complete($retry, ['time' => '11:10:00', 'confidence' => 0.2]);
         $this->assertSame('COMPLETED', $completed->status);
         $this->assertSame($machine->id, $completed->machine_id);
         $this->assertSame('2026-09-10', $completed->extracted_date->format('Y-m-d'));
@@ -155,6 +158,8 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('EXCEPTION', $job->fresh()->status);
         $this->assertSame(1, $report['mapped']);
         $this->assertSame(1, $report['auto_recoverable']);
+        $this->assertSame(0, $report['manual']);
+        $this->assertArrayNotHasKey('LOW_CONFIDENCE', $report['by_reason']);
         $this->assertSame($machine->id, $report['rows']->sole()['machine']->id);
 
         $result = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'first-mapping-backlog']);
@@ -163,6 +168,25 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('COMPLETED', $job->fresh()->status);
         $this->assertSame($machine->id, $job->fresh()->machine_id);
         $this->assertSame('SENDER_MAPPING', $job->fresh()->machine_resolution_method);
+    }
+
+    public function test_historical_low_confidence_only_is_not_a_reason_or_recovery_blocker(): void
+    {
+        $machine = $this->machine('T-XX0717');
+        $job = $this->exceptionJob('obsolete-confidence', $machine->asset_code);
+        $job->update(['confidence' => 0.1, 'exceptions' => ['LOW_CONFIDENCE']]);
+
+        $report = app(DailyPhotoBacklogService::class)->report(['sender_id' => 'obsolete-confidence']);
+
+        $this->assertSame(1, $report['auto_recoverable']);
+        $this->assertSame([], $report['rows']->sole()['reasons']);
+        $this->assertArrayNotHasKey('LOW_CONFIDENCE', $report['by_reason']);
+
+        $result = app(DailyPhotoBacklogService::class)->recover(['sender_id' => 'obsolete-confidence']);
+
+        $this->assertSame(1, $result['recovered']);
+        $this->assertSame('COMPLETED', $job->fresh()->status);
+        $this->assertSame($machine->id, $job->fresh()->machine_id);
     }
 
     public function test_first_mapping_old_backlog_with_missing_time_queues_only_one_targeted_retry(): void

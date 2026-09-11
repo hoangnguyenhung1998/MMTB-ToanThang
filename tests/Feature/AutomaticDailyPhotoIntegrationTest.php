@@ -321,7 +321,7 @@ class AutomaticDailyPhotoIntegrationTest extends TestCase
         $this->assertDatabaseCount('zalo_sender_machine_mappings', 0);
     }
 
-    public function test_low_confidence_ocr_never_learns_sender_mapping_or_hours(): void
+    public function test_low_confidence_daily_photo_with_required_fields_continues_canonical_reconciliation(): void
     {
         [$period,$row] = $this->fixture('VT-XL1137');
         $job = $this->pendingPhoto($row, '06:15');
@@ -329,10 +329,11 @@ class AutomaticDailyPhotoIntegrationTest extends TestCase
         $claimed = $service->claim('uncertain', ['DAILY_TIMEMARK']);
         $completed = $service->complete($claimed, ['worker_id' => 'uncertain', 'attempt' => $claimed->attempts, 'asset_code' => 'VT-XL1137',
             'date' => '2026-09-09', 'time' => '06:15:00', 'confidence' => 0.1]);
-        $this->assertSame('EXCEPTION', $completed->status);
-        $this->assertNull($completed->daily_photo_case_id);
-        $this->assertDatabaseCount('zalo_sender_machine_mappings', 0);
-        $this->assertNull($row->fresh()->regular_minutes);
+        $this->assertSame('COMPLETED', $completed->status);
+        $this->assertNotNull($completed->daily_photo_case_id);
+        $this->assertNull($completed->exceptions);
+        $this->assertDatabaseCount('zalo_sender_machine_mappings', 1);
+        $this->assertSame(['06:15'], app(DailyPhotoSyncService::class)->evidenceTimes($row->fresh())->all());
     }
 
     public function test_existing_legacy_mapping_is_visible_and_retained_when_ocr_observes_another_machine(): void
