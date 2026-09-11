@@ -192,7 +192,12 @@ class OcrWorker:
             self._ensure_active(heartbeat, started_at, job_id, attempt)
 
         timemark_started = time.monotonic()
-        result = self.recognizer.recognize(image_path, progress=progress)
+        retry_focus = list(job.get("retry_focus") or [])
+        result = self.recognizer.recognize(
+            image_path,
+            progress=progress,
+            focus=retry_focus or None,
+        )
         self._ensure_active(heartbeat, started_at, job_id, attempt)
         LOGGER.info(
             "TimeMark OCR finished job_id=%s attempt=%s worker_id=%s duration_ms=%s",
@@ -206,9 +211,10 @@ class OcrWorker:
         saved = self.client.complete_timemark(job_id, attempt, result.api_payload())
         self.health.job_succeeded()
         LOGGER.info(
-            "Completed TimeMark OCR job %s attempt=%s: machine=%s date=%s time=%s status=%s",
+            "Completed TimeMark OCR job %s attempt=%s focus=%s: machine=%s date=%s time=%s status=%s",
             job_id,
             attempt,
+            ",".join(retry_focus) if retry_focus else "all",
             result.asset_code or "?",
             result.captured_date or "?",
             result.captured_time or "?",

@@ -45,6 +45,26 @@ class TimeMarkTest(unittest.TestCase):
         self.assertEqual("asset", region)
         self.assertGreaterEqual(duration_ms, 0)
 
+    def test_targeted_machine_retry_skips_time_only_region_and_stops_on_machine(self):
+        engine = Mock()
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", return_value=(["T X X 0 7 1 7"], [0.99])):
+            result = TimeMarkRecognizer(["T-XX0717"], engine).recognize(Path("test.jpg"), focus=["machine"])
+
+        self.assertEqual("T-XX0717", result.asset_code)
+        self.assertEqual(1, engine.call_count)
+
+    def test_normalized_catalog_collision_does_not_select_a_machine(self):
+        engine = Mock()
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", return_value=(["T_XX_0717"], [0.99])):
+            result = TimeMarkRecognizer(["T-XX0717", "T XX 0717"], engine).recognize(
+                Path("test.jpg"), focus=["machine"]
+            )
+
+        self.assertEqual("T-XX0717", result.asset_code)
+        self.assertLess(result.confidence, 0.85)
+
 
 if __name__ == "__main__":
     unittest.main()

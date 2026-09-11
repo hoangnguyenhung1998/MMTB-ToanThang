@@ -4,10 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\OcrJob;
 use App\Models\ReconciliationRow;
+use App\Services\DailyPhotoBacklogService;
+use App\Services\DailyPhotoExceptionReason;
 use App\Services\DailyPhotoWorkflowService;
 use App\Services\ZaloSenderDriverService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 
 class DailyPhotoController extends Controller
@@ -35,12 +36,25 @@ class DailyPhotoController extends Controller
         return back()->with('success', 'Đã làm tròn và phân bổ giờ trên một dòng.');
     }
 
-    public function settings()
+    public function settings(DailyPhotoBacklogService $backlog)
     {
-        return view('daily-photos.settings', ['machines' => \App\Models\Machine::orderBy('asset_code')->get(['id', 'asset_code']),
-            'legacyLinks' => app(\App\Services\ZaloSenderMachineService::class)->legacyCurrent(),
-            'links' => \App\Models\ZaloSenderMachineMapping::with('machine')->whereNull('valid_to')->orderByDesc('id')->paginate(30),
-            'senders' => DB::table('zalo_messages')->whereNotNull('sender_id')->select('sender_id', 'sender_name')->distinct()->limit(500)->get()]);
+        $report = $backlog->report();
+        $legacy = app(\App\Services\ZaloSenderMachineService::class)->legacyCurrent()->keyBy('sender_id');
+        $senders = $backlog->senderDashboard($report)->map(function (array $row) use ($legacy): array {
+            if (! $row['mapping'] && $legacy->has($row['sender_id'])) {
+                $row['mapping'] = $legacy->get($row['sender_id']);
+                $row['legacy_mapping'] = true;
+            }
+
+            return $row;
+        });
+
+        return view('daily-photos.settings', [
+            'machines' => \App\Models\Machine::orderBy('asset_code')->get(['id', 'asset_code']),
+            'senders' => $senders,
+            'report' => $report,
+            'reasonLabels' => DailyPhotoExceptionReason::LABELS,
+        ]);
     }
 
     public function link(Request $request, ZaloSenderDriverService $service)
@@ -49,7 +63,9 @@ class DailyPhotoController extends Controller
             $data = $request->validate(['sender_id' => ['required', 'string', 'max:100'], 'machine_id' => ['required', 'integer', 'exists:machines,id']]);
             app(\App\Services\ZaloSenderMachineService::class)->save($data['sender_id'], (int) $data['machine_id'], $request->user()->id);
 
-            return back()->with('success', 'Đã cập nhật máy mặc định cho ảnh nhận từ bây giờ. Lịch sử được giữ nguyên.');
+            $pending = app(DailyPhotoBacklogService::class)->report(['sender_id' => $data['sender_id']])['auto_recoverable'];
+
+            return back()->with('success', "Đã cập nhật máy mặc định và giữ nguyên lịch sử. Có {$pending} ảnh đang chờ có thể xử lý lại; chưa ảnh nào được tự động xử lý.");
         }
         $data = $request->validate(['sender_id' => ['required', 'string', 'max:100'], 'driver_id' => ['required', 'integer', 'exists:drivers,id'],
             'valid_from' => ['required', 'date_format:Y-m-d\TH:i'], 'valid_to' => ['nullable', 'date_format:Y-m-d\TH:i', 'after:valid_from']]);
@@ -61,6 +77,24 @@ class DailyPhotoController extends Controller
         $service->link($data, $request->user()->id);
 
         return back()->with('success', 'Đã lưu ánh xạ. Dùng OCR lại với ảnh chưa xác định máy.');
+    }
+
+    public function recover(Request $request, DailyPhotoBacklogService $backlog)
+    {
+        $data = $request->validate([
+            'sender_id' => ['required', 'string', 'max:100'],
+            'date_from' => ['nullable', 'date_format:Y-m-d'],
+            'date_to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
+            'reason' => ['nullable', 'in:'.implode(',', array_keys(DailyPhotoExceptionReason::LABELS))],
+            'command_center_id' => ['nullable', 'integer', 'exists:command_centers,id'],
+            'project_id' => ['nullable', 'integer', 'exists:projects,id'],
+        ]);
+        $result = $backlog->recover(array_filter($data, fn ($value) => filled($value)));
+
+        return back()->with('success', sprintf(
+            'Đã kiểm tra %d ảnh: recovered %d, xếp hàng OCR retry %d, còn exception %d, bỏ qua dữ liệu được bảo vệ %d.',
+            $result['total'], $result['recovered'], $result['queued_retry'], $result['still_exception'], $result['skipped_protected'],
+        ));
     }
 
     public function closeLink(Request $request, int $link, ZaloSenderDriverService $service)

@@ -130,7 +130,10 @@ class AssetMatcher:
     def __init__(self, asset_codes: list[str]):
         normalized = [normalize_asset(code) for code in asset_codes]
         self.asset_codes = sorted({code for code in normalized if code}, key=len, reverse=True)
-        self.compact_codes = {self._compact(code): code for code in self.asset_codes}
+        compact_codes: dict[str, list[str]] = {}
+        for code in self.asset_codes:
+            compact_codes.setdefault(self._compact(code), []).append(code)
+        self.compact_codes = compact_codes
 
     @staticmethod
     def _compact(value: object) -> str:
@@ -175,9 +178,9 @@ class AssetMatcher:
 
     def match(self, text: str) -> tuple[str | None, float, str]:
         whole = self._compact(text)
-        for compact, canonical in self.compact_codes.items():
-            if compact and compact in whole:
-                return canonical, 1.0, canonical
+        for compact, canonical_codes in self.compact_codes.items():
+            if compact and compact in whole and len(canonical_codes) == 1:
+                return canonical_codes[0], 1.0, canonical_codes[0]
 
         candidates = self._candidates(text)
         observed_code = normalize_asset(candidates[0]) if candidates else None
@@ -186,10 +189,11 @@ class AssetMatcher:
         safe_matches: list[tuple[int, str, str]] = []
         for raw in candidates:
             observed = self._compact(raw)
-            for compact, canonical in self.compact_codes.items():
-                substitutions = self._confusion_count(observed, compact)
-                if substitutions is not None:
-                    safe_matches.append((substitutions, canonical, raw.strip()))
+            for compact, canonical_codes in self.compact_codes.items():
+                for canonical in canonical_codes:
+                    substitutions = self._confusion_count(observed, compact)
+                    if substitutions is not None:
+                        safe_matches.append((substitutions, canonical, raw.strip()))
 
         if safe_matches:
             minimum = min(match[0] for match in safe_matches)

@@ -287,28 +287,25 @@ class AutomaticDailyPhotoIntegrationTest extends TestCase
         $this->get(route('ocr-reviews.show', $job))->assertOk()->assertSee('Lưu chỉnh sửa')->assertDontSee('Duyệt đúng');
     }
 
-    public function test_missing_capture_time_keeps_date_only_evidence_and_blank_hours(): void
+    public function test_missing_capture_time_is_retried_once_then_stays_manual_exception_without_inventing_hours(): void
     {
         [$period,$row] = $this->fixture('VT-XL1137');
         $job = $this->pendingPhoto($row, '06:15');
         $row->delete();
         $service = app(\App\Services\OcrJobService::class);
         $claimed = $service->claim('no-time', ['DAILY_TIMEMARK']);
-        $completed = $service->complete($claimed, ['worker_id' => 'no-time', 'attempt' => $claimed->attempts, 'date' => '2026-09-09', 'asset_code' => 'VT-XL1137', 'confidence' => 0.99]);
-        $this->assertSame('COMPLETED', $completed->status);
-        $this->assertNotNull($completed->daily_photo_case_id);
-        $this->assertNull($completed->dailyPhotoCaseEvidence->capture_datetime);
-        $fresh = $period->rows()->sole();
-        $this->assertNull($fresh->regular_minutes);
-        $this->assertSame([], app(DailyPhotoSyncService::class)->evidenceTimes($fresh)->all());
-        $this->assertSame('COLLECTING', $completed->dailyPhotoCase->status);
-        $this->assertSame(0, $completed->dailyPhotoCase->intervals()->count());
-        $file = app(DailyImageArchiveService::class)->createZip(['date_from' => '2026-09-09', 'date_to' => '2026-09-09']);
-        $zip = new \ZipArchive;
-        $zip->open($file['path']);
-        $this->assertSame(2, $zip->numFiles);
-        $zip->close();
-        unlink($file['path']);
+        $retry = $service->complete($claimed, ['worker_id' => 'no-time', 'attempt' => $claimed->attempts, 'date' => '2026-09-09', 'asset_code' => 'VT-XL1137', 'confidence' => 0.99]);
+        $this->assertSame('RETRY', $retry->status);
+        $this->assertSame('time', $retry->ocr_retry_reason);
+        $this->assertNull($retry->daily_photo_case_id);
+
+        $claimedAgain = $service->claim('no-time', ['DAILY_TIMEMARK']);
+        $completed = $service->complete($claimedAgain, ['worker_id' => 'no-time', 'attempt' => $claimedAgain->attempts, 'confidence' => 0.99]);
+        $this->assertSame('EXCEPTION', $completed->status);
+        $this->assertContains('CAPTURE_TIME_MISSING', $completed->exceptions);
+        $this->assertContains('OCR_RETRY_FAILED', $completed->exceptions);
+        $this->assertNull($completed->daily_photo_case_id);
+        $this->assertDatabaseCount('reconciliation_rows', 0);
     }
 
     public function test_historical_unresolved_ocr_can_resync_from_its_own_code_without_learning_current_mapping(): void

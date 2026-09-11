@@ -102,32 +102,49 @@ class OcrJobService
                 ]);
             }
 
+            $isTargetedRetry = (int) $job->ocr_retry_attempts > 0 && filled($job->ocr_retry_reason);
+            $retryExtraction = $isTargetedRetry ? $this->extractionSnapshot($data) : null;
+            if ($isTargetedRetry) {
+                $data = $this->mergeTargetedRetryResult($job, $data);
+            }
+
             $observedAssetCode = isset($data['asset_code'])
                 ? strtoupper(trim((string) $data['asset_code']))
                 : null;
             $observedAssetCode = $observedAssetCode === '' ? null : $observedAssetCode;
-            $imageMachine = $observedAssetCode
-                ? Machine::query()->where('asset_code', $observedAssetCode)->first()
-                : null;
             $resolution = config('daily_photos.enabled')
                 ? $this->machineResolver->resolve($job, $observedAssetCode, $data['date'] ?? null, $data['time'] ?? null,
                     (float) $data['confidence'] >= (float) config('ocr.minimum_confidence'))
-                : [
+                : ($legacyAsset = app(AssetCodeResolver::class)->resolve($observedAssetCode)) + [
                     'observed_asset_code' => $observedAssetCode,
                     'legacy_asset_code' => $observedAssetCode,
-                    'image_machine' => $imageMachine,
-                    'machine' => $imageMachine,
-                    'method' => $imageMachine ? DailyPhotoMachineResolutionService::IMAGE_ASSET : null,
+                    'asset_resolution_status' => $legacyAsset['status'],
+                    'image_machine' => $legacyAsset['machine'],
+                    'machine' => $legacyAsset['machine'],
+                    'method' => $legacyAsset['machine'] ? DailyPhotoMachineResolutionService::IMAGE_ASSET : null,
                     'sender_driver_link_id' => null,
                     'machine_driver_history_id' => null,
                     'metadata' => [
                         'version' => config('daily_photos.foundation_version'),
-                        'image_asset_resolved_machine_id' => $imageMachine?->id,
+                        'image_asset_resolved_machine_id' => $legacyAsset['machine']?->id,
                     ],
                 ];
             $machine = $resolution['machine'];
             $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
-            $exceptions = $this->detectExceptions($job, $data, $observedAssetCode, $imageMachine, $machine, $shift);
+            $exceptions = $this->detectExceptions($data, $resolution, $shift);
+            $retryFocus = $this->retryFocus($job, $data, $resolution, $exceptions);
+            $willRetry = config('daily_photos.enabled') && ! $isTargetedRetry && $retryFocus !== [];
+            if ($isTargetedRetry && $exceptions !== []) {
+                $exceptions[] = 'OCR_RETRY_FAILED';
+                $exceptions = array_values(array_unique($exceptions));
+            }
+            $finalSource = match (true) {
+                $willRetry => null,
+                $resolution['method'] === DailyPhotoMachineResolutionService::HUMAN => 'MANUAL',
+                $resolution['method'] === DailyPhotoMachineResolutionService::SENDER_MAPPING => 'SENDER_MAPPING',
+                $isTargetedRetry => 'OCR_RETRY',
+                default => 'OCR_INITIAL',
+            };
             $metadata = [
                 'machine_source' => match ($resolution['method']) {
                     DailyPhotoMachineResolutionService::IMAGE_ASSET => 'IMAGE',
@@ -136,6 +153,14 @@ class OcrJobService
                     default => 'UNRESOLVED',
                 },
                 'image_fingerprint' => $data['image_fingerprint'] ?? null,
+                'ocr_recovery' => [
+                    'initial_extraction' => $job->ocr_initial_extraction ?? $this->extractionSnapshot($data),
+                    'retry_reason' => $willRetry ? implode(',', $retryFocus) : $job->ocr_retry_reason,
+                    'retry_attempt' => $willRetry || $isTargetedRetry ? 1 : 0,
+                    'retry_extraction' => $retryExtraction,
+                    'final_chosen_result' => $willRetry ? null : $this->extractionSnapshot($data),
+                    'source' => $finalSource,
+                ],
             ];
             if (config('daily_photos.enabled') && $machine && ! empty($data['date']) && ! empty($metadata['image_fingerprint'])) {
                 $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
@@ -157,7 +182,7 @@ class OcrJobService
                 'daily_metadata' => $metadata,
                 'machine_id' => $machine?->id,
                 'document_type' => 'DAILY_TIMEMARK',
-                'status' => $exceptions === [] || (config('daily_photos.enabled') && $machine && ! empty($data['date']) && $exceptions === ['MISSING_TIME']) ? 'COMPLETED' : 'EXCEPTION',
+                'status' => $willRetry ? 'RETRY' : ($exceptions === [] ? 'COMPLETED' : 'EXCEPTION'),
                 'extracted_date' => $data['date'] ?? null,
                 'extracted_time' => $data['time'] ?? null,
                 'asset_code' => $resolution['legacy_asset_code'],
@@ -175,26 +200,30 @@ class OcrJobService
                 'confidence' => $data['confidence'],
                 'raw_text' => $data['raw_text'] ?? null,
                 'exceptions' => $exceptions === [] ? null : $exceptions,
+                'ocr_initial_extraction' => $job->ocr_initial_extraction ?? $this->extractionSnapshot($data),
+                'ocr_retry_reason' => $willRetry ? implode(',', $retryFocus) : $job->ocr_retry_reason,
+                'ocr_retry_attempts' => $willRetry ? 1 : (int) $job->ocr_retry_attempts,
+                'ocr_final_source' => $finalSource,
                 'error_message' => null,
-                'processed_at' => now(),
+                'processed_at' => $willRetry ? null : now(),
                 'lease_expires_at' => null,
             ]);
 
             $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
 
             $completed = $job->fresh(['attachment.message', 'machine']);
-            if (config('daily_photos.enabled')) {
+            if (config('daily_photos.enabled') && ! $willRetry) {
                 $this->dailyPhotoCases->materialize($completed);
             }
 
             return $job->fresh(['attachment.message', 'machine', 'dailyPhotoCase']);
         }, 3);
 
-        if (config('daily_photos.enabled') && $completed->machine_id && ! empty($data['date'])) {
+        if (config('daily_photos.enabled') && $completed->status === 'COMPLETED' && $completed->machine_id && $completed->extracted_date) {
             try {
                 \App\Models\ReconciliationPeriod::query()->whereIn('status', ['GENERATED', 'REVIEWING'])
-                    ->whereDate('date_from', '<=', $data['date'])->whereDate('date_to', '>=', \Carbon\Carbon::parse($data['date'])->subDay()->toDateString())->get()
-                    ->each(fn ($period) => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period, $completed->machine_id, $data['date']));
+                    ->whereDate('date_from', '<=', $completed->extracted_date)->whereDate('date_to', '>=', $completed->extracted_date->copy()->subDay())->get()
+                    ->each(fn ($period) => app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period, $completed->machine_id, $completed->extracted_date->format('Y-m-d')));
             } catch (\Throwable $exception) {
                 // OCR completion is durable. Scheduled/manual sync can retry independently.
                 report($exception);
@@ -423,34 +452,78 @@ class OcrJobService
         return $jobs->count() + $exhausted->count();
     }
 
-    private function detectExceptions(
-        OcrJob $job,
-        array $data,
-        ?string $observedAssetCode,
-        ?Machine $imageMachine,
-        ?Machine $resolvedMachine,
-        ?string $shift,
-    ): array {
+    private function detectExceptions(array $data, array $resolution, ?string $shift): array
+    {
         $exceptions = [];
 
         if ((float) $data['confidence'] < (float) config('ocr.minimum_confidence')) {
             $exceptions[] = 'LOW_CONFIDENCE';
         }
         if (empty($data['date'])) {
-            $exceptions[] = 'MISSING_DATE';
+            $exceptions[] = 'CAPTURE_DATE_MISSING';
         }
         if (empty($data['time'])) {
-            $exceptions[] = 'MISSING_TIME';
+            $exceptions[] = 'CAPTURE_TIME_MISSING';
         } elseif ($shift === null) {
-            $exceptions[] = 'UNCLASSIFIED_TIME';
+            $exceptions[] = 'CAPTURE_TIME_MISSING';
         }
-        if (($observedAssetCode === null || $observedAssetCode === '') && ! $resolvedMachine) {
-            $exceptions[] = 'MISSING_ASSET_CODE';
-        } elseif ($observedAssetCode && ! $imageMachine && ! $resolvedMachine) {
-            $exceptions[] = 'UNKNOWN_ASSET_CODE';
+        if (! $resolution['machine']) {
+            $exceptions[] = match ($resolution['asset_resolution_status'] ?? null) {
+                'AMBIGUOUS' => 'MACHINE_AMBIGUOUS',
+                'NOT_FOUND' => 'MACHINE_OCR_INVALID',
+                default => data_get($resolution, 'metadata.sender_resolution_status') === 'AMBIGUOUS_MAPPING'
+                    ? 'MACHINE_AMBIGUOUS'
+                    : 'SENDER_MAPPING_MISSING',
+            };
         }
 
-        return $exceptions;
+        return array_values(array_unique($exceptions));
+    }
+
+    private function retryFocus(OcrJob $job, array $data, array $resolution, array $exceptions): array
+    {
+        if ((float) $data['confidence'] < (float) config('ocr.minimum_confidence')
+            || (int) $job->ocr_retry_attempts >= 1
+            || (int) $job->attempts >= max(1, (int) config('ocr.max_attempts'))) {
+            return [];
+        }
+
+        if (! $resolution['machine'] && in_array($resolution['asset_resolution_status'] ?? null, ['MISSING', 'NOT_FOUND'], true)) {
+            return ['machine'];
+        }
+
+        return collect([
+            empty($data['date']) ? 'date' : null,
+            empty($data['time']) ? 'time' : null,
+        ])->filter()->values()->all();
+    }
+
+    private function mergeTargetedRetryResult(OcrJob $job, array $data): array
+    {
+        $initial = $job->ocr_initial_extraction ?? [];
+        $focus = collect(explode(',', (string) $job->ocr_retry_reason));
+        $targetFields = collect([
+            'machine' => 'asset_code',
+            'date' => 'date',
+            'time' => 'time',
+        ])->only($focus->all())->values()->all();
+        foreach (['date', 'time', 'asset_code', 'operator_name', 'phone', 'work_location', 'raw_text', 'image_fingerprint'] as $field) {
+            if ((! in_array($field, $targetFields, true) || blank($data[$field] ?? null)) && filled($initial[$field] ?? null)) {
+                $data[$field] = $initial[$field];
+            }
+        }
+
+        $data['confidence'] = min((float) ($data['confidence'] ?? 0), (float) ($initial['confidence'] ?? 0));
+
+        return $data;
+    }
+
+    private function extractionSnapshot(array $data): array
+    {
+        return collect($data)->only([
+            'date', 'time', 'asset_code', 'operator_name', 'phone', 'work_location',
+            'confidence', 'raw_text', 'image_fingerprint',
+        ])->all();
     }
 
     private function classifyShift(string $time): ?string

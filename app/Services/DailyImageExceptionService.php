@@ -156,6 +156,17 @@ class DailyImageExceptionService
                     ? $case->evidenceMemberships->pluck('ocrJob')->filter()->where('status', 'COMPLETED')->where('review_status', '!=', 'REJECTED')->values()
                     : $dailyJobs->whereIn('review_status', self::APPROVED)->values();
                 $status = $this->canonicalStatus($case, $approved->count(), $pending);
+                $reasonCodes = $dailyJobs->flatMap(fn (OcrJob $job) => app(DailyPhotoExceptionReason::class)->forJob($job));
+                $reasonCodes->push(...collect($case?->pairing_diagnostics['codes'] ?? [])
+                    ->map(fn (string $code) => app(DailyPhotoExceptionReason::class)->normalize($code))
+                    ->filter(fn (string $code) => isset(DailyPhotoExceptionReason::LABELS[$code])));
+                if ($status !== 'AUTO_COMPLETE' && $reasonCodes->isEmpty()) {
+                    $reasonCodes->push(match ($status) {
+                        'DUPLICATE_TIME' => 'DUPLICATE_TIMESTAMP',
+                        'PAIRING_AMBIGUOUS' => 'PAIRING_AMBIGUOUS',
+                        default => 'OTHER',
+                    });
+                }
 
                 return $day + [
                     'approved_count' => $approved->count(),
@@ -164,6 +175,8 @@ class DailyImageExceptionService
                     'status' => $status,
                     'status_label' => $this->statusLabel($status),
                     'is_exception' => $status !== 'AUTO_COMPLETE',
+                    'reason_codes' => $reasonCodes->unique()->values()->all(),
+                    'reason_labels' => app(DailyPhotoExceptionReason::class)->labels($reasonCodes->unique()->values()->all()),
                     'sessions' => $case?->intervals->values()->map(fn ($interval, int $index) => [
                         'number' => $index + 1,
                         'start' => $interval->startEvidence?->ocrJob,
