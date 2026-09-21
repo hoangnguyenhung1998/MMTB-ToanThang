@@ -1,71 +1,68 @@
 # Project State
 
-- Updated: 2026-09-11
-- Current Phase: 16.10.5 — Auto Recovery OCR & Exception Backlog
-- Status: COMPLETED locally — first-mapping backlog and Daily Photo confidence hotfixes verified.
-- Branch: `hotfix/phase-16-10-5-first-mapping-backlog`
-- Verified parent/base: `3aa10f3` — Phase 16.10.5 plus direct idempotency regression.
-- Initial working tree: clean.
-- First-mapping checkpoint: `9dc4bbb` (`fix: allow first sender mapping to recover old OCR backlog`). Current confidence checkpoint: local commit containing this document, message `fix: remove OCR confidence from daily photo decisions`; resolve its hash with `git log -1`.
-- Push / PR / merge / production deploy / production migration / backlog recovery / runtime restart: NOT PERFORMED and not authorized.
+- Updated: 2026-09-22
+- Current work: Production hotfix — Daily Photo large-volume reconciliation / allocate-times.
+- Status: COMPLETED locally — implementation and required checks PASS; review/publication pending.
+- Branch: `hotfix/daily-photo-large-volume-reconciliation`.
+- Verified production base: `5839be6` (`Merge pull request #46 ... remove-low-confidence`).
+- Current HEAD: local checkpoint commit containing this document; resolve with `git rev-parse HEAD`.
+- Push / PR / merge / deploy / production migration / production data action: NOT PERFORMED.
 
-## Completed milestone
+## Verified root cause
 
-- Added a unique canonical asset-code resolver: case-insensitive, Unicode-safe ASCII conversion, and removal of whitespace plus `- . _ / : ;`; normalized collisions fail closed.
-- Invalid/missing OCR candidates now fall back to the direct sender mapping effective at message receipt; a valid OCR machine remains authoritative.
-- Added one bounded targeted OCR retry with `retry_focus`, initial/final extraction provenance and `OCR_RETRY_FAILED` terminal classification.
-- Updated the RapidOCR worker to scan only relevant regions for targeted retries and to keep normalized catalog collisions non-authoritative.
-- Added normalized exception reason labels to Exception Center.
-- Added sender dashboard counts and an explicit `XỬ LÝ ẢNH ĐANG CHỜ` action; saving mapping does not run recovery.
-- Added read-only `ocr:daily-backlog-report` and shared chunked/idempotent backlog analysis/recovery service.
-- Added additive provenance migration; no data backfill exists in the migration.
-- Hotfix: backlog report/explicit recovery may use the unique first mapping for messages received before that mapping began; later mappings remain strictly receipt-effective and overlap remains fail-closed.
-- Hotfix: OCR confidence remains telemetry only and is no longer an exception, blocker, warning, retry gate, auto-recovery condition or manual reason in Daily Photo business logic.
-- Daily Photo completion/recovery requires only a unique valid machine plus valid extracted date and time; missing fields keep the existing one-retry limit and protected data remains unchanged.
+`POST /reconciliation-periods/{period}/allocate-times` called `DailyPhotoResyncService`, which held one period-wide transaction while loading every matching OCR job and its relations. It then re-materialized every job, queried assignments per job and recomputed cases before `DailyPhotoSyncService` loaded every row/source/case for the period in another transaction. Row creation and `DailyTimeAllocator` also queried inside row loops. At production volume this retained a large Eloquent graph and a database transaction/connection long enough to reach the 30-second PHP limit and `MySQL server has gone away`.
+
+The earlier `bf001e8` hotfix removed the GET-render N+1 and delayed pairing recomputation, but POST still hydrated/reprocessed the full period and the downstream sync/allocator still contained period-wide collections and row-level queries.
+
+## Completed hotfix
+
+- Resync selects only OCR jobs without canonical evidence membership and processes them with stable `chunkById(100)` batches.
+- Assignment candidates are bulk-loaded and locked once per materialization batch; already-canonical jobs are not materialized or paired again.
+- Canonical pairing remains inside the bounded materialization batch and preserves existing case/evidence/interval uniqueness and idempotency guards.
+- Reconciliation row creation uses batched canonical cases, associative existing-row lookups and `insertOrIgnore` under the existing unique identity.
+- Downstream synchronization processes row IDs in batches of 100; each batch has its own transaction, row locks, source/case caches and allocator context.
+- The allocator can use the preloaded same-machine context, removing per-row overlap and regular-budget queries while preserving the existing HC/OT/rounding rules.
+- Protected manual/REVIEWED/CONFIRMED/REJECTED rows retain their saved values and provenance; unchanged reruns do not write them again.
+- GET/render remains read-only and does not invoke heavy synchronization.
+- Synchronous UX is retained: the 1,001-evidence regression completes far below the hosting limit, so no queue/worker/deployment architecture was added.
 
 ## Latest verified checks
 
-PHP executable: `C:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe`.
+PHP executable: `D:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe`.
 
-| Command / check | Result |
+| Check | Result |
 |---|---|
-| Daily Photo targeted regression set | PASS: 78 tests, 478 assertions |
-| Existing receipt-history targeted regression | PASS: 1 test, 12 assertions |
-| Full Laravel `artisan test --compact` | PASS: 270 tests, 1,322 assertions |
-| OCR worker `python -m unittest discover -s ocr-worker/tests -p test_*.py` | PASS: 38 tests |
-| 1,000-evidence backlog report query-count guard | PASS within targeted suite |
-| Pint `--test` on current hotfix PHP files | PASS: 8 files |
-| PHP `-l` on current hotfix PHP files | PASS: 8 files |
-| Python `compileall` | PASS |
-| `npm run build` | PASS: 60 modules transformed; existing Browserslist data-age warning only |
-| `git diff --check` | PASS |
+| Large-volume regression | PASS: 1,001 evidence, 500 canonical cases/intervals/rows; 105 SELECTs on initial sync, 105 on idempotent rerun, 0 rerun writes; measured sync 1.805s (3.68s including fixture/test) |
+| Batch failure/retry regression | PASS: second batch rollback left the first batch committed; retry completed the remaining 400 rows without duplicates or protected-data overwrite |
+| Targeted Daily Photo/reconciliation suite | PASS: 78 tests, 405 assertions |
+| Full Laravel `artisan test --compact` | PASS: 272 tests, 1,362 assertions, 30.17s |
+| Pint on changed PHP files | PASS: 5 files; one style issue fixed |
+| PHP syntax on changed application services and large-volume test | PASS |
+| `git diff --check` | PASS after final documentation update |
 
-Tests use SQLite in-memory databases. No migration was applied to the application's normal database. No production report/recovery was run.
+Tests use SQLite in-memory databases. Production MySQL data distribution and the live browser request remain NOT VERIFIED.
 
-## Key decisions / safety
+## Index / migration decision
 
-- Normalization is exact canonical-key matching only; no fuzzy match.
-- A normalized collision is always ambiguous and does not use sender fallback.
-- First manual sender onboarding can cover its existing waiting queue from the earliest recorded message; later mapping changes begin now and preserve receipt-time history.
-- Daily Photo confidence is retained as telemetry but never participates in business classification or workflow decisions; Weekly Journal confidence behavior is unchanged.
-- One automatic retry maximum; unresolved results remain manual exceptions and never invent time/date.
-- Reviewed/corrected/rejected/HUMAN OCR and manual/reviewed/confirmed reconciliation rows remain protected.
-- Recovery chunks rows, preloads mappings/catalog, recomputes cases once and is idempotent.
+No migration or index was added. The hot query shapes reuse existing indexes and constraints: OCR document/status/review indexes plus `ocr_jobs_machine_date_index`; canonical case machine/date and assignment/date indexes; unique evidence membership plus case/capture ordering; reconciliation period/scope/time lookup and segment uniqueness. The 1,001-evidence query instrumentation completed with 105 bounded SELECTs and did not show an index-driven bottleneck. Adding an unproven production index would widen this hotfix unnecessarily.
 
-## Database / rollout
+## Safety / invariants retained
 
-- New migration: `2026_09_11_000001_add_ocr_recovery_provenance_to_ocr_jobs.php`.
-- Adds only nullable/defaulted OCR retry provenance columns and indexes; no mass update.
-- Later authorized rollout requires Laravel migration plus OCR worker update/restart. Exact order and rollback considerations are in `docs/phases/PHASE-16.10.5.md`.
+- Daily Photo machine/date/time, sender fallback, ambiguity, targeted retry and confidence rules from Phase 16.10.5 are unchanged.
+- Canonical case/evidence/interval identity, capture-order pairing, odd evidence, ambiguity and correction/requeue behavior are unchanged.
+- Allocator rounding, seven-hour regular budget and HC/OT split are unchanged.
+- Weekly Journal, OCR worker, Collector, API contracts and frontend are unchanged.
+- Batch failure rolls back only the active batch. Rerun is resumable/idempotent; existing unique keys and row locks remain the concurrent double-click protection.
 
 ## Blockers / not verified
 
-- No implementation blocker identified.
-- Live browser layout, production SQL engine, production data distribution and production-scale recovery: NOT VERIFIED.
+- No local implementation blocker.
+- Production MySQL EXPLAIN against the live data distribution, authenticated production request latency and deployment behavior are NOT VERIFIED.
+- No production action is authorized by this checkpoint.
 
 ## NEXT ACTION
 
-1. Inspect the latest local Daily Photo confidence hotfix (`git status --short --branch`, `git log -1`, and `docs/phases/PHASE-16.10.5.md`). Do not repeat implementation.
-2. Before any authorized production recovery, run the read-only sender report and confirm the expected mapped/auto/manual counts; recovery remains an explicit operator action.
-3. Wait for explicit user authorization before push/PR/merge/deploy or production/runtime actions. If deployment is authorized later, follow the maintenance/migration/worker ordering and rollback requirements in the Phase document.
-4. Do not start a new Phase automatically.
+1. Review the local commit on `hotfix/daily-photo-large-volume-reconciliation` with `git show --stat --oneline HEAD` and inspect the five application/test files plus this continuity documentation.
+2. If review passes, explicitly authorize push and PR creation; do not push, merge or deploy automatically.
+3. After a separately authorized production deployment, run one scoped allocate-times request and verify HTTP response, duration, Laravel/MySQL logs, row counts and protected rows before considering the hotfix production-verified.
+4. Do not start another Phase or change OCR/Weekly Journal/worker rules from this checkpoint.

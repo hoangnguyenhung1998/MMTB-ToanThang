@@ -14,6 +14,8 @@ use Illuminate\Validation\ValidationException;
 
 class DailyPhotoSyncService
 {
+    private const BATCH_SIZE = 100;
+
     private ?Collection $cachedSources = null;
 
     private ?Collection $cachedCases = null;
@@ -45,7 +47,7 @@ class DailyPhotoSyncService
         })->values();
     }
 
-    public function preview(ReconciliationRow $row): array
+    public function preview(ReconciliationRow $row, ?Collection $contextRows = null): array
     {
         $case = $this->caseForRow($row);
         $sources = $case ? $this->caseSources($case) : $this->sources($row);
@@ -65,8 +67,8 @@ class DailyPhotoSyncService
                     ->map(fn (DailyPhotoInterval $interval) => $this->canonicalInterval($interval))
                     ->all();
                 if ($intervals) {
-                    $allocation = $this->allocator->allocate($intervals, true, $this->allocator->remainingRegularMinutes($row));
-                    $this->allocator->assertWithinAssignment($allocation, $row);
+                    $allocation = $this->allocator->allocate($intervals, true, $this->allocator->remainingRegularMinutes($row, $contextRows));
+                    $this->allocator->assertWithinAssignment($allocation, $row, $contextRows);
                     if ($case->status === DailyPhotoCase::STATUS_COLLECTING) {
                         foreach (['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'] as $key) {
                             if ($allocation[$key] === 0) {
@@ -90,90 +92,85 @@ class DailyPhotoSyncService
 
     public function sync(ReconciliationPeriod $period, ?int $machineId = null, ?string $workDate = null, ?int $commandCenterId = null): array
     {
+        $period = ReconciliationPeriod::query()->findOrFail($period->id);
+        abort_unless(in_array($period->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
+        $result = ['updated' => 0, 'protected' => 0, 'changed' => 0, 'partial' => 0, 'exception' => 0];
+        $updatedDays = [];
+        $this->ensureRows($period, $machineId, $workDate, $commandCenterId);
+
         try {
-            return DB::transaction(function () use ($period, $machineId, $workDate, $commandCenterId) {
-                $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
-                abort_unless(in_array($period->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
-                $result = ['updated' => 0, 'protected' => 0, 'changed' => 0, 'partial' => 0, 'exception' => 0];
-                $updatedDays = [];
-                $this->ensureRows($period, $machineId, $workDate, $commandCenterId);
-                $rows = $period->rows()->with('assignment')->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
-                    ->when($commandCenterId, fn ($q) => $q->where('command_center_id', $commandCenterId))
-                    ->when($workDate, fn ($q) => $q
-                        ->whereDate('work_date', '>=', \Carbon\Carbon::parse($workDate)->subDay()->toDateString())
-                        ->whereDate('work_date', '<=', $workDate))
-                    ->lockForUpdate()->get();
-                $this->cachedSources = OcrJob::query()->where('document_type', 'DAILY_TIMEMARK')
-                    ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
-                    ->whereBetween('extracted_date', [$period->date_from, $period->date_to])
-                    ->when($workDate, fn ($q) => $q
-                        ->whereDate('extracted_date', '>=', \Carbon\Carbon::parse($workDate)->subDay()->toDateString())
-                        ->whereDate('extracted_date', '<=', $workDate))
-                    ->where('status', 'COMPLETED')->where('review_status', '!=', 'REJECTED')->whereNotNull('extracted_time')
-                    ->orderBy('extracted_date')->orderBy('extracted_time')->orderBy('id')->get()
-                    ->groupBy(fn ($job) => $job->machine_id.'|'.$job->extracted_date->toDateString());
-                $this->cachedCases = DailyPhotoCase::query()
-                    ->with($this->caseRelations())
-                    ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
-                    ->whereBetween('work_date', [$period->date_from, $period->date_to])
-                    ->get()
-                    ->keyBy(fn (DailyPhotoCase $case) => $this->caseKey($case->machine_id, $case->machine_assignment_id, $case->work_date->format('Y-m-d')));
-                foreach ($rows as $row) {
-                    $preview = $this->preview($row);
-                    if ($preview['case']?->status === DailyPhotoCase::STATUS_COLLECTING) {
-                        $result['partial']++;
-                    }
-                    if ($preview['case']?->status === DailyPhotoCase::STATUS_PAIRING_AMBIGUOUS || $preview['allocationFailed']) {
-                        $result['exception']++;
-                    }
-                    $sources = $preview['sources'];
-                    $signature = $this->signatureForRow($row, $sources);
-                    if ($signature === $row->evidence_signature) {
-                        continue;
-                    }
-                    if ($row->manually_edited_at || in_array($row->status, ['REVIEWED', 'CONFIRMED', 'REJECTED'], true)) {
-                        $row->update(['has_evidence_changes' => true]);
-                        $result['protected']++;
-                        $result['changed']++;
+            $this->scopedRows($period, $machineId, $workDate, $commandCenterId)
+                ->select('id')->chunkById(self::BATCH_SIZE, function ($rowIds) use ($period, &$result, &$updatedDays): void {
+                    DB::transaction(function () use ($period, $rowIds, &$result, &$updatedDays): void {
+                        $lockedPeriod = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
+                        abort_unless(in_array($lockedPeriod->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
+                        $rows = ReconciliationRow::query()->with(['assignment', 'period'])
+                            ->whereKey($rowIds->modelKeys())->orderBy('id')->lockForUpdate()->get();
+                        $contextByMachine = $this->cacheBatch($lockedPeriod, $rows);
 
-                        continue;
-                    }
-                    $allocation = $preview['allocation'];
-                    // Clear obsolete automatic times if evidence is withdrawn; retain manual values above.
-                    $empty = $this->allocator->allocate([]);
-                    foreach (['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'] as $key) {
-                        $empty[$key] = null;
-                    }
-                    $before = $row->toArray();
-                    $row->update([
-                        ...($allocation ?? $empty),
-                        'rounded_check_in' => $allocation['confirmed_check_in'] ?? null,
-                        'rounded_check_out' => $allocation['confirmed_check_out'] ?? null,
-                        'ocr_check_in_raw' => $sources->first()?->extracted_time,
-                        'ocr_check_out_raw' => $sources->count() > 1 ? $sources->last()?->extracted_time : null,
-                        'daily_intervals' => $preview['intervals'],
-                        'daily_ocr_job_ids' => $sources->pluck('id')->all(),
-                        'evidence_status' => $preview['case']?->status === DailyPhotoCase::STATUS_COLLECTING ? 'DAILY_PARTIAL' : ($allocation ? 'DAILY_READY' : ($sources->isEmpty() ? 'NO_EVIDENCE' : 'DAILY_REVIEW')),
-                        'evidence_summary' => $preview['message'],
-                        'evidence_signature' => $signature, 'evidence_synced_at' => now(), 'has_evidence_changes' => false,
-                    ]);
-                    if (collect(['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'])->contains(fn ($key) => ! empty($before[$key]))) {
-                        ActivityLog::create(['machine_id' => $row->machine_id, 'event' => 'daily_photo.synced',
-                            'description' => 'Đồng bộ giờ ảnh ngày; lưu kết quả trước khi thay đổi.',
-                            'subject_type' => ReconciliationRow::class, 'subject_id' => $row->id,
-                            'properties' => ['before' => $before, 'after' => $row->fresh()->toArray()], 'occurred_at' => now()]);
-                    }
-                    $result['updated']++;
-                    $updatedDays[$row->machine_id.'|'.$row->work_date->toDateString()] = true;
-                }
-                $result['updated_days'] = count($updatedDays);
+                        foreach ($rows as $row) {
+                            $preview = $this->preview($row, collect($contextByMachine->get($row->machine_id, [])));
+                            if ($preview['case']?->status === DailyPhotoCase::STATUS_COLLECTING) {
+                                $result['partial']++;
+                            }
+                            if ($preview['case']?->status === DailyPhotoCase::STATUS_PAIRING_AMBIGUOUS || $preview['allocationFailed']) {
+                                $result['exception']++;
+                            }
+                            $sources = $preview['sources'];
+                            $signature = $this->signatureForRow($row, $sources);
+                            if ($signature === $row->evidence_signature) {
+                                continue;
+                            }
+                            if ($row->manually_edited_at || in_array($row->status, ['REVIEWED', 'CONFIRMED', 'REJECTED'], true)) {
+                                if (! $row->has_evidence_changes) {
+                                    $row->update(['has_evidence_changes' => true]);
+                                }
+                                $result['protected']++;
+                                $result['changed']++;
 
-                return $result;
-            });
+                                continue;
+                            }
+                            $allocation = $preview['allocation'];
+                            // Clear obsolete automatic times if evidence is withdrawn; retain manual values above.
+                            $empty = $this->allocator->allocate([]);
+                            foreach (['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'] as $key) {
+                                $empty[$key] = null;
+                            }
+                            $before = $row->toArray();
+                            $row->update([
+                                ...($allocation ?? $empty),
+                                'rounded_check_in' => $allocation['confirmed_check_in'] ?? null,
+                                'rounded_check_out' => $allocation['confirmed_check_out'] ?? null,
+                                'ocr_check_in_raw' => $sources->first()?->extracted_time,
+                                'ocr_check_out_raw' => $sources->count() > 1 ? $sources->last()?->extracted_time : null,
+                                'daily_intervals' => $preview['intervals'],
+                                'daily_ocr_job_ids' => $sources->pluck('id')->all(),
+                                'evidence_status' => $preview['case']?->status === DailyPhotoCase::STATUS_COLLECTING ? 'DAILY_PARTIAL' : ($allocation ? 'DAILY_READY' : ($sources->isEmpty() ? 'NO_EVIDENCE' : 'DAILY_REVIEW')),
+                                'evidence_summary' => $preview['message'],
+                                'evidence_signature' => $signature, 'evidence_synced_at' => now(), 'has_evidence_changes' => false,
+                            ]);
+                            if (collect(['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'])->contains(fn ($key) => ! empty($before[$key]))) {
+                                ActivityLog::create(['machine_id' => $row->machine_id, 'event' => 'daily_photo.synced',
+                                    'description' => 'Đồng bộ giờ ảnh ngày; lưu kết quả trước khi thay đổi.',
+                                    'subject_type' => ReconciliationRow::class, 'subject_id' => $row->id,
+                                    'properties' => ['before' => $before, 'after' => $row->toArray()], 'occurred_at' => now()]);
+                            }
+                            $result['updated']++;
+                            $updatedDays[$row->machine_id.'|'.$row->work_date->toDateString()] = true;
+                        }
+                    }, 3);
+
+                    $this->cachedSources = null;
+                    $this->cachedCases = null;
+                });
         } finally {
             $this->cachedSources = null;
             $this->cachedCases = null;
         }
+
+        $result['updated_days'] = count($updatedDays);
+
+        return $result;
     }
 
     public function signature(Collection $sources): string
@@ -183,28 +180,87 @@ class DailyPhotoSyncService
 
     private function ensureRows(ReconciliationPeriod $period, ?int $machineId, ?string $workDate, ?int $commandCenterId): void
     {
-        $cases = DailyPhotoCase::query()->with('machineAssignment')
+        DailyPhotoCase::query()->with('machineAssignment')
             ->whereNotNull('machine_assignment_id')->has('evidenceMemberships')
             ->whereDate('work_date', '>=', $period->date_from)->whereDate('work_date', '<=', $period->date_to)
             ->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
             ->when($workDate, fn ($q) => $q->whereDate('work_date', $workDate))
             ->when($commandCenterId, fn ($q) => $q->whereHas('machineAssignment', fn ($q) => $q->where('command_center_id', $commandCenterId)))
-            ->orderBy('work_date')->orderBy('machine_assignment_id')->get();
-        foreach ($cases as $case) {
-            $assignment = $case->machineAssignment;
-            if (! $assignment || $period->rows()->where('machine_id', $case->machine_id)->whereDate('work_date', $case->work_date)
-                ->where(fn ($q) => $q->where('machine_assignment_id', $assignment->id)->orWhereNull('machine_assignment_id'))->exists()) {
-                continue;
-            }
-            $period->rows()->create([
-                'machine_id' => $case->machine_id, 'machine_assignment_id' => $assignment->id,
-                'work_date' => $case->work_date->toDateString(), 'project_id' => $assignment->project_id,
-                'command_center_id' => $assignment->command_center_id,
-                'segment_start' => $assignment->time_in->isSameDay($case->work_date) ? $assignment->time_in->format('H:i:s') : '00:00:00',
-                'segment_end' => $assignment->time_out?->isSameDay($case->work_date) ? $assignment->time_out->format('H:i:s') : '23:59:59',
-                'status' => 'DRAFT',
-            ]);
-        }
+            ->orderBy('id')->chunkById(self::BATCH_SIZE, function ($cases) use ($period): void {
+                DB::transaction(function () use ($cases, $period): void {
+                    $machineIds = $cases->pluck('machine_id')->unique();
+                    $workDates = $cases->map(fn (DailyPhotoCase $case) => $case->work_date->toDateString())->unique();
+                    $existing = $period->rows()->whereIn('machine_id', $machineIds)
+                        ->whereDate('work_date', '>=', $workDates->min())->whereDate('work_date', '<=', $workDates->max())
+                        ->get(['machine_id', 'machine_assignment_id', 'work_date'])
+                        ->mapWithKeys(fn (ReconciliationRow $row) => [
+                            $row->machine_id.'|'.$row->work_date->toDateString().'|'.($row->machine_assignment_id ?? '*') => true,
+                        ]);
+                    $now = now();
+                    $inserts = [];
+
+                    foreach ($cases as $case) {
+                        $assignment = $case->machineAssignment;
+                        $key = $case->machine_id.'|'.$case->work_date->toDateString().'|';
+                        $alreadyExists = $existing->has($key.$assignment?->id) || $existing->has($key.'*');
+                        if (! $assignment || $alreadyExists) {
+                            continue;
+                        }
+                        $inserts[] = [
+                            'reconciliation_period_id' => $period->id,
+                            'machine_id' => $case->machine_id, 'machine_assignment_id' => $assignment->id,
+                            'work_date' => $case->work_date->toDateString(), 'project_id' => $assignment->project_id,
+                            'command_center_id' => $assignment->command_center_id,
+                            'segment_start' => $assignment->time_in->isSameDay($case->work_date) ? $assignment->time_in->format('H:i:s') : '00:00:00',
+                            'segment_end' => $assignment->time_out?->isSameDay($case->work_date) ? $assignment->time_out->format('H:i:s') : '23:59:59',
+                            'status' => 'DRAFT', 'created_at' => $now, 'updated_at' => $now,
+                        ];
+                    }
+
+                    if ($inserts) {
+                        DB::table('reconciliation_rows')->insertOrIgnore($inserts);
+                    }
+                }, 3);
+            });
+    }
+
+    private function scopedRows(ReconciliationPeriod $period, ?int $machineId, ?string $workDate, ?int $commandCenterId)
+    {
+        return $period->rows()
+            ->when($machineId, fn ($query) => $query->where('machine_id', $machineId))
+            ->when($commandCenterId, fn ($query) => $query->where('command_center_id', $commandCenterId))
+            ->when($workDate, fn ($query) => $query
+                ->whereDate('work_date', '>=', \Carbon\Carbon::parse($workDate)->subDay()->toDateString())
+                ->whereDate('work_date', '<=', $workDate))
+            ->orderBy('id');
+    }
+
+    private function cacheBatch(ReconciliationPeriod $period, Collection $rows): Collection
+    {
+        $machineIds = $rows->pluck('machine_id')->filter()->unique()->values();
+        $workDates = $rows->map(fn (ReconciliationRow $row) => $row->work_date->toDateString())->unique()->values();
+        $minimumDate = $rows->min(fn (ReconciliationRow $row) => $row->work_date->toDateString());
+        $maximumDate = $rows->max(fn (ReconciliationRow $row) => $row->work_date->toDateString());
+
+        $this->cachedSources = OcrJob::query()->where('document_type', 'DAILY_TIMEMARK')
+            ->whereIn('machine_id', $machineIds)->whereIn('extracted_date', $workDates)
+            ->where('status', 'COMPLETED')->where('review_status', '!=', 'REJECTED')->whereNotNull('extracted_time')
+            ->orderBy('extracted_date')->orderBy('extracted_time')->orderBy('id')->get()
+            ->groupBy(fn (OcrJob $job) => $job->machine_id.'|'.$job->extracted_date->toDateString());
+        $this->cachedCases = DailyPhotoCase::query()
+            ->with($this->caseRelations())
+            ->whereIn('machine_id', $machineIds)->whereIn('work_date', $workDates)
+            ->get()
+            ->keyBy(fn (DailyPhotoCase $case) => $this->caseKey(
+                $case->machine_id,
+                $case->machine_assignment_id,
+                $case->work_date->format('Y-m-d'),
+            ));
+
+        return $period->rows()->whereIn('machine_id', $machineIds)
+            ->whereDate('work_date', '>=', \Carbon\Carbon::parse($minimumDate)->subDay()->toDateString())
+            ->whereDate('work_date', '<=', \Carbon\Carbon::parse($maximumDate)->addDay()->toDateString())
+            ->get()->groupBy('machine_id');
     }
 
     public function evidenceTimes(ReconciliationRow $row): Collection

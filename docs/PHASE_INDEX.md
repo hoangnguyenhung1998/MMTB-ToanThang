@@ -7,8 +7,8 @@
 | 16.10.1 | Canonical Daily Photo Foundation | VERIFIED | Production base `9f8fe11` | Phase 16.9 | `af417bb` | `docs/phases/PHASE-16.10.1.md` |
 | 16.10.2 | Deterministic Daily Photo Pairing | VERIFIED | Phase 16.10.1 | Phase 16.9 | `c8e3796` | `docs/phases/PHASE-16.10.2.md` |
 | 16.10.3 | Canonical Daily Photo Downstream Integration | VERIFIED in Git at task start | Phase 16.10.1; Phase 16.10.2 | Phase 16.9 | `d36cfc1` | `docs/phases/PHASE-16.10.3.md` |
-| 16.10.4 | Automatic Daily Photo reconciliation and Zalo machine mapping | COMPLETED locally — 250 tests / 1187 assertions PASS | Phase 16.10.1; Phase 16.10.2; Phase 16.10.3 | Phase 16.9 | Local checkpoint; `git log -1 -- docs/phases/PHASE-16.10.4.md` | `docs/phases/PHASE-16.10.4.md` |
-| 16.10.5 | Auto Recovery OCR & Exception Backlog | COMPLETED locally — first-mapping backlog plus Daily Photo confidence hotfix; 270 tests / 1,322 assertions PASS | Phase 16.10.4 | OCR worker; Exception Center; reconciliation sync | First-mapping checkpoint `9dc4bbb`; latest local checkpoint from `git log -1` | `docs/phases/PHASE-16.10.5.md` |
+| 16.10.4 | Automatic Daily Photo reconciliation and Zalo machine mapping | VERIFIED in production history; large-volume allocate-times follow-up COMPLETED locally — 272 tests / 1,362 assertions PASS | Phase 16.10.1; Phase 16.10.2; Phase 16.10.3 | Phase 16.9; Phase 16.10.5 | Production merges `eecee42`, `8db9f8c`; local large-volume hotfix from base `5839be6` | `docs/phases/PHASE-16.10.4.md` |
+| 16.10.5 | Auto Recovery OCR & Exception Backlog | VERIFIED in production history through PR #46 | Phase 16.10.4 | OCR worker; Exception Center; reconciliation sync | Production merge `5839be6`; checkpoints `9dc4bbb`, `233c5ed` | `docs/phases/PHASE-16.10.5.md` |
 
 ## Relationship
 
