@@ -7,19 +7,20 @@ use App\Models\DailyPhotoCaseEvidence;
 use App\Models\DailyPhotoInterval;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class DailyPhotoCaseService
 {
     public function __construct(private readonly DailyPhotoPairingService $pairing) {}
 
-    public function materialize(OcrJob $job, bool $recompute = true): ?DailyPhotoCase
+    public function materialize(OcrJob $job, bool $recompute = true, ?Collection $candidateAssignments = null): ?DailyPhotoCase
     {
         if (! config('daily_photos.enabled')) {
             return null;
         }
 
-        return DB::transaction(function () use ($job, $recompute): ?DailyPhotoCase {
+        return DB::transaction(function () use ($job, $recompute, $candidateAssignments): ?DailyPhotoCase {
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             if ($job->document_type !== 'DAILY_TIMEMARK'
                 || $job->status !== 'COMPLETED'
@@ -33,7 +34,7 @@ class DailyPhotoCaseService
 
             $workDate = $job->extracted_date->format('Y-m-d');
             $captureAt = $job->extracted_time ? $workDate.' '.substr((string) $job->extracted_time, 0, 8) : null;
-            $assignments = MachineAssignment::query()
+            $assignments = $candidateAssignments ?? MachineAssignment::query()
                 ->where('machine_id', $job->machine_id)
                 ->where('time_in', '<=', $captureAt ?? $workDate.' 23:59:59')
                 ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>', $captureAt ?? $workDate.' 00:00:00'))
@@ -105,7 +106,7 @@ class DailyPhotoCaseService
                 'scope_key' => $scopeKey,
                 'assignment_resolution_status' => $assignmentStatus,
                 'machine_assignment_id' => $assignment?->id,
-                'candidate_machine_assignment_ids' => $assignments->modelKeys(),
+                'candidate_machine_assignment_ids' => $assignments->pluck('id')->all(),
                 'capture_datetime_convention' => 'NAIVE_LOCAL_WALL_CLOCK',
                 'capture_timezone' => config('daily_photos.capture_timezone'),
             ];

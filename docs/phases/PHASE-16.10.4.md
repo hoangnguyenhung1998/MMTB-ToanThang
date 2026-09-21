@@ -27,6 +27,23 @@ Make Daily Photo auto-first from OCR completion through canonical membership/pai
 - **Fix:** GET trang kỳ đối chiếu tải nguồn OCR và canonical case/evidence theo lô, giới hạn đúng machine/date của các dòng đang hiển thị, chỉ đọc dữ liệu và không gọi resync. POST cập nhật vẫn là hành động riêng; truy vấn OCR được thu hẹp sớm theo BCH khi có scope, assignment được eager-load, và các case bị ảnh hưởng chỉ được pairing lại một lần sau khi materialize xong toàn bộ evidence. Luồng bảo vệ dòng manual/reviewed/confirmed và luật canonical exception-first không thay đổi.
 - **Regression test:** test 30 dòng của một máy xác nhận allocate-times chỉ nhận POST, GET render không gọi `DailyPhotoResyncService`, không ghi bảng canonical và chỉ dùng bốn query canonical/OCR cố định. Test resync với bốn evidence cùng case xác nhận `recomputeMany()` chỉ chạy một lần và vẫn tạo đúng bốn membership/hai interval.
 
+### Large-volume follow-up hotfix — 2026-09-22
+
+Production after PR #46 still returned HTTP 500 for `POST /reconciliation-periods/8/allocate-times` with `MySQL server has gone away`, followed by PHP's 30-second execution limit in a Collection operation. Code trace proved that `bf001e8` fixed the page-render N+1 and one repeated pairing pattern, but POST still held a period-wide transaction, loaded every OCR job, re-materialized already-canonical evidence, queried assignments/materialization state per job, then loaded all reconciliation rows/sources/cases and queried allocator context per row.
+
+The follow-up hotfix on `hotfix/daily-photo-large-volume-reconciliation` keeps the synchronous button and existing business rules but makes the path bounded:
+
+- only jobs without canonical evidence membership enter resync materialization;
+- OCR/materialization and downstream rows use stable primary-key batches of 100;
+- assignment candidates, canonical cases/sources and allocator overlap/budget context are bulk-loaded into per-batch maps;
+- materialization/pairing and reconciliation updates use separate bounded transactions rather than one period-wide transaction;
+- row creation is batched/idempotent, protected rows remain untouched, and unchanged reruns produce no writes;
+- GET/render remains read-only and never calls resync.
+
+The new regression uses 1,001 evidence across 500 canonical cases and rows. It verifies completion, one partial case, protected manual data, no duplicate case membership/interval/row, no unnecessary materialization/recompute, idempotent rerun, 105 bounded SELECTs on both runs, zero rerun writes and a measured sync time of 1.805 seconds. A separate injected failure in the second row batch verifies batch-local rollback and safe retry. Targeted tests passed at 78 tests / 405 assertions; the full Laravel suite passed at 272 tests / 1,362 assertions.
+
+No migration/index was added: existing OCR machine/date and state indexes, canonical identity/order indexes and reconciliation uniqueness/scope indexes support the bounded query shapes, and the instrumented 1,001-evidence run did not demonstrate an index bottleneck. Production MySQL plan/data distribution remains a post-deploy verification item, not a reason to add a speculative index.
+
 ## Architecture before / after
 
 Before: OCR → canonical case/interval → READY + reviewed-source filter → existing reconciliation row; incomplete archive blocked export; sender → dated driver → dated machine.
@@ -150,8 +167,8 @@ New `AutomaticDailyPhotoIntegrationTest` contains 19 scenarios. Existing tests o
 
 - Requires an existing open reconciliation period. Missing or ambiguous assignment/BCH stays an explicit exception; no period/BCH is invented.
 - Partial evidence cannot establish the complete day total. Blank values are intentional, and unsupported allocator layouts remain exceptions.
-- Resync is synchronous and bounded by the selected period/BCH. No production-scale performance benchmark was performed.
-- Browser layout on the user's live dataset and production SQL engine remains NOT VERIFIED. Authenticated HTML rendering, JavaScript guard and frontend build are tested locally.
+- Resync remains synchronous, but materialization and reconciliation now run in bounded batches/transactions; a 1,001-evidence regression completed locally well below 30 seconds.
+- Browser behavior on the user's live dataset, production MySQL query plans/data distribution and production request latency remain NOT VERIFIED.
 - Build reports an existing outdated Browserslist dataset warning; no unrelated dependency upgrade was made.
 
 Suggested next step (not executed): user checks the local UI with representative data, then separately authorizes a GitHub/deployment checkpoint. Do not start another Phase automatically.
