@@ -108,7 +108,7 @@ class OcrJobService
                 $data = $this->mergeTargetedRetryResult($job, $data);
             }
 
-            $candidateMetadata = $data['candidate_metadata'] ?? [];
+            [$data, $candidateMetadata] = $this->applyReceivedDateUpperBound($job, $data);
             $candidateConflicts = collect($candidateMetadata['conflicts'] ?? [])->unique();
             if ($candidateConflicts->contains('date')) {
                 $data['date'] = null;
@@ -271,18 +271,35 @@ class OcrJobService
             }
 
             $isUnknown = $data['document_type'] === 'UNKNOWN';
+            $isIgnored = in_array($data['document_type'], ['IGNORED_HOUR_METER', 'IGNORED_NON_DAILY_PHOTO'], true);
+            $dailyMetadata = $job->daily_metadata ?? [];
+            if ($isIgnored) {
+                data_set($dailyMetadata, 'image_classification', [
+                    'document_type' => $data['document_type'],
+                    'confidence' => (float) $data['confidence'],
+                    'worker_id' => $data['worker_id'],
+                    'classified_at' => now()->toIso8601String(),
+                    'evidence' => $data['classification_metadata'] ?? [],
+                    'gate_stage' => 'UNKNOWN_CLASSIFICATION_OCR',
+                ]);
+            }
             $job->update([
                 'document_type' => $data['document_type'],
                 'classification_confidence' => $data['confidence'],
                 'classified_by' => $data['worker_id'],
                 'classified_at' => now(),
-                'status' => config('daily_photos.enabled') && $data['document_type'] === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($isUnknown ? 'EXCEPTION' : 'PENDING'),
+                'status' => $isIgnored
+                    ? 'COMPLETED'
+                    : (config('daily_photos.enabled') && $data['document_type'] === 'WEEKLY_JOURNAL' ? 'PAUSED' : ($isUnknown ? 'EXCEPTION' : 'PENDING')),
                 'claimed_by' => null,
                 'claimed_at' => null,
                 'lease_expires_at' => null,
                 'error_message' => null,
                 'exceptions' => $isUnknown ? ['UNCLASSIFIED_DOCUMENT'] : null,
-                'processed_at' => $isUnknown ? now() : null,
+                'processed_at' => ($isUnknown || $isIgnored) ? now() : null,
+                'review_status' => $isIgnored ? 'AUTO_APPROVED' : $job->review_status,
+                'raw_text' => $isIgnored ? ($data['raw_text'] ?? $job->raw_text) : $job->raw_text,
+                'daily_metadata' => $dailyMetadata,
             ]);
 
             $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'COMPLETED');
@@ -544,6 +561,46 @@ class OcrJobService
         $data['candidate_metadata'] ??= $initial['candidate_metadata'] ?? null;
 
         return $data;
+    }
+
+    private function applyReceivedDateUpperBound(OcrJob $job, array $data): array
+    {
+        $metadata = is_array($data['candidate_metadata'] ?? null) ? $data['candidate_metadata'] : [];
+        $upperBound = $job->attachment?->message?->received_at?->toDateString();
+        if (! $upperBound) {
+            return [$data, $metadata];
+        }
+
+        $originalCandidates = collect($metadata['date_candidates'] ?? [])
+            ->filter(fn (mixed $value): bool => is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $value))
+            ->unique()->values();
+        $discarded = $originalCandidates->filter(fn (string $value): bool => $value > $upperBound)->values();
+        $accepted = $originalCandidates->reject(fn (string $value): bool => $value > $upperBound)->values();
+        if (filled($data['date'] ?? null) && $data['date'] > $upperBound) {
+            $discarded->push($data['date']);
+            $data['date'] = null;
+        }
+
+        if ($originalCandidates->isNotEmpty()) {
+            $metadata['date_candidates'] = $accepted->all();
+            $conflicts = collect($metadata['conflicts'] ?? [])->unique();
+            if ($accepted->count() <= 1 && ! ($metadata['ambiguous_date'] ?? false)) {
+                $conflicts = $conflicts->reject(fn (string $field): bool => $field === 'date')->values();
+                if ($accepted->count() === 1) {
+                    $data['date'] = $accepted->first();
+                }
+            } elseif ($accepted->count() > 1 || ($metadata['ambiguous_date'] ?? false)) {
+                $conflicts->push('date');
+            }
+            $metadata['conflicts'] = $conflicts->unique()->values()->all();
+        }
+        if ($discarded->isNotEmpty()) {
+            $metadata['discarded_date_candidates'] = collect($metadata['discarded_date_candidates'] ?? [])
+                ->push(...$discarded)->unique()->sort()->values()->all();
+        }
+        $data['candidate_metadata'] = $metadata;
+
+        return [$data, $metadata];
     }
 
     private function extractionSnapshot(array $data): array

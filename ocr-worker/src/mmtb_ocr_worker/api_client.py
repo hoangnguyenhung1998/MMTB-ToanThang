@@ -86,7 +86,15 @@ class LaravelOcrClient:
         )
         return response.json()["job"]
 
-    def classify(self, job_id: int, attempt: int, document_type: str, confidence: float) -> dict:
+    def classify(
+        self,
+        job_id: int,
+        attempt: int,
+        document_type: str,
+        confidence: float,
+        raw_text: str | None = None,
+        classification_metadata: dict | None = None,
+    ) -> dict:
         response = self._request(
             "POST",
             f"/jobs/{job_id}/classify",
@@ -95,6 +103,8 @@ class LaravelOcrClient:
                 "attempt": attempt,
                 "document_type": document_type,
                 "confidence": round(confidence, 4),
+                "raw_text": raw_text,
+                "classification_metadata": classification_metadata or {},
             },
         )
         return response.json()["job"]

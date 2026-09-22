@@ -122,6 +122,7 @@ class AutoRecoveryBacklogTest extends TestCase
     {
         $mapped = $this->machine('T-XX0717');
         $job = $this->pendingJob('candidate-conflict');
+        $job->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
         $this->mapping($job, $mapped);
 
         $completed = $this->complete($job, [
@@ -371,6 +372,45 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('HUMAN', $job->fresh()->machine_resolution_method);
     }
 
+    public function test_hour_meter_backlog_cleanup_is_audited_idempotent_and_respects_protection(): void
+    {
+        $hourMeter = $this->exceptionJob('meter-cleanup', null);
+        $hourMeter->update([
+            'raw_text' => "[0deg/full]\nQUARTZ HOURS 001234.5",
+            'exceptions' => ['MACHINE_OCR_INVALID', 'CAPTURE_DATE_MISSING'],
+        ]);
+        $protected = $this->exceptionJob('meter-protected', null);
+        $protected->update([
+            'raw_text' => "[0deg/full]\nQUARTZ HOURS 009876.5",
+            'review_status' => 'CORRECTED',
+            'reviewed_at' => now(),
+        ]);
+        $nonDaily = $this->exceptionJob('non-daily-cleanup', null);
+        $nonDaily->update([
+            'raw_text' => "[0deg/full]\nBIEN BAN BAN GIAO THIET BI",
+            'exceptions' => ['UNCLASSIFIED_DOCUMENT'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $first = app(DailyPhotoBacklogService::class)->recover([]);
+        $second = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(1, $preview['ignored_hour_meter']);
+        $this->assertSame(1, $preview['ignored_non_daily']);
+        $this->assertSame(1, $preview['protected_skipped']);
+        $this->assertSame(1, $first['ignored_hour_meter']);
+        $this->assertSame(1, $first['ignored_non_daily']);
+        $this->assertSame(1, $first['skipped_protected']);
+        $this->assertSame(0, $second['ignored_hour_meter']);
+        $this->assertSame('IGNORED_HOUR_METER', $hourMeter->fresh()->document_type);
+        $this->assertSame('COMPLETED', $hourMeter->fresh()->status);
+        $this->assertSame('BACKLOG_STORED_OCR', data_get($hourMeter->fresh()->daily_metadata, 'image_classification.gate_stage'));
+        $this->assertSame('IGNORED_NON_DAILY_PHOTO', $nonDaily->fresh()->document_type);
+        $this->assertNull($nonDaily->fresh()->dailyPhotoCaseEvidence);
+        $this->assertSame('DAILY_TIMEMARK', $protected->fresh()->document_type);
+        $this->assertSame('EXCEPTION', $protected->fresh()->status);
+    }
+
     public function test_stored_raw_reparse_recovers_five_production_patterns_without_external_ocr(): void
     {
         $patterns = [
@@ -383,6 +423,7 @@ class AutoRecoveryBacklogTest extends TestCase
         foreach ($patterns as [$sender, $assetCode, $raw, $time]) {
             $this->machine($assetCode);
             $job = $this->exceptionJob($sender, null);
+            $job->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
             $job->update([
                 'extracted_date' => null,
                 'extracted_time' => null,
@@ -394,6 +435,7 @@ class AutoRecoveryBacklogTest extends TestCase
 
         $mappedMachine = $this->machine('SGC-T-3C0715');
         $mapped = $this->exceptionJob('sender-d', '3C0JI2');
+        $mapped->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
         $mapped->update([
             'extracted_date' => null,
             'extracted_time' => null,
@@ -427,6 +469,37 @@ class AutoRecoveryBacklogTest extends TestCase
             $this->assertNotNull($fresh->dailyPhotoCaseEvidence);
         }
         $this->assertDatabaseCount('daily_photo_case_evidence', 5);
+    }
+
+    public function test_stored_reparse_handles_compact_machine_artifact_date_and_context_time(): void
+    {
+        $machine = $this->machine('VT-XX0880');
+        $compact = $this->exceptionJob('compact-machine', null);
+        $compact->attachment->message->update(['received_at' => '2026-09-21 20:00:00']);
+        $compact->update([
+            'extracted_date' => null,
+            'extracted_time' => null,
+            'raw_text' => "[0deg/asset]\nMTS:VTXX0880\n\n[0deg/time_date]\n17:011\n20Thang9,2026",
+            'exceptions' => ['MACHINE_OCR_INVALID', 'CAPTURE_DATE_MISSING', 'CAPTURE_TIME_MISSING'],
+        ]);
+        $contextTime = $this->exceptionJob('context-time', $machine->asset_code);
+        $contextTime->attachment->message->update(['received_at' => '2026-09-22 20:00:00']);
+        $contextTime->update([
+            'extracted_date' => null,
+            'extracted_time' => null,
+            'raw_text' => "[0deg/left_overlay]\n21 Sep 2026\n15:04 - 19:02\nTan ca 19:02\n54:62\n3 giờ 58 phút",
+            'exceptions' => ['CAPTURE_DATE_MISSING', 'CAPTURE_TIME_MISSING'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $result = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(2, $preview['eligible_recover']);
+        $this->assertSame(2, $result['recovered']);
+        $this->assertSame($machine->id, $compact->fresh()->machine_id);
+        $this->assertSame('2026-09-20', $compact->fresh()->extracted_date->format('Y-m-d'));
+        $this->assertSame('17:01:00', $compact->fresh()->extracted_time);
+        $this->assertSame('19:02:00', $contextTime->fresh()->extracted_time);
     }
 
     public function test_stored_retry_payload_supplements_missing_field_and_clears_stale_retry_reason(): void
@@ -554,6 +627,7 @@ class AutoRecoveryBacklogTest extends TestCase
         $first = $this->machine('T-XL0303');
         $this->machine('T-3C0140');
         $dateConflict = $this->exceptionJob('date-conflict', $first->asset_code);
+        $dateConflict->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
         $dateConflict->update([
             'extracted_date' => null,
             'raw_text' => "[0deg/full]\n21 Sep,2026 06:22\n22 Sep,2026",
@@ -576,6 +650,7 @@ class AutoRecoveryBacklogTest extends TestCase
     {
         $machine = $this->machine('SGC-T-3C0715');
         $job = $this->exceptionJob('equivalent-candidates', $machine->asset_code);
+        $job->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
         $job->update([
             'extracted_date' => null,
             'extracted_time' => null,
@@ -623,6 +698,7 @@ class AutoRecoveryBacklogTest extends TestCase
     {
         $machine = $this->machine('T-XL0303');
         $job = $this->exceptionJob('stored-conflict', $machine->asset_code);
+        $job->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
         $job->update([
             'extracted_date' => null,
             'raw_text' => "[0deg/full]\n21 Sep,2026\n22 Sep,2026\n06:22",

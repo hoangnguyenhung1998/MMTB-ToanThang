@@ -53,15 +53,23 @@ class DailyPhotoStoredOcrExtractor
         ])->filter();
         $candidateOccurrences = ['machine' => 0, 'date' => 0, 'time' => 0];
         $legacyConflicts = collect();
+        $dateEvidence = collect();
+        $timeEvidence = collect();
 
         foreach ($payloads as $payload) {
             foreach ($this->sections((string) $payload['raw_text']) as $section) {
-                $parsed = $this->parseText($section['text'], $section['region'] === 'time_date');
+                $parsed = $this->parseText($section['text'], $section['region']);
                 $candidateOccurrences['date'] += count($parsed['dates']);
                 $candidateOccurrences['time'] += count($parsed['times']);
                 $dates->push(...$parsed['dates']);
                 $times->push(...$parsed['times']);
                 $ambiguousDates->push(...$parsed['ambiguous_dates']);
+                $dateEvidence->push(...collect($parsed['date_evidence'] ?? [])->map(fn (array $item): array => [
+                    ...$item, 'source' => $payload['source'], 'rotation' => $section['rotation'], 'region' => $section['region'],
+                ]));
+                $timeEvidence->push(...collect($parsed['time_evidence'] ?? [])->map(fn (array $item): array => [
+                    ...$item, 'source' => $payload['source'], 'rotation' => $section['rotation'], 'region' => $section['region'],
+                ]));
                 $sectionMachines = $this->machineCandidates($section['text']);
                 $candidateOccurrences['machine'] += count($sectionMachines);
                 $machineCandidates->push(...$sectionMachines);
@@ -88,6 +96,8 @@ class DailyPhotoStoredOcrExtractor
             $times->push(...$metadataTimes);
             $legacyConflicts->push(...collect($metadata['conflicts'] ?? [])
                 ->filter(fn (mixed $field): bool => in_array($field, ['machine', 'date', 'time'], true)));
+            $dateEvidence->push(...collect($metadata['date_evidence'] ?? [])->filter(fn ($item): bool => is_array($item)));
+            $timeEvidence->push(...collect($metadata['time_evidence'] ?? [])->filter(fn ($item): bool => is_array($item)));
         }
 
         // Structured retry values are authoritative supplements for fields that
@@ -109,7 +119,9 @@ class DailyPhotoStoredOcrExtractor
             ->filter(fn (array $result): bool => $result['status'] === 'MATCHED')
             ->map(fn (array $result): string => $result['machine']->asset_code)
             ->unique()->values();
-        $dates = $dates->unique()->sort()->values();
+        $receivedDate = $job->attachment?->message?->received_at?->toDateString();
+        $discardedFutureDates = $dates->filter(fn (string $value): bool => $receivedDate && $value > $receivedDate)->unique()->sort()->values();
+        $dates = $dates->reject(fn (string $value): bool => $receivedDate && $value > $receivedDate)->unique()->sort()->values();
         $times = $times->unique()->sort()->values();
 
         return [
@@ -135,15 +147,22 @@ class DailyPhotoStoredOcrExtractor
                     'time' => $times->count() === 1,
                 })->keys()->values()->all(),
             'sources' => $payloads->pluck('source')->all(),
+            'date_evidence' => $dateEvidence->values()->all(),
+            'time_evidence' => $timeEvidence->values()->all(),
+            'discarded_date_candidates' => $discardedFutureDates->all(),
         ];
     }
 
-    public function parseText(string $text, bool $trustedTimeRegion = false): array
+    public function parseText(string $text, bool|string $region = false): array
     {
+        $region = is_bool($region) ? ($region ? 'time_date' : 'unknown') : $region;
+        $trustedTimeRegion = $region === 'time_date';
         $normalized = Str::upper(Str::ascii($text));
         $dates = collect();
         $times = collect();
         $ambiguousDates = collect();
+        $dateEvidence = collect();
+        $timeEvidence = collect();
 
         preg_match_all('/(?<!\d)(20\d{2})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{1,2})(?!\d)/', $normalized, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) {
@@ -169,7 +188,7 @@ class DailyPhotoStoredOcrExtractor
             $this->pushDate($dates, (int) $match[3], self::MONTHS[$match[2]], (int) $match[1]);
         }
 
-        preg_match_all('/(?<!\d)(\d{1,2})\s+THA(?:N|M)G\s+(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})/', $normalized, $matches, PREG_SET_ORDER);
+        preg_match_all('/(?<!\d)(\d{1,2})\s*THA(?:NG|NIG|RIG|MG)\s*(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})/', $normalized, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) {
             $this->pushDate($dates, (int) $match[3], (int) $match[2], (int) $match[1]);
         }
@@ -177,9 +196,23 @@ class DailyPhotoStoredOcrExtractor
         $withoutDates = preg_replace([
             '/(?<!\d)20\d{2}\s*[-\/.]\s*\d{1,2}\s*[-\/.]\s*\d{1,2}(?!\d)/',
             '/(?<!\d)\d{1,2}\s*[-\/.]\s*\d{1,2}\s*[-\/.]\s*20\d{2}(?!\d)/',
+            '/(?<!\d)\d{1,2}\s*(?:JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*20\d{2}/',
+            '/(?<!\d)\d{1,2}\s*THA(?:NG|NIG|RIG|MG)\s*\d{1,2}(?:\s+NAM)?\s*,?\s*20\d{2}/',
         ], ' ', $normalized);
+        preg_match_all('/(?<![\d.])(?:[01]?\d|2[0-3])\s*[:.H]\s*[0-5]\d\s*(?:-|–|—|TO|DEN)\s*(?:[01]?\d|2[0-3])\s*[:.H]\s*[0-5]\d(?![\d.])/', $withoutDates, $intervals, PREG_SET_ORDER);
+        foreach ($intervals as $interval) {
+            $timeEvidence->push(['raw' => $interval[0], 'accepted' => false, 'reason' => 'WORK_INTERVAL']);
+        }
+        $withoutIntervals = preg_replace('/(?<![\d.])(?:[01]?\d|2[0-3])\s*[:.H]\s*[0-5]\d\s*(?:-|–|—|TO|DEN)\s*(?:[01]?\d|2[0-3])\s*[:.H]\s*[0-5]\d(?![\d.])/', ' ', $withoutDates);
+        preg_match_all('/(?<!\d)\d{1,3}\s*(?:GIO|HOURS?)\s*\d{1,2}\s*(?:PHUT|MIN(?:UTE)?S?)/', $withoutIntervals, $durations, PREG_SET_ORDER);
+        foreach ($durations as $duration) {
+            $timeEvidence->push(['raw' => $duration[0], 'accepted' => false, 'reason' => 'DURATION']);
+        }
+        $captureContext = in_array($region, ['time_date', 'left_overlay'], true)
+            || $dates->isNotEmpty()
+            || Str::contains($normalized, ['TIMEMARK', 'TIME MARK', 'TAN CA']);
         $separator = $trustedTimeRegion ? '[:.H-]' : '[:.H]';
-        preg_match_all('/(?<![\d.])([01]?\d|2[0-3])\s*'.$separator.'\s*([0-5]\d)(?:\s*([AP])\s*\.?\s*M\.?)?(?![\d.])/', $withoutDates, $matches, PREG_SET_ORDER);
+        preg_match_all('/(?<![\d.])([01]?\d|2[0-3])\s*'.$separator.'\s*([0-5]\d)(?:\s*([AP])\s*\.?\s*M\.?)?(?![\d.])/', $withoutIntervals, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) {
             $hour = (int) $match[1];
             if (filled($match[3] ?? null)) {
@@ -188,13 +221,38 @@ class DailyPhotoStoredOcrExtractor
                 }
                 $hour = $hour % 12 + (Str::upper($match[3]) === 'P' ? 12 : 0);
             }
-            $times->push(sprintf('%02d:%02d:00', $hour, (int) $match[2]));
+            $value = sprintf('%02d:%02d:00', $hour, (int) $match[2]);
+            $timeEvidence->push([
+                'raw' => $match[0], 'value' => $value, 'accepted' => $captureContext,
+                'reason' => $captureContext ? ($trustedTimeRegion && str_contains($match[0], '-') ? 'TRUSTED_DASH' : 'STANDARD') : 'UNTRUSTED_CONTEXT',
+            ]);
+            if ($captureContext) {
+                $times->push($value);
+            }
         }
+        if ($trustedTimeRegion) {
+            preg_match_all('/(?<![\d.])([01]?\d|2[0-3])\s*:\s*([0-5]\d)1(?!\d)/', $withoutIntervals, $matches, PREG_SET_ORDER);
+            foreach ($matches as $match) {
+                $value = sprintf('%02d:%02d:00', (int) $match[1], (int) $match[2]);
+                $times->push($value);
+                $timeEvidence->push(['raw' => $match[0], 'value' => $value, 'accepted' => true, 'reason' => 'TRAILING_TIMEMARK_ARTIFACT']);
+            }
+        }
+        preg_match_all('/(?<!\d)\d{1,2}\s*[:.]\s*\d{2,3}(?!\d)/', $withoutIntervals, $invalidTimes, PREG_SET_ORDER);
+        foreach ($invalidTimes as $invalid) {
+            if (! preg_match('/^(?:[01]?\d|2[0-3])\s*[:.]\s*[0-5]\d(?:1)?$/', trim($invalid[0]))) {
+                $timeEvidence->push(['raw' => $invalid[0], 'accepted' => false, 'reason' => 'INVALID_TIME']);
+            }
+        }
+
+        $dateEvidence = $dates->map(fn (string $value): array => ['value' => $value, 'accepted' => true, 'reason' => 'PARSED']);
 
         return [
             'dates' => $dates->unique()->values()->all(),
             'times' => $times->unique()->values()->all(),
             'ambiguous_dates' => $ambiguousDates->unique()->values()->all(),
+            'date_evidence' => $dateEvidence->values()->all(),
+            'time_evidence' => $timeEvidence->values()->all(),
         ];
     }
 
@@ -202,12 +260,12 @@ class DailyPhotoStoredOcrExtractor
     {
         $parts = preg_split('/\[(\d+)deg\/([a-z_]+)\]\R/i', $raw, -1, PREG_SPLIT_DELIM_CAPTURE);
         if (! is_array($parts) || count($parts) < 4) {
-            return [['region' => 'unknown', 'text' => $raw]];
+            return [['rotation' => null, 'region' => 'unknown', 'text' => $raw]];
         }
 
         $sections = [];
         for ($index = 1; $index + 2 < count($parts); $index += 3) {
-            $sections[] = ['region' => Str::lower($parts[$index + 1]), 'text' => $parts[$index + 2]];
+            $sections[] = ['rotation' => (int) $parts[$index], 'region' => Str::lower($parts[$index + 1]), 'text' => $parts[$index + 2]];
         }
 
         return $sections;
@@ -216,8 +274,15 @@ class DailyPhotoStoredOcrExtractor
     private function machineCandidates(string $text): array
     {
         preg_match_all('/[A-Z0-9]{1,4}\s*[-_ ]\s*[A-Z0-9]{1,4}\s*[-_ ]?\s*[A-Z0-9]{2,8}/i', $text, $matches);
+        $observed = $matches[0] ?? [];
+        $observedKeys = collect($observed)->map(fn (string $value): ?string => AssetCodeResolver::canonicalKey($value));
+        $embeddedExact = collect($this->assetCodes->exactCatalogMatchesInText($text))
+            ->reject(fn (string $value): bool => $observedKeys->contains(AssetCodeResolver::canonicalKey($value)));
 
-        return $matches[0] ?? [];
+        return array_values(array_unique([
+            ...$observed,
+            ...$embeddedExact,
+        ]));
     }
 
     private function pushDate($dates, int $year, int $month, int $day): void

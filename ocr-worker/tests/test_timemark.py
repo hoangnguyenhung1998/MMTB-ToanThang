@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -80,6 +81,7 @@ class TimeMarkTest(unittest.TestCase):
         self.assertEqual("2026-09-21", result.captured_date)
         self.assertEqual("22:30:00", result.captured_time)
         self.assertEqual([], result.candidate_metadata["conflicts"])
+        self.assertEqual("asset", result.candidate_metadata["machine_evidence"][0]["region"])
         self.assertEqual(20, engine.call_count)
 
     def test_trusted_time_region_normalizes_dash_and_suffix_date_noise(self):
@@ -120,6 +122,50 @@ class TimeMarkTest(unittest.TestCase):
         self.assertEqual("T-XL0303", result.asset_code)
         self.assertIsNone(result.captured_date)
         self.assertIn("date", result.candidate_metadata["conflicts"])
+
+    def test_source_aware_time_recovery_ignores_work_interval_and_invalid_time(self):
+        engine = Mock()
+        outputs = iter([
+            (["20Thang9,2026"], [0.99]),
+            (["15:04 - 19:02\nTan ca 19:02\n54:62"], [0.99]),
+        ])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XX0880"], engine).recognize(Path("test.jpg"), focus=["date", "time"])
+
+        self.assertEqual("2026-09-20", result.captured_date)
+        self.assertEqual("19:02:00", result.captured_time)
+        self.assertNotIn("time", result.candidate_metadata["conflicts"])
+        reasons = {item["reason"] for item in result.candidate_metadata["time_evidence"]}
+        self.assertIn("WORK_INTERVAL", reasons)
+        self.assertIn("INVALID_TIME", reasons)
+
+    def test_trusted_timemark_region_repairs_single_trailing_one(self):
+        engine = Mock()
+        outputs = iter([(["17:011 20Thang9,2026"], [0.99])])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XX0880"], engine).recognize(Path("test.jpg"), focus=["date", "time"])
+
+        self.assertEqual("17:01:00", result.captured_time)
+        self.assertEqual("2026-09-20", result.captured_date)
+
+    def test_future_date_is_discarded_against_received_date_without_invention(self):
+        engine = Mock()
+        outputs = iter([
+            (["06-24 23 Sep 2026"], [0.99]),
+            (["21 Sep 2026"], [0.99]),
+        ])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XX0880"], engine).recognize(
+                Path("test.jpg"), focus=["date", "time"], received_date=date(2026, 9, 22)
+            )
+
+        self.assertEqual("2026-09-21", result.captured_date)
+        self.assertEqual("06:24:00", result.captured_time)
+        self.assertEqual(["2026-09-23"], result.candidate_metadata["discarded_date_candidates"])
+        self.assertNotIn("date", result.candidate_metadata["conflicts"])
 
 
 if __name__ == "__main__":

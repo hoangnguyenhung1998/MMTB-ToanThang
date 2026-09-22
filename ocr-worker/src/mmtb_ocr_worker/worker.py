@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -151,7 +152,14 @@ class OcrWorker:
         self._ensure_active(heartbeat, started_at, int(job["id"]), attempt)
         heartbeat.prepare_finalization()
         LOGGER.info("OCR classification finalizing job_id=%s attempt=%s worker_id=%s", job["id"], attempt, self.settings.worker_id)
-        saved = self.client.classify(job["id"], attempt, result.document_type, result.confidence)
+        saved = self.client.classify(
+            job["id"],
+            attempt,
+            result.document_type,
+            result.confidence,
+            result.raw_text,
+            result.metadata,
+        )
         self.health.job_succeeded()
         LOGGER.info(
             "Classified OCR job %s attempt=%s as %s (%.2f), status=%s",
@@ -197,6 +205,7 @@ class OcrWorker:
             image_path,
             progress=progress,
             focus=retry_focus or None,
+            received_date=self._received_date(job),
         )
         self._ensure_active(heartbeat, started_at, job_id, attempt)
         LOGGER.info(
@@ -270,6 +279,17 @@ class OcrWorker:
             )
         except WorkerApiError as report_error:
             LOGGER.error("Could not report failure for OCR job %s: %s", job["id"], report_error)
+
+    @staticmethod
+    def _received_date(job: dict):
+        value = (job.get("message") or {}).get("received_at")
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        except ValueError:
+            LOGGER.warning("Ignoring invalid received_at for OCR job %s: %s", job.get("id"), value)
+            return None
 
 
 def configure_logging(data_dir: Path) -> None:
