@@ -134,6 +134,42 @@ class OcrJobTest extends TestCase
         ]);
     }
 
+    public function test_daily_timemark_candidate_metadata_is_validated_and_conflicts_fail_closed(): void
+    {
+        config(['daily_photos.enabled' => true]);
+        Machine::query()->create([
+            'asset_code' => 'T-XL0354',
+            'company' => 'VINCONS',
+            'chassis_no' => 'TEST-CANDIDATE-METADATA',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $job->update(['document_type' => 'DAILY_TIMEMARK']);
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+                'worker_id' => 'worker-1',
+                'date' => '2026-09-21',
+                'time' => '06:22:00',
+                'asset_code' => 'T-XL0354',
+                'confidence' => 0.96,
+                'candidate_metadata' => [
+                    'machine_candidates' => ['T-XL0354'],
+                    'date_candidates' => ['2026-09-21', '2026-09-22'],
+                    'time_candidates' => ['06:22:00'],
+                    'conflicts' => ['date'],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'EXCEPTION')
+            ->assertJsonPath('job.extracted_date', null)
+            ->assertJsonPath('job.ocr_retry_attempts', 0)
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.conflicts.0', 'date');
+
+        $this->assertDatabaseCount('daily_photo_case_evidence', 0);
+    }
+
     public function test_daily_image_submitted_one_day_late_is_accepted(): void
     {
         Machine::query()->create([

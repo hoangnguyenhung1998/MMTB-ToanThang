@@ -1,68 +1,67 @@
 # Project State
 
 - Updated: 2026-09-22
-- Current work: Production hotfix — Daily Photo large-volume reconciliation / allocate-times.
-- Status: COMPLETED locally — implementation and required checks PASS; review/publication pending.
-- Branch: `hotfix/daily-photo-large-volume-reconciliation`.
-- Verified production base: `5839be6` (`Merge pull request #46 ... remove-low-confidence`).
-- Current HEAD: local checkpoint commit containing this document; resolve with `git rev-parse HEAD`.
-- Push / PR / merge / deploy / production migration / production data action: NOT PERFORMED.
+- Current Phase: 16.10.6 — Daily Photo OCR Extraction & Recovery Hardening.
+- Status: COMPLETED locally — implementation, required tests, documentation and final checks PASS.
+- Branch: `fix/phase-16-10-6-daily-photo-ocr-extraction`.
+- Verified production base: `3527725ac9e6fc3edcbedab5ad5e91e6e84bc1f4`.
+- Current HEAD: final local checkpoint commit containing this document; resolve with `git rev-parse HEAD`.
+- Push / PR / merge / deploy / production migration / production data action / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
 
-## Verified root cause
+## Result
 
-`POST /reconciliation-periods/{period}/allocate-times` called `DailyPhotoResyncService`, which held one period-wide transaction while loading every matching OCR job and its relations. It then re-materialized every job, queried assignments per job and recomputed cases before `DailyPhotoSyncService` loaded every row/source/case for the period in another transaction. Row creation and `DailyTimeAllocator` also queried inside row loops. At production volume this retained a large Eloquent graph and a database transaction/connection long enough to reach the 30-second PHP limit and `MySQL server has gone away`.
+- Deterministic Daily TimeMark parsing now supports unambiguous numeric D/M/Y and M/D/Y, ISO Y-M-D, English month names and Vietnamese Tháng/Năm variants with bounded OCR noise.
+- Ambiguous numeric dates and conflicting machine/date/time candidates fail closed. Dash-separated time is accepted only from the trusted `time_date` crop.
+- RapidOCR aggregates the complete bounded crop/rotation set, so fields may come from separate crops and a later conflict cannot be hidden by early exit.
+- The optional worker `candidate_metadata` payload preserves candidate/conflict evidence. Laravel remains compatible with old workers and blocks ambiguity without sender fallback or unnecessary retry.
+- Valid partial fields survive targeted retry; retry does not replace a valid scalar with null.
+- `ocr:daily-exception-diagnose` is read-only and reports one primary loss stage per filtered exception, plus bounded detailed samples.
+- `ocr:daily-backlog-recover --dry-run` reports stored/mapping/retry/manual/ambiguous/protected counts without writes. Actual recovery requires explicit `--execute`.
+- Recovery reparses persisted initial/retry raw OCR before dispatching another OCR attempt, fills only missing deterministic values, clears stale exception reasons after full resolution, materializes canonical evidence and is idempotent.
+- Protected/reviewed/HUMAN rows remain unchanged; assignment candidates are preloaded per chunk; no migration or external bulk OCR was added.
 
-The earlier `bf001e8` hotfix removed the GET-render N+1 and delayed pairing recomputation, but POST still hydrated/reprocessed the full period and the downstream sync/allocator still contained period-wide collections and row-level queries.
+## Proven root causes
 
-## Completed hotfix
+- English month dates were unsupported.
+- Numeric dates were always treated as D/M/Y, rejecting `09/21/2026` and guessing genuinely ambiguous dates.
+- Time was discarded unless the same crop also contained a date.
+- Date/time selection was first-value wins rather than conflict-aware aggregation.
+- Backlog recovery did not reparse stored initial/retry `raw_text`.
+- Existing targeted retry merge preserved scalar partial data, but it could not recover candidates dropped before the API payload.
 
-- Resync selects only OCR jobs without canonical evidence membership and processes them with stable `chunkById(100)` batches.
-- Assignment candidates are bulk-loaded and locked once per materialization batch; already-canonical jobs are not materialized or paired again.
-- Canonical pairing remains inside the bounded materialization batch and preserves existing case/evidence/interval uniqueness and idempotency guards.
-- Reconciliation row creation uses batched canonical cases, associative existing-row lookups and `insertOrIgnore` under the existing unique identity.
-- Downstream synchronization processes row IDs in batches of 100; each batch has its own transaction, row locks, source/case caches and allocator context.
-- The allocator can use the preloaded same-machine context, removing per-row overlap and regular-budget queries while preserving the existing HC/OT/rounding rules.
-- Protected manual/REVIEWED/CONFIRMED/REJECTED rows retain their saved values and provenance; unchanged reruns do not write them again.
-- GET/render remains read-only and does not invoke heavy synchronization.
-- Synchronous UX is retained: the 1,001-evidence regression completes far below the hosting limit, so no queue/worker/deployment architecture was added.
+Production distribution across the reported 742 exceptions remains NOT VERIFIED because the local application DB contains zero matching exceptions and no production command was run.
 
-## Latest verified checks
-
-PHP executable: `D:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe`.
+## Verified checks
 
 | Check | Result |
 |---|---|
-| Large-volume regression | PASS: 1,001 evidence, 500 canonical cases/intervals/rows; 105 SELECTs on initial sync, 105 on idempotent rerun, 0 rerun writes; measured sync 1.805s (3.68s including fixture/test) |
-| Batch failure/retry regression | PASS: second batch rollback left the first batch committed; retry completed the remaining 400 rows without duplicates or protected-data overwrite |
-| Targeted Daily Photo/reconciliation suite | PASS: 78 tests, 405 assertions |
-| Full Laravel `artisan test --compact` | PASS: 272 tests, 1,362 assertions, 30.17s |
-| Pint on changed PHP files | PASS: 5 files; one style issue fixed |
-| PHP syntax on changed application services and large-volume test | PASS |
-| `git diff --check` | PASS after final documentation update |
+| Worker parser + aggregation | PASS: 29 tests |
+| Mapping/materialization/API/diagnostic/recovery targeted set | PASS: 92 tests, 657 assertions |
+| Five production-pattern recovery | PASS |
+| 1,000-exception report guard | PASS: ≤15 queries asserted |
+| 1,001-evidence reconciliation regression | PASS: <30s/bounded-query assertions retained |
+| Existing Daily Photo suite | PASS: 98 tests, 622 assertions |
+| Full Laravel suite | PASS: 280 tests, 1,448 assertions, 55.19s |
+| Full OCR worker suite | PASS: 49 tests |
+| Pint `--test` | PASS: 11 changed PHP files |
+| PHP syntax | PASS |
+| Python `compileall` | PASS |
+| `git diff --check` | PASS |
 
-Tests use SQLite in-memory databases. Production MySQL data distribution and the live browser request remain NOT VERIFIED.
+Tests use SQLite in-memory databases. Production MySQL distribution, live images and runtime behavior are NOT VERIFIED.
 
-## Index / migration decision
+## Database / API / runtime impact
 
-No migration or index was added. The hot query shapes reuse existing indexes and constraints: OCR document/status/review indexes plus `ocr_jobs_machine_date_index`; canonical case machine/date and assignment/date indexes; unique evidence membership plus case/capture ordering; reconciliation period/scope/time lookup and segment uniqueness. The 1,001-evidence query instrumentation completed with 105 bounded SELECTs and did not show an index-driven bottleneck. Adding an unproven production index would widen this hotfix unnecessarily.
-
-## Safety / invariants retained
-
-- Daily Photo machine/date/time, sender fallback, ambiguity, targeted retry and confidence rules from Phase 16.10.5 are unchanged.
-- Canonical case/evidence/interval identity, capture-order pairing, odd evidence, ambiguity and correction/requeue behavior are unchanged.
-- Allocator rounding, seven-hour regular budget and HC/OT split are unchanged.
-- Weekly Journal, OCR worker, Collector, API contracts and frontend are unchanged.
-- Batch failure rolls back only the active batch. Rerun is resumable/idempotent; existing unique keys and row locks remain the concurrent double-click protection.
-
-## Blockers / not verified
-
-- No local implementation blocker.
-- Production MySQL EXPLAIN against the live data distribution, authenticated production request latency and deployment behavior are NOT VERIFIED.
-- No production action is authorized by this checkpoint.
+- Migration: NO. Existing scalar, raw/provenance JSON and canonical fields are sufficient.
+- API: optional additive `candidate_metadata` on Daily TimeMark completion; old workers remain compatible.
+- Worker: YES, OCR worker parser/recognizer changed and later deployment needs a worker update/restart.
+- Collector: NO change and no restart needed.
+- Weekly Journal: unchanged; full worker regression including classifier/journal safeguards passes.
 
 ## NEXT ACTION
 
-1. Review the local commit on `hotfix/daily-photo-large-volume-reconciliation` with `git show --stat --oneline HEAD` and inspect the five application/test files plus this continuity documentation.
-2. If review passes, explicitly authorize push and PR creation; do not push, merge or deploy automatically.
-3. After a separately authorized production deployment, run one scoped allocate-times request and verify HTTP response, duration, Laravel/MySQL logs, row counts and protected rows before considering the hotfix production-verified.
-4. Do not start another Phase or change OCR/Weekly Journal/worker rules from this checkpoint.
+1. Review the final local commit on `fix/phase-16-10-6-daily-photo-ocr-extraction` with `git show --stat --oneline HEAD` and inspect the Phase 16.10.6 application/worker/test/docs files.
+2. If review passes, explicitly authorize push/PR; do not push, merge or deploy automatically.
+3. If deployment is separately approved, deploy Laravel first, clear Laravel caches, then update/restart only the OCR worker. No migration is required.
+4. Before any recovery write, run `php artisan ocr:daily-exception-diagnose --limit=20` and `php artisan ocr:daily-backlog-recover --dry-run`; review/scoped-filter the report before separately approving `--execute`.
+5. Host-specific checkout/PHP/service commands are NOT VERIFIED because the runbook does not document those names. Do not invent them or run production recovery/restart without approval.

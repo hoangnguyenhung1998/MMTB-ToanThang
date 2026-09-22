@@ -26,6 +26,15 @@ class CompleteOcrJobRequest extends FormRequest
             'confidence' => ['required', 'numeric', 'between:0,1'],
             'raw_text' => ['nullable', 'string'],
             'image_fingerprint' => ['nullable', 'regex:/^[a-f0-9]{16}$/'],
+            'candidate_metadata' => ['nullable', 'array'],
+            'candidate_metadata.machine_candidates' => ['nullable', 'array', 'max:20'],
+            'candidate_metadata.machine_candidates.*' => ['string', 'max:100'],
+            'candidate_metadata.date_candidates' => ['nullable', 'array', 'max:20'],
+            'candidate_metadata.date_candidates.*' => ['date_format:Y-m-d'],
+            'candidate_metadata.time_candidates' => ['nullable', 'array', 'max:20'],
+            'candidate_metadata.time_candidates.*' => ['date_format:H:i:s'],
+            'candidate_metadata.conflicts' => ['nullable', 'array', 'max:3'],
+            'candidate_metadata.conflicts.*' => [Rule::in(['machine', 'date', 'time'])],
         ];
     }
 }

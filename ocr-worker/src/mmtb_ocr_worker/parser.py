@@ -5,23 +5,32 @@ import unicodedata
 from datetime import date, time
 
 
-DATE_PATTERNS = [
-    ("dmy", re.compile(r"(?<!\d)(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(20\d{2})(?!\d)")),
-    ("ymd", re.compile(r"(?<!\d)(20\d{2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)")),
-    (
-        "vi",
-        re.compile(
-            r"(?<!\d)(\d{1,2})\s*(?:THA[NM]G|THANG)\s*(\d{1,2})\s*[,\-/.]?\s*(20\d{2})(?!\d)",
-            re.I,
-        ),
-    ),
-]
+YMD_DATE_PATTERN = re.compile(r"(?<!\d)(20\d{2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)")
+NUMERIC_DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(20\d{2})(?!\d)")
+ENGLISH_DATE_PATTERN = re.compile(
+    r"(?<!\d)(\d{1,2})\s+(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*(20\d{2})",
+    re.I,
+)
+VIETNAMESE_DATE_PATTERN = re.compile(
+    r"(?<!\d)(\d{1,2})\s+THA[NM]G\s+(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})",
+    re.I,
+)
 TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*[:.hH]\s*([0-5]\d)(?::([0-5]\d))?(?![\d.])(?:\s*([AP])\s*\.?\s*M\.?)?", re.I)
+DASH_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*-\s*([0-5]\d)(?![\d.])", re.I)
 PHONE_PATTERN = re.compile(r"(?<!\d)(0(?:[ .-]?\d){8,10})(?!\d)")
 GENERIC_ASSET_PATTERN = re.compile(
     r"[A-Z0-9]{1,4}\s*[-_ ]\s*[A-Z0-9]{1,4}\s*[-_ ]?\s*[A-Z0-9]{2,8}",
     re.I,
 )
+
+MONTHS = {
+    "JAN": 1, "JANUARY": 1, "FEB": 2, "FEBRUARY": 2,
+    "MAR": 3, "MARCH": 3, "APR": 4, "APRIL": 4, "MAY": 5,
+    "JUN": 6, "JUNE": 6, "JUL": 7, "JULY": 7, "AUG": 8,
+    "AUGUST": 8, "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
+    "OCT": 10, "OCTOBER": 10, "NOV": 11, "NOVEMBER": 11,
+    "DEC": 12, "DECEMBER": 12,
+}
 
 
 def normalize_text(value: object) -> str:
@@ -39,41 +48,76 @@ def normalize_asset(value: object) -> str:
     return re.sub(r"-([A-Z0-9]{1,4})-(\d{2,8})$", r"-\1\2", text)
 
 
+def parse_date_candidates(text: str) -> tuple[set[date], bool]:
+    clean = normalize_text(text)
+    candidates: set[date] = set()
+    ambiguous = False
+
+    def add(year: int, month: int, day: int) -> None:
+        try:
+            candidates.add(date(year, month, day))
+        except ValueError:
+            pass
+
+    for match in YMD_DATE_PATTERN.finditer(clean):
+        add(*map(int, match.groups()))
+
+    for match in NUMERIC_DATE_PATTERN.finditer(clean):
+        first, second, year = map(int, match.groups())
+        if first > 12 >= second:
+            add(year, second, first)
+        elif second > 12 >= first:
+            add(year, first, second)
+        elif first == second and 1 <= first <= 12:
+            add(year, second, first)
+        elif 1 <= first <= 12 and 1 <= second <= 12:
+            ambiguous = True
+
+    for match in ENGLISH_DATE_PATTERN.finditer(clean):
+        day, month_name, year = match.groups()
+        add(int(year), MONTHS[month_name.upper()], int(day))
+
+    for match in VIETNAMESE_DATE_PATTERN.finditer(clean):
+        day, month, year = map(int, match.groups())
+        add(year, month, day)
+
+    return candidates, ambiguous
+
+
 def parse_date(text: str) -> date | None:
-    clean = normalize_text(text).replace("O", "0")
-    for kind, pattern in DATE_PATTERNS:
+    candidates, ambiguous = parse_date_candidates(text)
+    return next(iter(candidates)) if len(candidates) == 1 and not ambiguous else None
+
+
+def parse_time_candidates(text: str, allow_dash: bool = False) -> set[time]:
+    clean = text.replace("O", "0").replace("o", "0")
+    for pattern in (YMD_DATE_PATTERN, NUMERIC_DATE_PATTERN, ENGLISH_DATE_PATTERN, VIETNAMESE_DATE_PATTERN):
+        clean = pattern.sub(' ', clean)
+    candidates: set[time] = set()
+    patterns = [TIME_PATTERN]
+    if allow_dash:
+        patterns.append(DASH_TIME_PATTERN)
+    for pattern in patterns:
         for match in pattern.finditer(clean):
             try:
-                if kind == "ymd":
-                    year, month, day = map(int, match.groups())
-                else:
-                    day, month, year = map(int, match.groups())
-                return date(year, month, day)
-            except (TypeError, ValueError):
+                hour = int(match.group(1))
+                meridiem = match.group(4) if pattern is TIME_PATTERN else None
+                if meridiem:
+                    if not 1 <= hour <= 12:
+                        continue
+                    hour = hour % 12 + (12 if meridiem.upper() == "P" else 0)
+                candidates.add(time(
+                    hour,
+                    int(match.group(2)),
+                    int(match.group(3) or 0) if pattern is TIME_PATTERN else 0,
+                ))
+            except ValueError:
                 continue
-    return None
+    return candidates
 
 
-def parse_time(text: str) -> time | None:
-    clean = text.replace("O", "0").replace("o", "0")
-    for _, pattern in DATE_PATTERNS:
-        clean = pattern.sub(' ', clean)
-    candidates = set()
-    for match in TIME_PATTERN.finditer(clean):
-        try:
-            hour = int(match.group(1))
-            meridiem = match.group(4)
-            if meridiem:
-                if not 1 <= hour <= 12:
-                    continue
-                hour = hour % 12 + (12 if meridiem.upper() == "P" else 0)
-            candidates.add(time(
-                hour,
-                int(match.group(2)),
-                int(match.group(3) or 0),
-            ))
-        except ValueError:
-            continue
+def parse_time(text: str, allow_dash: bool = False) -> time | None:
+    candidates = parse_time_candidates(text, allow_dash)
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
@@ -210,3 +254,27 @@ class AssetMatcher:
             return observed_code, 0.5, observed_raw
 
         return None, 0.0, ""
+
+    def valid_matches(self, text: str) -> set[str]:
+        whole = self._compact(text)
+        exact = {
+            canonical_codes[0]
+            for compact, canonical_codes in self.compact_codes.items()
+            if compact and compact in whole and len(canonical_codes) == 1
+        }
+        if exact:
+            return exact
+
+        safe_matches: list[tuple[int, str]] = []
+        for raw in self._candidates(text):
+            observed = self._compact(raw)
+            for compact, canonical_codes in self.compact_codes.items():
+                for canonical in canonical_codes:
+                    substitutions = self._confusion_count(observed, compact)
+                    if substitutions is not None:
+                        safe_matches.append((substitutions, canonical))
+        if not safe_matches:
+            return set()
+
+        minimum = min(match[0] for match in safe_matches)
+        return {canonical for substitutions, canonical in safe_matches if substitutions == minimum}
