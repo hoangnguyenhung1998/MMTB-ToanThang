@@ -14,6 +14,7 @@ use App\Models\ZaloAttachment;
 use App\Models\ZaloMessage;
 use App\Models\ZaloSenderMachineMapping;
 use App\Services\DailyPhotoBacklogService;
+use App\Services\DailyPhotoOcrDiagnosticService;
 use App\Services\OcrJobService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -457,6 +458,167 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('STORED_REPARSE', data_get($fresh->daily_metadata, 'ocr_recovery.source'));
     }
 
+    public function test_structured_retry_values_are_merged_for_each_missing_field_and_materialized(): void
+    {
+        $machine = $this->machine('T-XL0303');
+        $missingDate = $this->exceptionJob('retry-date-value', $machine->asset_code);
+        $missingTime = $this->exceptionJob('retry-time-value', $machine->asset_code);
+        $missingDate->update([
+            'extracted_date' => null,
+            'extracted_time' => '10:40:00',
+            'ocr_retry_attempts' => 1,
+            'ocr_retry_reason' => 'date',
+            'exceptions' => ['CAPTURE_DATE_MISSING', 'OCR_RETRY_FAILED'],
+            'daily_metadata' => ['ocr_recovery' => ['retry_extraction' => ['date' => '2026-09-04']]],
+        ]);
+        $missingTime->update([
+            'extracted_date' => '2026-09-04',
+            'extracted_time' => null,
+            'ocr_retry_attempts' => 1,
+            'ocr_retry_reason' => 'time',
+            'exceptions' => ['CAPTURE_TIME_MISSING', 'OCR_RETRY_FAILED'],
+            'daily_metadata' => ['ocr_recovery' => ['retry_extraction' => ['time' => '13:45:00']]],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $result = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(2, $preview['eligible_recover']);
+        $this->assertSame(2, $preview['by_actionable_subtype']['RETRY_VALUE_NOT_MERGED']);
+        $this->assertSame(2, $result['recovered']);
+        $this->assertSame('2026-09-04', $missingDate->fresh()->extracted_date->format('Y-m-d'));
+        $this->assertSame('10:40:00', $missingDate->fresh()->extracted_time);
+        $this->assertSame('13:45:00', $missingTime->fresh()->extracted_time);
+        $this->assertNotNull($missingDate->fresh()->dailyPhotoCaseEvidence);
+        $this->assertNotNull($missingTime->fresh()->dailyPhotoCaseEvidence);
+    }
+
+    public function test_vt_lu0196_complete_residual_rows_materialize_despite_stale_automatic_reasons(): void
+    {
+        $machine = $this->machine('VT-LU0196');
+        $jobs = collect();
+        foreach (['06:24:00', '10:33:00', '13:45:00'] as $index => $time) {
+            $job = $this->exceptionJob('vt-lu0196-'.($index + 1), $machine->asset_code);
+            DB::table('ocr_jobs')->where('id', $job->id)->update([
+                'machine_id' => $machine->id,
+                'machine_resolution_method' => 'IMAGE_ASSET',
+                'extracted_date' => '2026-08-17',
+                'extracted_time' => $time,
+                'exceptions' => json_encode($index === 0 ? ['OTHER'] : ['CAPTURE_TIME_MISSING']),
+                'status' => 'EXCEPTION',
+            ]);
+            $jobs->push($job->fresh());
+        }
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $result = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(3, $preview['eligible_recover']);
+        $this->assertSame(3, $preview['by_actionable_subtype']['READY_TO_MATERIALIZE']);
+        $this->assertSame(3, $result['recovered']);
+        foreach ($jobs as $job) {
+            $fresh = $job->fresh();
+            $this->assertSame('COMPLETED', $fresh->status);
+            $this->assertNull($fresh->exceptions);
+            $this->assertNotNull($fresh->dailyPhotoCaseEvidence);
+            $this->assertNotNull($fresh->dailyPhotoCaseEvidence->capture_datetime);
+        }
+    }
+
+    public function test_job_four_true_time_conflict_remains_manual_and_fail_closed(): void
+    {
+        $machine = $this->machine('VT-XX5109');
+        $job = $this->exceptionJob('production-job-4', $machine->asset_code);
+        DB::table('ocr_jobs')->where('id', $job->id)->update([
+            'machine_id' => $machine->id,
+            'machine_resolution_method' => 'IMAGE_ASSET',
+            'extracted_date' => '2026-07-27',
+            'extracted_time' => '14:30:00',
+            'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[180deg/time_date]\n2026-07-27 16:47",
+            'exceptions' => json_encode(['CAPTURE_TIME_AMBIGUOUS']),
+            'status' => 'EXCEPTION',
+        ]);
+
+        $diagnostic = app(DailyPhotoOcrDiagnosticService::class)->diagnoseJob($job->fresh(['attachment.message']));
+        $result = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $this->assertSame('TRUE_TIME_CONFLICT', $diagnostic['loss_stage']);
+        $this->assertFalse($diagnostic['recoverable']);
+        $this->assertSame(1, $result['still_exception']);
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertNull($job->fresh()->dailyPhotoCaseEvidence);
+    }
+
+    public function test_diagnostic_separates_true_date_and_machine_conflicts(): void
+    {
+        $first = $this->machine('T-XL0303');
+        $this->machine('T-3C0140');
+        $dateConflict = $this->exceptionJob('date-conflict', $first->asset_code);
+        $dateConflict->update([
+            'extracted_date' => null,
+            'raw_text' => "[0deg/full]\n21 Sep,2026 06:22\n22 Sep,2026",
+            'exceptions' => ['CAPTURE_DATE_AMBIGUOUS'],
+        ]);
+        $machineConflict = $this->exceptionJob('machine-conflict', null);
+        $machineConflict->update([
+            'raw_text' => "[0deg/asset]\nT-XL0303 T-3C0140\n\n[0deg/time_date]\n2026-09-10 06:15",
+            'exceptions' => ['MACHINE_AMBIGUOUS'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+
+        $this->assertSame(1, $preview['by_actionable_subtype']['TRUE_DATE_CONFLICT']);
+        $this->assertSame(1, $preview['by_actionable_subtype']['TRUE_MACHINE_CONFLICT']);
+        $this->assertSame(2, $preview['ambiguous']);
+    }
+
+    public function test_duplicate_equivalent_time_candidates_are_not_a_conflict(): void
+    {
+        $machine = $this->machine('SGC-T-3C0715');
+        $job = $this->exceptionJob('equivalent-candidates', $machine->asset_code);
+        $job->update([
+            'extracted_date' => null,
+            'extracted_time' => null,
+            'raw_text' => implode("\n\n", [
+                "[0deg/time_date]\n2026-09-21 06:57",
+                "[180deg/time_date]\n2026-09-21 06:57",
+                "[90deg/left_overlay]\n2026-09-21 06:57",
+            ]),
+            'exceptions' => ['CAPTURE_DATE_MISSING', 'CAPTURE_TIME_MISSING'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview(['job' => $job->id]);
+        $result = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $this->assertSame(1, $preview['by_actionable_subtype']['DUPLICATE_EQUIVALENT_CANDIDATES']);
+        $this->assertSame(0, $preview['ambiguous']);
+        $this->assertSame(1, $result['recovered']);
+        $this->assertSame('06:57:00', $job->fresh()->extracted_time);
+        $this->assertNotNull($job->fresh()->dailyPhotoCaseEvidence);
+    }
+
+    public function test_legacy_conflict_marker_with_one_normalized_value_is_recoverable(): void
+    {
+        $machine = $this->machine('T-XL0303');
+        $job = $this->exceptionJob('legacy-aggregation', $machine->asset_code);
+        $job->update([
+            'daily_metadata' => [
+                'ocr_candidate_summary' => [
+                    'time_candidates' => ['06:57:00'],
+                    'conflicts' => ['time'],
+                ],
+            ],
+            'exceptions' => ['CAPTURE_TIME_AMBIGUOUS'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview(['job' => $job->id]);
+        $result = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $this->assertSame(1, $preview['by_actionable_subtype']['LEGACY_AGGREGATION_FAILURE']);
+        $this->assertSame(1, $result['recovered']);
+        $this->assertNotNull($job->fresh()->dailyPhotoCaseEvidence);
+    }
+
     public function test_conflicting_stored_candidates_remain_manual_and_do_not_queue_retry(): void
     {
         $machine = $this->machine('T-XL0303');
@@ -528,6 +690,72 @@ class AutoRecoveryBacklogTest extends TestCase
 
         $this->assertSame(1000, $report['total']);
         $this->assertLessThanOrEqual(15, count($queries), implode(PHP_EOL, $queries));
+
+        $queries = [];
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $this->assertSame(1000, $preview['total_considered']);
+        $this->assertLessThanOrEqual(15, count($queries), implode(PHP_EOL, $queries));
+
+        $queries = [];
+        $diagnostic = app(DailyPhotoOcrDiagnosticService::class)->diagnose(['limit' => 0]);
+        $this->assertSame(1000, $diagnostic['total']);
+        $this->assertLessThanOrEqual(20, count($queries), implode(PHP_EOL, $queries));
+    }
+
+    public function test_recovery_classifies_one_thousand_true_conflicts_with_bounded_queries(): void
+    {
+        $machine = $this->machine('VT-XX5109');
+        $now = now();
+        $messages = $attachments = $jobs = [];
+        foreach (range(1, 1000) as $index) {
+            $messages[] = ['group_id' => 'residual-conflicts', 'message_id' => "residual-{$index}", 'sender_id' => 'residual-sender', 'sender_name' => 'Residual', 'sent_at' => $now, 'received_at' => $now, 'status' => 'STORED', 'created_at' => $now, 'updated_at' => $now];
+        }
+        foreach (array_chunk($messages, 100) as $chunk) {
+            DB::table('zalo_messages')->insert($chunk);
+        }
+        foreach (DB::table('zalo_messages')->where('group_id', 'residual-conflicts')->orderBy('id')->pluck('id') as $index => $messageId) {
+            $attachments[] = ['zalo_message_id' => $messageId, 'attachment_index' => 0, 'original_name' => 'a.jpg', 'storage_disk' => 'local', 'storage_path' => "residual/{$index}.jpg", 'sha256' => hash('sha256', 'residual-'.$index), 'mime_type' => 'image/jpeg', 'byte_size' => 1, 'status' => 'STORED', 'created_at' => $now, 'updated_at' => $now];
+        }
+        foreach (array_chunk($attachments, 250) as $chunk) {
+            DB::table('zalo_attachments')->insert($chunk);
+        }
+        foreach (DB::table('zalo_attachments')->where('storage_path', 'like', 'residual/%')->orderBy('id')->pluck('id') as $attachmentId) {
+            $jobs[] = [
+                'zalo_attachment_id' => $attachmentId,
+                'document_type' => 'DAILY_TIMEMARK',
+                'status' => 'EXCEPTION',
+                'review_status' => 'PENDING',
+                'attempts' => 1,
+                'confidence' => 0.99,
+                'machine_id' => $machine->id,
+                'asset_code' => $machine->asset_code,
+                'observed_asset_code' => $machine->asset_code,
+                'machine_resolution_method' => 'IMAGE_ASSET',
+                'extracted_date' => '2026-07-27',
+                'extracted_time' => '14:30:00',
+                'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[180deg/time_date]\n2026-07-27 16:47",
+                'exceptions' => json_encode(['CAPTURE_TIME_AMBIGUOUS']),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+        foreach (array_chunk($jobs, 250) as $chunk) {
+            DB::table('ocr_jobs')->insert($chunk);
+        }
+
+        $queries = [];
+        DB::listen(function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+        $startedAt = microtime(true);
+        $result = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(1000, $result['total']);
+        $this->assertSame(1000, $result['still_exception']);
+        $this->assertSame(0, $result['recovered']);
+        $this->assertLessThan(30, microtime(true) - $startedAt);
+        $this->assertLessThanOrEqual(70, count($queries), implode(PHP_EOL, $queries));
+        $this->assertDatabaseCount('daily_photo_case_evidence', 0);
     }
 
     private function machine(string $assetCode): Machine

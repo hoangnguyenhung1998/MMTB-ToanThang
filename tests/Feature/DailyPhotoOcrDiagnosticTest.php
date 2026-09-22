@@ -73,10 +73,10 @@ class DailyPhotoOcrDiagnosticTest extends TestCase
 
         $this->assertSame(2, $report['total']);
         $this->assertCount(1, $report['samples']);
-        $this->assertSame('PARSER_DROPPED_DATE', app(DailyPhotoOcrDiagnosticService::class)
+        $this->assertSame('READY_TO_MATERIALIZE', app(DailyPhotoOcrDiagnosticService::class)
             ->diagnoseJob($recoverable->fresh(['attachment.message']))['loss_stage']);
-        $this->assertSame(1, $report['by_loss_stage']['PARSER_DROPPED_DATE']);
-        $this->assertSame(1, $report['by_loss_stage']['RETRY_NOT_RUN']);
+        $this->assertSame(1, $report['by_loss_stage']['READY_TO_MATERIALIZE']);
+        $this->assertSame(1, $report['by_loss_stage']['MAPPING_MISSING']);
         $this->assertEquals($before, OcrJob::query()->orderBy('id')->get()->map->getAttributes());
 
         $this->artisan('ocr:daily-exception-diagnose --limit=1')->assertSuccessful();

@@ -27,10 +27,17 @@ class DailyPhotoStoredOcrExtractor
 
     public function extract(OcrJob $job): array
     {
+        $snapshots = collect([
+            'initial' => $job->ocr_initial_extraction ?? [],
+            'retry' => data_get($job->daily_metadata, 'ocr_recovery.retry_extraction', []),
+            'final' => data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result', []),
+        ]);
         $payloads = collect([
             ['source' => 'persisted', 'raw_text' => $job->raw_text],
-            ['source' => 'initial', 'raw_text' => data_get($job->ocr_initial_extraction, 'raw_text')],
-            ['source' => 'retry', 'raw_text' => data_get($job->daily_metadata, 'ocr_recovery.retry_extraction.raw_text')],
+            ...$snapshots->map(fn (mixed $snapshot, string $source): array => [
+                'source' => $source,
+                'raw_text' => is_array($snapshot) ? ($snapshot['raw_text'] ?? null) : null,
+            ])->values()->all(),
         ])->filter(fn (array $payload): bool => filled($payload['raw_text']))
             ->unique('raw_text')
             ->values();
@@ -42,15 +49,59 @@ class DailyPhotoStoredOcrExtractor
             $job->observed_asset_code,
             data_get($job->ocr_initial_extraction, 'asset_code'),
             data_get($job->daily_metadata, 'ocr_recovery.retry_extraction.asset_code'),
+            data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result.asset_code'),
         ])->filter();
+        $candidateOccurrences = ['machine' => 0, 'date' => 0, 'time' => 0];
+        $legacyConflicts = collect();
 
         foreach ($payloads as $payload) {
             foreach ($this->sections((string) $payload['raw_text']) as $section) {
                 $parsed = $this->parseText($section['text'], $section['region'] === 'time_date');
+                $candidateOccurrences['date'] += count($parsed['dates']);
+                $candidateOccurrences['time'] += count($parsed['times']);
                 $dates->push(...$parsed['dates']);
                 $times->push(...$parsed['times']);
                 $ambiguousDates->push(...$parsed['ambiguous_dates']);
-                $machineCandidates->push(...$this->machineCandidates($section['text']));
+                $sectionMachines = $this->machineCandidates($section['text']);
+                $candidateOccurrences['machine'] += count($sectionMachines);
+                $machineCandidates->push(...$sectionMachines);
+            }
+        }
+
+        $candidateMetadata = collect([
+            data_get($job->daily_metadata, 'ocr_candidate_summary', []),
+            data_get($job->ocr_initial_extraction, 'candidate_metadata', []),
+            data_get($job->daily_metadata, 'ocr_recovery.retry_extraction.candidate_metadata', []),
+            data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result.candidate_metadata', []),
+        ])->filter(fn (mixed $metadata): bool => is_array($metadata) && $metadata !== []);
+        foreach ($candidateMetadata as $metadata) {
+            $metadataMachines = collect($metadata['machine_candidates'] ?? [])->filter();
+            $metadataDates = collect($metadata['date_candidates'] ?? [])
+                ->map(fn (mixed $value): ?string => $this->normalizeDate($value))->filter();
+            $metadataTimes = collect($metadata['time_candidates'] ?? [])
+                ->map(fn (mixed $value): ?string => $this->normalizeTime($value))->filter();
+            $candidateOccurrences['machine'] = max($candidateOccurrences['machine'], $metadataMachines->count());
+            $candidateOccurrences['date'] = max($candidateOccurrences['date'], $metadataDates->count());
+            $candidateOccurrences['time'] = max($candidateOccurrences['time'], $metadataTimes->count());
+            $machineCandidates->push(...$metadataMachines);
+            $dates->push(...$metadataDates);
+            $times->push(...$metadataTimes);
+            $legacyConflicts->push(...collect($metadata['conflicts'] ?? [])
+                ->filter(fn (mixed $field): bool => in_array($field, ['machine', 'date', 'time'], true)));
+        }
+
+        // Structured retry values are authoritative supplements for fields that
+        // are still absent. They must not compete with an already-persisted
+        // deterministic value from the initial pass.
+        foreach ($snapshots as $snapshot) {
+            if (! is_array($snapshot)) {
+                continue;
+            }
+            if (! $job->extracted_date && ($date = $this->normalizeDate($snapshot['date'] ?? null))) {
+                $dates->push($date);
+            }
+            if (! $job->extracted_time && ($time = $this->normalizeTime($snapshot['time'] ?? null))) {
+                $times->push($time);
             }
         }
 
@@ -72,6 +123,17 @@ class DailyPhotoStoredOcrExtractor
             'machine_conflict' => $machines->count() > 1,
             'date_conflict' => $dates->count() > 1 || $ambiguousDates->isNotEmpty(),
             'time_conflict' => $times->count() > 1,
+            'legacy_conflicts' => $legacyConflicts->unique()->values()->all(),
+            'duplicate_equivalent_fields' => collect($candidateOccurrences)
+                ->filter(fn (int $count, string $field): bool => $count > match ($field) {
+                    'machine' => $machines->count(),
+                    'date' => $dates->count(),
+                    'time' => $times->count(),
+                } && match ($field) {
+                    'machine' => $machines->count() === 1,
+                    'date' => $dates->count() === 1 && $ambiguousDates->isEmpty(),
+                    'time' => $times->count() === 1,
+                })->keys()->values()->all(),
             'sources' => $payloads->pluck('source')->all(),
         ];
     }
@@ -164,5 +226,25 @@ class DailyPhotoStoredOcrExtractor
         if ($date && $date->format('Y-n-j') === "{$year}-{$month}-{$day}") {
             $dates->push($date->format('Y-m-d'));
         }
+    }
+
+    private function normalizeDate(mixed $value): ?string
+    {
+        if (! is_string($value) || ! preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            return null;
+        }
+
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+
+        return $date && $date->format('Y-m-d') === $value ? $value : null;
+    }
+
+    private function normalizeTime(mixed $value): ?string
+    {
+        if (! is_string($value) || ! preg_match('/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/', $value)) {
+            return null;
+        }
+
+        return strlen($value) === 5 ? $value.':00' : $value;
     }
 }

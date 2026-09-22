@@ -11,6 +11,7 @@ class DailyPhotoOcrDiagnosticService
     public function __construct(
         private readonly DailyPhotoStoredOcrExtractor $extractor,
         private readonly DailyPhotoExceptionReason $reasons,
+        private readonly DailyPhotoBacklogService $backlog,
     ) {}
 
     public function diagnose(array $filters = []): array
@@ -21,8 +22,9 @@ class DailyPhotoOcrDiagnosticService
         $total = 0;
 
         $this->query($filters)->chunkById(500, function (Collection $jobs) use ($filters, $limit, $samples, $counts, &$total): void {
+            $analysis = $this->backlog->analyse($jobs)->keyBy(fn (array $row): int => $row['job']->id);
             foreach ($jobs as $job) {
-                $row = $this->diagnoseJob($job);
+                $row = $this->diagnoseJob($job, $analysis->get($job->id));
                 if (($filters['reason'] ?? null) && ! in_array($filters['reason'], $row['current_reasons'], true)) {
                     continue;
                 }
@@ -41,8 +43,9 @@ class DailyPhotoOcrDiagnosticService
         ];
     }
 
-    public function diagnoseJob(OcrJob $job): array
+    public function diagnoseJob(OcrJob $job, ?array $analysis = null): array
     {
+        $analysis ??= $this->backlog->analyse(collect([$job]))->first();
         $raw = $this->extractor->extract($job);
         $parsed = data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result')
             ?: data_get($job->daily_metadata, 'ocr_recovery.initial_extraction')
@@ -86,8 +89,10 @@ class DailyPhotoOcrDiagnosticService
                 'interval_id' => $membership?->startInterval?->id ?? $membership?->endInterval?->id,
                 'capture_datetime' => $membership?->capture_datetime?->format('Y-m-d H:i:s'),
             ],
-            'current_reasons' => $this->currentReasons($job),
-            'loss_stage' => $this->lossStage($job, $raw, $parsed, $membership, $case),
+            'current_reasons' => $analysis['reasons'] ?? $this->currentReasons($job),
+            'recoverable' => (bool) ($analysis['auto_recoverable'] ?? false),
+            'planned_action' => $analysis['action'] ?? 'MANUAL',
+            'loss_stage' => $analysis['diagnostic_subtype'] ?? 'OCR_RECOGNITION_FAILURE',
         ];
     }
 
@@ -126,63 +131,5 @@ class DailyPhotoOcrDiagnosticService
         }
 
         return $reasons->unique()->values()->all();
-    }
-
-    private function lossStage(OcrJob $job, array $raw, array $parsed, mixed $membership, mixed $case): string
-    {
-        if ($raw['machine_conflict'] || $raw['date_conflict'] || $raw['time_conflict']) {
-            return 'CANDIDATE_AGGREGATION_FAILURE';
-        }
-        if ($raw['date'] && blank($parsed['date'] ?? null) && ! $job->extracted_date) {
-            return 'PARSER_DROPPED_DATE';
-        }
-        if ($raw['time'] && blank($parsed['time'] ?? null) && ! $job->extracted_time) {
-            return 'PARSER_DROPPED_TIME';
-        }
-        if ($raw['machine'] && blank($parsed['asset_code'] ?? null) && ! $job->machine_id) {
-            return 'PARSER_DROPPED_MACHINE';
-        }
-        if (filled($parsed['date'] ?? null) && ! $job->extracted_date) {
-            return 'PERSISTED_DATE_LOST';
-        }
-        if (filled($parsed['time'] ?? null) && ! $job->extracted_time) {
-            return 'PERSISTED_TIME_LOST';
-        }
-        if (filled($parsed['asset_code'] ?? null) && blank($job->observed_asset_code ?? $job->asset_code)) {
-            return 'PERSISTED_MACHINE_LOST';
-        }
-        if ($membership && $job->extracted_time && ! $membership->capture_datetime) {
-            return 'CANONICAL_TIME_LOST';
-        }
-        if ($case && $job->extracted_date && $case->work_date?->format('Y-m-d') !== $job->extracted_date->format('Y-m-d')) {
-            return 'CANONICAL_DATE_LOST';
-        }
-        if (! $membership && $job->machine_id && $job->extracted_date && $job->extracted_time) {
-            return 'CANONICAL_NOT_MATERIALIZED';
-        }
-        if ($job->machine_id && $job->extracted_date && $job->extracted_time && $job->status === 'EXCEPTION') {
-            return $membership ? 'STALE_EXCEPTION_REASON' : 'JOB_STATUS_GATE';
-        }
-        if ($job->ocr_retry_attempts > 0 && in_array('OCR_RETRY_FAILED', $job->exceptions ?? [], true)) {
-            return filled(data_get($job->daily_metadata, 'ocr_recovery.retry_extraction')) ? 'RETRY_RESULT_NOT_APPLIED' : 'RETRY_FAILED';
-        }
-        if ($job->ocr_retry_attempts === 0 && (! $job->extracted_date || ! $job->extracted_time)) {
-            return 'RETRY_NOT_RUN';
-        }
-        if (! $job->machine_id) {
-            return data_get($job->machine_resolution_metadata, 'sender_resolution_status') === 'AMBIGUOUS_MAPPING'
-                ? 'MACHINE_AMBIGUOUS' : 'MAPPING_MISSING';
-        }
-        if (! $job->extracted_date && ! $raw['date']) {
-            return 'OCR_RECOGNITION_FAILURE';
-        }
-        if (! $job->extracted_time && ! $raw['time']) {
-            return 'OCR_RECOGNITION_FAILURE';
-        }
-        if (! $membership && ($job->extracted_date || $job->extracted_time)) {
-            return 'PARTIAL_DATA_NOT_MATERIALIZED';
-        }
-
-        return 'UNKNOWN';
     }
 }
