@@ -16,7 +16,8 @@ class DailyPhotoBacklogRecover extends Command
         {--from= : Ngày nhận từ YYYY-MM-DD}
         {--to= : Ngày nhận đến YYYY-MM-DD}
         {--command-center= : Lọc theo BCH}
-        {--project= : Lọc theo project}';
+        {--project= : Lọc theo project}
+        {--limit=20 : Số bản ghi mẫu tối đa trong dry-run}';
 
     protected $description = 'Dry-run hoặc phục hồi có kiểm soát backlog OCR ảnh hằng ngày';
 
@@ -42,13 +43,16 @@ class DailyPhotoBacklogRecover extends Command
             'command_center_id' => $this->option('command-center'),
             'project_id' => $this->option('project'),
         ], fn (mixed $value): bool => filled($value));
+        $filters['limit'] = max(0, min(100, (int) $this->option('limit')));
 
         if ($this->option('dry-run')) {
             $preview = $service->recoveryPreview($filters);
-            $this->table(['Metric', 'Count'], collect($preview)->except(['by_loss_stage', 'by_actionable_subtype'])
+            $this->table(['Metric', 'Count'], collect($preview)->except(['by_loss_stage', 'by_actionable_subtype', 'samples'])
                 ->map(fn (mixed $count, string $metric): array => [$metric, $count])->values()->all());
             $this->table(['Actionable subtype', 'Count'], collect($preview['by_actionable_subtype'])
                 ->map(fn (int $count, string $stage): array => [$stage, $count])->values()->all());
+            $this->table(['Job', 'Action', 'Subtype', 'Machine', 'Date', 'Time', 'Image type'], collect($preview['samples'])
+                ->map(fn (array $sample): array => array_values($sample))->all());
 
             return self::SUCCESS;
         }

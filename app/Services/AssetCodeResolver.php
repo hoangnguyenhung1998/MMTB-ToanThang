@@ -42,6 +42,22 @@ class AssetCodeResolver
         return $key === '' ? null : $key;
     }
 
+    public function exactCatalogMatchesInText(mixed $text): array
+    {
+        $whole = self::canonicalKey($text);
+        if ($whole === null) {
+            return [];
+        }
+
+        return collect($this->machineIndex())
+            ->filter(fn (array $machines, string $key): bool => strlen($key) >= 6 && str_contains($whole, $key))
+            ->flatten(1)
+            ->pluck('asset_code')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     private function machineIndex(): array
     {
         if ($this->index !== null) {

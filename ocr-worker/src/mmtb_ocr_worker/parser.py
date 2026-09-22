@@ -12,11 +12,18 @@ ENGLISH_DATE_PATTERN = re.compile(
     re.I,
 )
 VIETNAMESE_DATE_PATTERN = re.compile(
-    r"(?<!\d)(\d{1,2})\s+THA[NM]G\s+(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})",
+    r"(?<!\d)(\d{1,2})\s*THA(?:NG|NIG|RIG|MG)\s*(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})",
     re.I,
 )
 TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*[:.hH]\s*([0-5]\d)(?::([0-5]\d))?(?![\d.])(?:\s*([AP])\s*\.?\s*M\.?)?", re.I)
 DASH_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*-\s*([0-5]\d)(?![\d.])", re.I)
+TRAILING_ARTIFACT_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*:\s*([0-5]\d)1(?!\d)", re.I)
+WORK_INTERVAL_PATTERN = re.compile(
+    r"(?<![\d.])(?:[01]?\d|2[0-3])\s*[:.hH]\s*[0-5]\d\s*(?:-|–|—|TO|DEN|ĐẾN)\s*"
+    r"(?:[01]?\d|2[0-3])\s*[:.hH]\s*[0-5]\d(?![\d.])",
+    re.I,
+)
+DURATION_PATTERN = re.compile(r"(?<!\d)\d{1,3}\s*(?:GIO|GIỜ|HOURS?)\s*\d{1,2}\s*(?:PHUT|PHÚT|MIN(?:UTE)?S?)", re.I)
 PHONE_PATTERN = re.compile(r"(?<!\d)(0(?:[ .-]?\d){8,10})(?!\d)")
 GENERIC_ASSET_PATTERN = re.compile(
     r"[A-Z0-9]{1,4}\s*[-_ ]\s*[A-Z0-9]{1,4}\s*[-_ ]?\s*[A-Z0-9]{2,8}",
@@ -89,16 +96,32 @@ def parse_date(text: str) -> date | None:
     return next(iter(candidates)) if len(candidates) == 1 and not ambiguous else None
 
 
-def parse_time_candidates(text: str, allow_dash: bool = False) -> set[time]:
-    clean = text.replace("O", "0").replace("o", "0")
+def parse_time_evidence(
+    text: str,
+    allow_dash: bool = False,
+    allow_trailing_artifact: bool = False,
+) -> tuple[set[time], list[dict]]:
+    clean = re.sub(r"(?<=\d)[Oo](?=\d)", "0", text)
     for pattern in (YMD_DATE_PATTERN, NUMERIC_DATE_PATTERN, ENGLISH_DATE_PATTERN, VIETNAMESE_DATE_PATTERN):
         clean = pattern.sub(' ', clean)
     candidates: set[time] = set()
-    patterns = [TIME_PATTERN]
+    evidence: list[dict] = []
+    excluded_spans = [match.span() for match in WORK_INTERVAL_PATTERN.finditer(clean)]
+    excluded_spans.extend(match.span() for match in DURATION_PATTERN.finditer(normalize_text(clean)))
+
+    def excluded(start: int, end: int) -> bool:
+        return any(start >= left and end <= right for left, right in excluded_spans)
+
+    patterns: list[tuple[re.Pattern, str]] = [(TIME_PATTERN, "STANDARD")]
     if allow_dash:
-        patterns.append(DASH_TIME_PATTERN)
-    for pattern in patterns:
+        patterns.append((DASH_TIME_PATTERN, "TRUSTED_DASH"))
+    if allow_trailing_artifact:
+        patterns.append((TRAILING_ARTIFACT_TIME_PATTERN, "TRAILING_TIMEMARK_ARTIFACT"))
+    for pattern, normalization in patterns:
         for match in pattern.finditer(clean):
+            if excluded(*match.span()):
+                evidence.append({"raw": match.group(0), "accepted": False, "reason": "WORK_INTERVAL"})
+                continue
             try:
                 hour = int(match.group(1))
                 meridiem = match.group(4) if pattern is TIME_PATTERN else None
@@ -106,18 +129,43 @@ def parse_time_candidates(text: str, allow_dash: bool = False) -> set[time]:
                     if not 1 <= hour <= 12:
                         continue
                     hour = hour % 12 + (12 if meridiem.upper() == "P" else 0)
-                candidates.add(time(
+                value = time(
                     hour,
                     int(match.group(2)),
                     int(match.group(3) or 0) if pattern is TIME_PATTERN else 0,
-                ))
+                )
+                candidates.add(value)
+                evidence.append({
+                    "raw": match.group(0),
+                    "value": value.isoformat(),
+                    "accepted": True,
+                    "reason": normalization,
+                })
             except ValueError:
                 continue
+    for match in re.finditer(r"(?<!\d)\d{1,2}\s*[:.]\s*\d{2,3}(?!\d)", clean):
+        if not any(match.span() == accepted.span() for pattern, _ in patterns for accepted in pattern.finditer(clean)):
+            evidence.append({"raw": match.group(0), "accepted": False, "reason": "INVALID_TIME"})
+    for match in WORK_INTERVAL_PATTERN.finditer(clean):
+        if not any(item["reason"] == "WORK_INTERVAL" and item["raw"] in match.group(0) for item in evidence):
+            evidence.append({"raw": match.group(0), "accepted": False, "reason": "WORK_INTERVAL"})
+    for match in DURATION_PATTERN.finditer(normalize_text(clean)):
+        evidence.append({"raw": match.group(0), "accepted": False, "reason": "DURATION"})
+
+    return candidates, evidence
+
+
+def parse_time_candidates(
+    text: str,
+    allow_dash: bool = False,
+    allow_trailing_artifact: bool = False,
+) -> set[time]:
+    candidates, _ = parse_time_evidence(text, allow_dash, allow_trailing_artifact)
     return candidates
 
 
-def parse_time(text: str, allow_dash: bool = False) -> time | None:
-    candidates = parse_time_candidates(text, allow_dash)
+def parse_time(text: str, allow_dash: bool = False, allow_trailing_artifact: bool = False) -> time | None:
+    candidates = parse_time_candidates(text, allow_dash, allow_trailing_artifact)
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 

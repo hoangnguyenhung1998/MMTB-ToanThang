@@ -92,3 +92,40 @@ def table_line_score(image: np.ndarray) -> float:
     line_pixels = cv2.countNonZero(cv2.bitwise_or(horizontal, vertical))
     ratio = line_pixels / max(1, height * width)
     return min(1.0, ratio / 0.035)
+
+
+def hour_meter_structure_score(image: np.ndarray) -> float:
+    """Return a bounded cue score for a dial/counter-like instrument face.
+
+    This is deliberately not a classifier by itself. It only strengthens
+    multiple semantic OCR signals, so ordinary text containing "hours" is
+    never enough to suppress a Daily Photo.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    height, width = gray.shape[:2]
+    if min(height, width) < 24:
+        return 0.0
+    scale = min(1.0, 640.0 / max(height, width))
+    if scale < 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    height, width = gray.shape[:2]
+    edges = cv2.Canny(gray, 60, 180)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    image_area = max(1, height * width)
+    rectangular_counter = False
+    round_face = False
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        area_ratio = (box_width * box_height) / image_area
+        if not 0.01 <= area_ratio <= 0.60 or box_height == 0:
+            continue
+        aspect = box_width / box_height
+        if 1.8 <= aspect <= 8.0:
+            rectangular_counter = True
+        perimeter = cv2.arcLength(contour, True)
+        contour_area = cv2.contourArea(contour)
+        if perimeter > 0 and 0.72 <= (4 * np.pi * contour_area) / (perimeter * perimeter) <= 1.2:
+            round_face = True
+        if rectangular_counter and round_face:
+            break
+    return (0.55 if rectangular_counter else 0.0) + (0.45 if round_face else 0.0)

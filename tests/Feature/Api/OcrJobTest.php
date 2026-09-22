@@ -170,6 +170,49 @@ class OcrJobTest extends TestCase
         $this->assertDatabaseCount('daily_photo_case_evidence', 0);
     }
 
+    public function test_candidate_after_received_date_is_discarded_and_past_candidate_wins(): void
+    {
+        config(['daily_photos.enabled' => true]);
+        Machine::query()->create([
+            'asset_code' => 'VT-XX0880',
+            'company' => 'VINCONS',
+            'chassis_no' => 'TEST-TEMPORAL-BOUND',
+            'status' => 'ACTIVE',
+        ]);
+        $job = $this->createJob();
+        $job->attachment->message->update(['received_at' => '2026-09-22 08:00:00']);
+        $job->update(['document_type' => 'DAILY_TIMEMARK']);
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/complete", [
+                'worker_id' => 'worker-1',
+                'date' => null,
+                'time' => '06:24:00',
+                'asset_code' => 'VT-XX0880',
+                'confidence' => 0.96,
+                'candidate_metadata' => [
+                    'machine_candidates' => ['VT-XX0880'],
+                    'date_candidates' => ['2026-09-21', '2026-09-23'],
+                    'time_candidates' => ['06:24:00'],
+                    'conflicts' => ['date'],
+                    'ambiguous_date' => false,
+                    'date_evidence' => [
+                        ['value' => '2026-09-21', 'accepted' => true, 'reason' => 'PARSED', 'rotation' => 0, 'region' => 'time_date'],
+                        ['value' => '2026-09-23', 'accepted' => false, 'reason' => 'AFTER_RECEIVED_DATE', 'rotation' => 180, 'region' => 'full'],
+                    ],
+                    'time_evidence' => [
+                        ['raw' => '06-24', 'value' => '06:24:00', 'accepted' => true, 'reason' => 'TRUSTED_DASH', 'rotation' => 0, 'region' => 'time_date'],
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonPath('job.extracted_date', '2026-09-21')
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.discarded_date_candidates.0', '2026-09-23')
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.time_evidence.0.reason', 'TRUSTED_DASH');
+    }
+
     public function test_daily_image_submitted_one_day_late_is_accepted(): void
     {
         Machine::query()->create([
@@ -365,6 +408,37 @@ class OcrJobTest extends TestCase
             ->assertJsonPath('job.status', 'EXCEPTION')
             ->assertJsonPath('job.document_type', 'UNKNOWN')
             ->assertJsonPath('job.exceptions.0', 'UNCLASSIFIED_DOCUMENT');
+    }
+
+    public function test_confident_hour_meter_is_completed_as_ignored_with_audit_provenance(): void
+    {
+        config(['ocr.review_sample_percent' => 100]);
+        $job = $this->createJob();
+        $this->claim($job);
+
+        $this->withToken('test-ocr-token')
+            ->postJson("/api/ocr/v1/jobs/{$job->id}/classify", [
+                'worker_id' => 'worker-1',
+                'document_type' => 'IGNORED_HOUR_METER',
+                'confidence' => 0.93,
+                'raw_text' => 'QUARTZ HOURS 001234.5',
+                'classification_metadata' => [
+                    'reason' => 'MULTI_SIGNAL_HOUR_METER',
+                    'semantic_markers' => ['QUARTZ', 'HOURS'],
+                    'counter_token_count' => 1,
+                    'structure_score' => 0.72,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('job.status', 'COMPLETED')
+            ->assertJsonPath('job.document_type', 'IGNORED_HOUR_METER')
+            ->assertJsonPath('job.review_status', 'AUTO_APPROVED')
+            ->assertJsonPath('job.daily_metadata.image_classification.gate_stage', 'UNKNOWN_CLASSIFICATION_OCR');
+
+        $fresh = $job->fresh();
+        $this->assertNull($fresh->exceptions);
+        $this->assertNull($fresh->dailyPhotoCaseEvidence);
+        $this->assertSame('QUARTZ HOURS 001234.5', $fresh->raw_text);
     }
 
     public function test_worker_downloads_machine_catalog(): void

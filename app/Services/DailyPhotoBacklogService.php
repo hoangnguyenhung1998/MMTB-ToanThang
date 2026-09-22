@@ -22,6 +22,7 @@ class DailyPhotoBacklogService
         private readonly DailyPhotoPairingService $pairing,
         private readonly DailyPhotoSyncService $sync,
         private readonly DailyPhotoStoredOcrExtractor $storedOcr,
+        private readonly DailyPhotoImageGate $imageGate,
     ) {}
 
     public function report(array $filters = []): array
@@ -97,10 +98,18 @@ class DailyPhotoBacklogService
             'still_manual' => 0,
             'ambiguous' => 0,
             'protected_skipped' => 0,
+            'ignored_hour_meter' => 0,
+            'ignored_non_daily' => 0,
+            'recovered_time' => 0,
+            'recovered_date' => 0,
+            'recovered_mapping' => 0,
+            'ready_to_materialize' => 0,
+            'true_conflicts' => 0,
         ];
         $subtypes = collect();
+        $samples = collect();
 
-        $this->query($filters)->chunkById(500, function (Collection $jobs) use (&$summary, $subtypes, $filters): void {
+        $this->query($filters)->chunkById(500, function (Collection $jobs) use (&$summary, $subtypes, $samples, $filters): void {
             $rows = $this->analyse($jobs, $filters)
                 ->when($filters['reason'] ?? null, fn (Collection $items, string $reason) => $items
                     ->filter(fn (array $row): bool => in_array($reason, $row['reasons'], true)));
@@ -117,6 +126,24 @@ class DailyPhotoBacklogService
                 $summary['still_manual'] += (int) (! $eligible && ! $row['protected']);
                 $summary['ambiguous'] += (int) ($row['candidate_conflict'] || in_array('MACHINE_AMBIGUOUS', $row['reasons'], true));
                 $summary['protected_skipped'] += (int) $row['protected'];
+                $summary['ignored_hour_meter'] += (int) ($eligible && $row['action'] === 'IGNORE' && data_get($row, 'image_classification.document_type') === 'IGNORED_HOUR_METER');
+                $summary['ignored_non_daily'] += (int) ($eligible && $row['action'] === 'IGNORE' && data_get($row, 'image_classification.document_type') === 'IGNORED_NON_DAILY_PHOTO');
+                $summary['recovered_time'] += (int) ($eligible && in_array('time', $row['stored_fields_applied'], true));
+                $summary['recovered_date'] += (int) ($eligible && in_array('date', $row['stored_fields_applied'], true));
+                $summary['recovered_mapping'] += (int) ($eligible && $row['method'] === DailyPhotoMachineResolutionService::SENDER_MAPPING);
+                $summary['ready_to_materialize'] += (int) ($eligible && $row['diagnostic_subtype'] === 'READY_TO_MATERIALIZE');
+                $summary['true_conflicts'] += (int) in_array($row['diagnostic_subtype'], ['TRUE_MACHINE_CONFLICT', 'TRUE_DATE_CONFLICT', 'TRUE_TIME_CONFLICT'], true);
+                if ($samples->count() < (int) ($filters['limit'] ?? 20)) {
+                    $samples->push([
+                        'job_id' => $row['job']->id,
+                        'action' => $row['action'],
+                        'subtype' => $row['diagnostic_subtype'],
+                        'machine' => $row['machine']?->asset_code,
+                        'date' => $row['recovered_date'],
+                        'time' => $row['recovered_time'],
+                        'image_type' => $row['image_classification']['document_type'] ?? null,
+                    ]);
+                }
                 $subtypes->put(
                     $row['diagnostic_subtype'],
                     (int) $subtypes->get($row['diagnostic_subtype'], 0) + 1,
@@ -129,6 +156,7 @@ class DailyPhotoBacklogService
             ...$summary,
             'by_actionable_subtype' => $subtypes,
             'by_loss_stage' => $subtypes,
+            'samples' => $samples->all(),
         ];
     }
 
@@ -141,6 +169,8 @@ class DailyPhotoBacklogService
             'still_exception' => 0,
             'skipped_protected' => 0,
             'eligibility_changed' => 0,
+            'ignored_hour_meter' => 0,
+            'ignored_non_daily' => 0,
         ];
         $caseIds = collect();
         $affected = collect();
@@ -178,6 +208,42 @@ class DailyPhotoBacklogService
                     }
                     if (! $row['auto_recoverable']) {
                         $summary['still_exception']++;
+
+                        continue;
+                    }
+
+                    if ($row['action'] === 'IGNORE') {
+                        $classification = $row['image_classification'];
+                        $previousState = $this->snapshot($job);
+                        $oldCase = $row['job']->dailyPhotoCaseEvidence?->dailyPhotoCase;
+                        if ($oldCase?->machine_id && $oldCase?->work_date) {
+                            $caseIds->push($oldCase->id);
+                            $affected->push($oldCase->machine_id.'|'.$oldCase->work_date->format('Y-m-d'));
+                        }
+                        $this->cases->detach($job);
+                        $job->refresh();
+                        $dailyMetadata = $job->daily_metadata ?? [];
+                        data_set($dailyMetadata, 'image_classification', [
+                            ...$classification,
+                            'classified_at' => now()->toIso8601String(),
+                            'previous_state' => $previousState,
+                        ]);
+                        $job->update([
+                            'document_type' => $classification['document_type'],
+                            'status' => 'COMPLETED',
+                            'review_status' => 'AUTO_APPROVED',
+                            'machine_id' => null,
+                            'machine_resolution_method' => null,
+                            'machine_resolved_at' => null,
+                            'exceptions' => null,
+                            'error_message' => null,
+                            'daily_metadata' => $dailyMetadata,
+                            'processed_at' => now(),
+                            'claimed_by' => null,
+                            'claimed_at' => null,
+                            'lease_expires_at' => null,
+                        ]);
+                        $summary[$classification['document_type'] === 'IGNORED_HOUR_METER' ? 'ignored_hour_meter' : 'ignored_non_daily']++;
 
                         continue;
                     }
@@ -221,7 +287,7 @@ class DailyPhotoBacklogService
                     $metadata['backlog_recovered_at'] = now()->toIso8601String();
                     $dailyMetadata = $job->daily_metadata ?? [];
                     $final = data_get($dailyMetadata, 'ocr_recovery.final_chosen_result', $this->snapshot($job));
-                    $final['date'] = $job->extracted_date?->format('Y-m-d') ?? $row['recovered_date'];
+                    $final['date'] = $row['recovered_date'];
                     $final['time'] = $job->extracted_time ?? $row['recovered_time'];
                     $final['asset_code'] = $job->observed_asset_code ?? $job->asset_code ?? $row['stored_extraction']['machine'];
                     data_set($dailyMetadata, 'ocr_recovery.final_chosen_result', $final);
@@ -233,7 +299,7 @@ class DailyPhotoBacklogService
                         'machine_resolution_method' => $method,
                         'machine_resolution_metadata' => $metadata,
                         'machine_resolved_at' => now(),
-                        'extracted_date' => $job->extracted_date?->format('Y-m-d') ?? $row['recovered_date'],
+                        'extracted_date' => $row['recovered_date'],
                         'extracted_time' => $job->extracted_time ?? $row['recovered_time'],
                         'shift' => $this->classifyShift($job->extracted_time ?? $row['recovered_time']),
                         'status' => 'COMPLETED',
@@ -296,6 +362,7 @@ class DailyPhotoBacklogService
 
         $rows = $jobs->map(function (OcrJob $job) use ($mappings): array {
             $message = $job->attachment?->message;
+            $imageClassification = $this->imageGate->classifyStored($job);
             $stored = $this->storedOcr->extract($job);
             $asset = $this->assetCodes->resolve($job->observed_asset_code ?? $job->asset_code ?? $stored['machine']);
             if ($stored['machine_conflict']) {
@@ -318,7 +385,11 @@ class DailyPhotoBacklogService
                 : ($asset['machine'] ? DailyPhotoMachineResolutionService::IMAGE_ASSET : ($mapping ? DailyPhotoMachineResolutionService::SENDER_MAPPING : null));
             $reasons = $this->currentReasons($job, $asset, $machine, $candidates->count());
             $protected = $this->isProtected($job);
-            $recoveredDate = $job->extracted_date?->format('Y-m-d') ?? $stored['date'];
+            $persistedDate = $job->extracted_date?->format('Y-m-d');
+            if ($persistedDate && $message?->received_at && $persistedDate > $message->received_at->toDateString()) {
+                $persistedDate = null;
+            }
+            $recoveredDate = $persistedDate ?? $stored['date'];
             $recoveredTime = $job->extracted_time ?? $stored['time'];
             $candidateConflict = $stored['machine_conflict'] || $stored['date_conflict'] || $stored['time_conflict'];
             $completeFields = $machine && $recoveredDate && $recoveredTime && ! $candidateConflict;
@@ -343,29 +414,34 @@ class DailyPhotoBacklogService
                 'has_effective_mapping' => (bool) $mapping,
                 'reasons' => $reasons,
                 'protected' => $protected,
-                'recoverable_fields' => $completeFields || $retryableFields,
-                'action' => $completeFields ? 'RECOVER' : 'RETRY',
+                'recoverable_fields' => (bool) $imageClassification || $completeFields || $retryableFields,
+                'action' => $imageClassification ? 'IGNORE' : ($completeFields ? 'RECOVER' : 'RETRY'),
+                'image_classification' => $imageClassification,
                 'stored_extraction' => $stored,
                 'recovered_date' => $recoveredDate,
                 'recovered_time' => $recoveredTime,
                 'stored_fields_applied' => collect([
-                    ! $job->extracted_date && $stored['date'] ? 'date' : null,
+                    ! $persistedDate && $stored['date'] ? 'date' : null,
                     ! $job->extracted_time && $stored['time'] ? 'time' : null,
                     ! $job->machine_id && $stored['machine'] ? 'machine' : null,
                 ])->filter()->values()->all(),
                 'candidate_conflict' => $candidateConflict,
                 'retry_value_not_merged' => $retryValueNotMerged,
-                'diagnostic_subtype' => $this->diagnosticSubtype(
-                    $job,
-                    $stored,
-                    $machine,
-                    $mapping,
-                    $recoveredDate,
-                    $recoveredTime,
-                    $completeFields,
-                    $membership,
-                    $protected,
-                ),
+                'diagnostic_subtype' => $protected
+                    ? 'PROTECTED'
+                    : ($imageClassification
+                        ? ($imageClassification['document_type'] === 'IGNORED_HOUR_METER' ? 'IGNORED_HOUR_METER' : 'IGNORED_NON_DAILY')
+                        : $this->diagnosticSubtype(
+                            $job,
+                            $stored,
+                            $machine,
+                            $mapping,
+                            $recoveredDate,
+                            $recoveredTime,
+                            $completeFields,
+                            $membership,
+                            $protected,
+                        )),
                 'state_fingerprint' => $this->stateFingerprint($job),
             ];
         });

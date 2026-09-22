@@ -86,6 +86,15 @@ class OcrJob extends Model
             return;
         }
 
+        if (in_array($job->document_type, ['IGNORED_HOUR_METER', 'IGNORED_NON_DAILY_PHOTO'], true)) {
+            $job->newQuery()->whereKey($job->id)->update([
+                'review_status' => 'AUTO_APPROVED',
+                'review_flags' => null,
+            ]);
+
+            return;
+        }
+
         $sample = max(0, min(100, (int) config('ocr.review_sample_percent', 3)));
         $sampled = (abs(crc32((string) $job->id)) % 100) < $sample;
         $job->newQuery()->whereKey($job->id)->update([

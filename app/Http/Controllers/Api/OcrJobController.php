@@ -55,6 +55,7 @@ class OcrJobController extends Controller
                     'sender_id' => $job->attachment->message->sender_id,
                     'sender_name' => $job->attachment->message->sender_name,
                     'sent_at' => $job->attachment->message->sent_at?->toIso8601String(),
+                    'received_at' => $job->attachment->message->received_at?->toIso8601String(),
                 ],
             ],
         ]);

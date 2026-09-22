@@ -11,10 +11,11 @@
 | 16.10.5 | Auto Recovery OCR & Exception Backlog | VERIFIED in production history through PR #46 | Phase 16.10.4 | OCR worker; Exception Center; reconciliation sync | Production merge `5839be6`; checkpoints `9dc4bbb`, `233c5ed` | `docs/phases/PHASE-16.10.5.md` |
 | 16.10.6 | Daily Photo OCR Extraction & Recovery Hardening | COMPLETED locally — 280 Laravel / 49 worker tests PASS | Phase 16.10.5 | OCR worker parser; canonical materialization; backlog recovery | Base `3527725`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.6.md` |
 | 16.10.7 | Residual Daily Photo Exception Root-Cause & Deterministic Recovery | COMPLETED locally — 287 Laravel tests / 1,500 assertions PASS | Phase 16.10.6 | Canonical materialization; retry merge; actionable diagnostic | Base `d5aa4b3`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.7.md` |
+| 16.10.8 | Daily Photo OCR Hardening — time/date recovery and non-daily image gate | COMPLETED locally — 291 Laravel / 56 worker tests PASS | Phase 16.10.7 | OCR worker classification/parser; stored recovery; canonical exclusion | Base `68bf7d8`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.8.md` |
 
 ## Relationship
 
-`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening → 16.10.7 Residual Deterministic Recovery`
+`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening → 16.10.7 Residual Deterministic Recovery → 16.10.8 Context-aware OCR + Image Gate`
 
 - 16.10.1 is a dependency because 16.10.3 must consume and preserve canonical case identity and resolution provenance.
 - 16.10.2 is a dependency because 16.10.3 must consume and preserve canonical evidence/interval/ambiguity semantics.

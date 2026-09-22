@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from rapidocr import RapidOCR
 
-from .imaging import enhance_for_ocr, flatten_ocr_result, read_image, rotate, table_line_score
+from .imaging import (
+    enhance_for_ocr,
+    flatten_ocr_result,
+    hour_meter_structure_score,
+    read_image,
+    rotate,
+    table_line_score,
+)
 from .parser import GENERIC_ASSET_PATTERN, PHONE_PATTERN, normalize_text, parse_date, parse_time
 
 
@@ -16,6 +23,7 @@ class Classification:
     document_type: str
     confidence: float
     raw_text: str
+    metadata: dict = field(default_factory=dict)
 
 
 def _fuzzy_phrase(normalized: str, phrase: str, threshold: float = 0.72) -> bool:
@@ -62,9 +70,32 @@ def _journal_evidence(normalized: str, table_score: float) -> tuple[float, int, 
     return score, form_hits, structural_hits
 
 
-def classify_text(text: str, table_score: float = 0.0, minimum_confidence: float = 0.70) -> Classification:
+def classify_text(
+    text: str,
+    table_score: float = 0.0,
+    minimum_confidence: float = 0.70,
+    hour_meter_structure: float = 0.0,
+) -> Classification:
     normalized = normalize_text(text)
     daily_score = 0.0
+
+    hour_meter_markers = {
+        marker for marker, present in (
+            ("QUARTZ", "QUARTZ" in normalized),
+            ("HOURS", bool(re.search(r"\bHOURS?\b", normalized))),
+            ("HOUR_METER", "HOUR METER" in normalized),
+            ("ENGINE_HOURS", "ENGINE HOURS" in normalized),
+        ) if present
+    }
+    counter_tokens = re.findall(r"(?<!\d)\d(?:[ .]?\d){3,7}(?:[.,]\d)?(?!\d)", normalized)
+    if len(hour_meter_markers) >= 2 and counter_tokens and hour_meter_structure >= 0.25:
+        confidence = min(0.99, 0.82 + min(hour_meter_structure, 1.0) * 0.12)
+        return Classification("IGNORED_HOUR_METER", confidence, text, {
+            "reason": "MULTI_SIGNAL_HOUR_METER",
+            "semantic_markers": sorted(hour_meter_markers),
+            "counter_token_count": len(counter_tokens),
+            "structure_score": round(hour_meter_structure, 4),
+        })
 
     if "TIMEMARK" in normalized or "TIME MARK" in normalized:
         daily_score += 4
@@ -79,6 +110,15 @@ def classify_text(text: str, table_score: float = 0.0, minimum_confidence: float
     if re.search(r"\b[0-2]?\d[:.]\d{2}\b", normalized):
         daily_score += 1
 
+    matched_non_daily = next((phrase for phrase in (
+        'BIEN BAN BAN GIAO', 'HOA DON', 'PHIEU XUAT KHO', 'BIEN BAN NGHIEM THU',
+    ) if phrase in normalized), None)
+    if matched_non_daily:
+        return Classification('IGNORED_NON_DAILY_PHOTO', 0.99, text, {
+            "reason": "KNOWN_NON_DAILY_DOCUMENT",
+            "matched_phrase": matched_non_daily,
+        })
+
     journal_score, form_hits, structural_hits = _journal_evidence(normalized, table_score)
 
     # A ruled equipment journal remains a journal even when photographed in TimeMark.
@@ -91,9 +131,6 @@ def classify_text(text: str, table_score: float = 0.0, minimum_confidence: float
     if strong_journal:
         confidence = min(0.99, 0.72 + form_hits * 0.06 + structural_hits * 0.02 + table_score * 0.08)
         return Classification("WEEKLY_JOURNAL", confidence, text)
-
-    if any(phrase in normalized for phrase in ('BIEN BAN BAN GIAO', 'HOA DON', 'PHIEU XUAT KHO')):
-        return Classification('UNKNOWN', 0.99, text)
 
     top_score = max(daily_score, journal_score)
     margin = abs(daily_score - journal_score)
@@ -125,12 +162,19 @@ class DocumentClassifier:
                 text,
                 table_score=table_line_score(candidate),
                 minimum_confidence=self.minimum_confidence,
+                hour_meter_structure=hour_meter_structure_score(candidate),
             )
             candidates.append((result, ocr_score, len(texts)))
 
         # A strong journal detected at any orientation beats a TimeMark watermark.
         # Within the same type, prefer confidence and OCR quality.
-        type_priority = {"WEEKLY_JOURNAL": 2, "DAILY_TIMEMARK": 1, "UNKNOWN": 0}
+        type_priority = {
+            "IGNORED_HOUR_METER": 4,
+            "WEEKLY_JOURNAL": 3,
+            "IGNORED_NON_DAILY_PHOTO": 2,
+            "DAILY_TIMEMARK": 1,
+            "UNKNOWN": 0,
+        }
         result, best_score, _ = max(
             candidates,
             key=lambda item: (
@@ -145,4 +189,4 @@ class DocumentClassifier:
         document_type = result.document_type
         if confidence < self.minimum_confidence:
             document_type = "UNKNOWN"
-        return Classification(document_type, min(0.99, confidence), result.raw_text)
+        return Classification(document_type, min(0.99, confidence), result.raw_text, result.metadata)

@@ -32,6 +32,9 @@ class ParserTest(unittest.TestCase):
             "21 Tháng 9 2026",
             "21 tháng 9 năm 2026",
             "21 Tháng 9,20265C",
+            "21Thang9,2026",
+            "21 Thanig 9 2026",
+            "21 Tharig 9 2026",
         ):
             with self.subTest(raw=raw):
                 self.assertEqual("2026-09-21", parse_date(raw).isoformat())
@@ -73,8 +76,22 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(set(), parse_time_candidates('plate 15-45'))
         self.assertEqual({'15:45:00'}, {value.isoformat() for value in parse_time_candidates('15-45', allow_dash=True)})
 
+    def test_trailing_one_artifact_is_only_allowed_in_trusted_region(self):
+        self.assertIsNone(parse_time('17:011'))
+        for raw, expected in (("17:011", "17:01:00"), ("22:311", "22:31:00"), ("06:311", "06:31:00")):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, parse_time(raw, allow_trailing_artifact=True).isoformat())
+
+    def test_work_interval_and_duration_do_not_compete_with_capture_time(self):
+        self.assertEqual(
+            {"19:02:00"},
+            {value.isoformat() for value in parse_time_candidates("15:04 - 19:02\nTan ca 19:02")},
+        )
+        self.assertEqual(set(), parse_time_candidates("15:04 - 19:02\n3 giờ 58 phút"))
+
     def test_invalid_time_phone_and_machine_numbers_are_rejected(self):
         self.assertIsNone(parse_time('24:99'))
+        self.assertIsNone(parse_time('54:62'))
         self.assertIsNone(parse_time('090:123:4567'))
         self.assertIsNone(parse_time('T-3C0172'))
 

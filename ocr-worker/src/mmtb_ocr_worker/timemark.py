@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import time
 from collections.abc import Callable
@@ -16,7 +17,7 @@ from .parser import (
     parse_location,
     parse_operator,
     parse_phone,
-    parse_time_candidates,
+    parse_time_evidence,
 )
 
 
@@ -58,6 +59,7 @@ class TimeMarkRecognizer:
         path: Path,
         progress: Callable[[str, int, str, int | None], None] | None = None,
         focus: list[str] | None = None,
+        received_date: date | None = None,
     ) -> TimeMarkResult:
         image = read_image(path)
         best_observed_asset: tuple[str | None, float, str] = (None, 0.0, "")
@@ -70,6 +72,10 @@ class TimeMarkRecognizer:
         work_location = None
         confidences: list[float] = []
         debug_parts: list[str] = []
+        machine_evidence: list[dict] = []
+        date_evidence: list[dict] = []
+        time_evidence: list[dict] = []
+        discarded_date_candidates: set[str] = set()
         requested = set(focus or ["machine", "date", "time"])
 
         for angle in (0, 180, 90, 270):
@@ -107,11 +113,51 @@ class TimeMarkRecognizer:
                 asset = self.matcher.match(text)
                 if asset[1] > best_observed_asset[1]:
                     best_observed_asset = asset
-                asset_candidates.update(self.matcher.valid_matches(text))
+                section_asset_candidates = self.matcher.valid_matches(text)
+                asset_candidates.update(section_asset_candidates)
+                machine_evidence.extend({
+                    "value": value,
+                    "accepted": True,
+                    "reason": "EXACT_OR_BOUNDED_CATALOG_MATCH",
+                    "rotation": angle,
+                    "region": region_name,
+                } for value in sorted(section_asset_candidates))
                 dates, date_is_ambiguous = parse_date_candidates(text)
-                date_candidates.update(dates)
+                for candidate_date in dates:
+                    accepted = received_date is None or candidate_date <= received_date
+                    date_evidence.append({
+                        "value": candidate_date.isoformat(),
+                        "accepted": accepted,
+                        "reason": "PARSED" if accepted else "AFTER_RECEIVED_DATE",
+                        "rotation": angle,
+                        "region": region_name,
+                    })
+                    if accepted:
+                        date_candidates.add(candidate_date)
+                    else:
+                        discarded_date_candidates.add(candidate_date.isoformat())
                 ambiguous_date = ambiguous_date or date_is_ambiguous
-                time_candidates.update(parse_time_candidates(text, allow_dash=region_name == "time_date"))
+                parsed_times, parsed_evidence = parse_time_evidence(
+                    text,
+                    allow_dash=region_name == "time_date",
+                    allow_trailing_artifact=region_name == "time_date",
+                )
+                normalized_text = text.upper()
+                capture_context = (
+                    region_name in {"time_date", "left_overlay"}
+                    or bool(dates)
+                    or "TIMEMARK" in normalized_text
+                    or "TIME MARK" in normalized_text
+                    or "TAN CA" in normalized_text
+                )
+                for evidence in parsed_evidence:
+                    item = {**evidence, "rotation": angle, "region": region_name}
+                    if evidence.get("accepted") and not capture_context:
+                        item["accepted"] = False
+                        item["reason"] = "UNTRUSTED_CONTEXT"
+                    time_evidence.append(item)
+                if capture_context:
+                    time_candidates.update(parsed_times)
                 operator_name = operator_name or parse_operator(text)
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
@@ -139,8 +185,13 @@ class TimeMarkRecognizer:
             raw_text="\n\n".join(debug_parts),
             candidate_metadata={
                 "machine_candidates": sorted(asset_candidates),
+                "machine_evidence": machine_evidence,
                 "date_candidates": sorted(candidate.isoformat() for candidate in date_candidates),
                 "time_candidates": sorted(candidate.isoformat() for candidate in time_candidates),
+                "date_evidence": date_evidence,
+                "time_evidence": time_evidence,
+                "discarded_date_candidates": sorted(discarded_date_candidates),
+                "ambiguous_date": ambiguous_date,
                 "conflicts": [
                     name for name, conflict in (
                         ("machine", len(asset_candidates) > 1),

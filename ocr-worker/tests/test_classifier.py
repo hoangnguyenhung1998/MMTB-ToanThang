@@ -52,6 +52,21 @@ class ClassifierTest(unittest.TestCase):
         result = classify_text("Ảnh công trường không có biểu mẫu", table_score=0.05)
         self.assertEqual("UNKNOWN", result.document_type)
 
+    def test_hour_meter_requires_multiple_semantic_and_structural_signals(self):
+        weak = classify_text("QUARTZ HOURS 001234.5", hour_meter_structure=0.0)
+        self.assertEqual("UNKNOWN", weak.document_type)
+
+        strong = classify_text("QUARTZ HOURS 001234.5", hour_meter_structure=0.70)
+        self.assertEqual("IGNORED_HOUR_METER", strong.document_type)
+        self.assertEqual("MULTI_SIGNAL_HOUR_METER", strong.metadata["reason"])
+
+    def test_known_non_daily_document_is_ignored_but_uncertain_image_is_not(self):
+        self.assertEqual(
+            "IGNORED_NON_DAILY_PHOTO",
+            classify_text("BIÊN BẢN BÀN GIAO THIẾT BỊ").document_type,
+        )
+        self.assertEqual("UNKNOWN", classify_text("Ảnh thiết bị khác").document_type)
+
 
 if __name__ == "__main__":
     unittest.main()
