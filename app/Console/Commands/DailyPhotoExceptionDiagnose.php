@@ -43,6 +43,7 @@ class DailyPhotoExceptionDiagnose extends Command
                 $this->line(strtoupper($section).': '.json_encode($sample[$section], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
             }
             $this->line('CURRENT REASONS: '.implode(', ', $sample['current_reasons']));
+            $this->line('RECOVERY: '.($sample['recoverable'] ? $sample['planned_action'] : 'MANUAL'));
             $this->line('LOSS_STAGE: '.$sample['loss_stage']);
         }
 

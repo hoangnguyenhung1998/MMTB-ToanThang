@@ -87,47 +87,99 @@ class DailyPhotoBacklogService
 
     public function recoveryPreview(array $filters = []): array
     {
-        $report = $this->report($filters);
-        $rows = $report['rows'];
+        $summary = [
+            'total_considered' => 0,
+            'eligible_recover' => 0,
+            'eligible_retry' => 0,
+            'recoverable_from_stored_ocr' => 0,
+            'recoverable_from_mapping' => 0,
+            'requires_ocr_retry' => 0,
+            'still_manual' => 0,
+            'ambiguous' => 0,
+            'protected_skipped' => 0,
+        ];
+        $subtypes = collect();
+
+        $this->query($filters)->chunkById(500, function (Collection $jobs) use (&$summary, $subtypes, $filters): void {
+            $rows = $this->analyse($jobs, $filters)
+                ->when($filters['reason'] ?? null, fn (Collection $items, string $reason) => $items
+                    ->filter(fn (array $row): bool => in_array($reason, $row['reasons'], true)));
+            foreach ($rows as $row) {
+                $summary['total_considered']++;
+                $eligible = $row['auto_recoverable'];
+                $recover = $row['action'] === 'RECOVER';
+                $retry = $row['action'] === 'RETRY';
+                $summary['eligible_recover'] += (int) ($eligible && $recover);
+                $summary['eligible_retry'] += (int) ($eligible && $retry);
+                $summary['recoverable_from_stored_ocr'] += (int) ($eligible && $recover && $row['stored_fields_applied'] !== []);
+                $summary['recoverable_from_mapping'] += (int) ($eligible && $recover && $row['method'] === DailyPhotoMachineResolutionService::SENDER_MAPPING);
+                $summary['requires_ocr_retry'] += (int) ($retry && $eligible);
+                $summary['still_manual'] += (int) (! $eligible && ! $row['protected']);
+                $summary['ambiguous'] += (int) ($row['candidate_conflict'] || in_array('MACHINE_AMBIGUOUS', $row['reasons'], true));
+                $summary['protected_skipped'] += (int) $row['protected'];
+                $subtypes->put(
+                    $row['diagnostic_subtype'],
+                    (int) $subtypes->get($row['diagnostic_subtype'], 0) + 1,
+                );
+            }
+        });
+        $subtypes = $subtypes->sortDesc()->all();
 
         return [
-            'total_considered' => $report['total'],
-            'recoverable_from_stored_ocr' => $rows->where('action', 'RECOVER')
-                ->filter(fn (array $row): bool => $row['stored_fields_applied'] !== [])->count(),
-            'recoverable_from_mapping' => $rows->where('action', 'RECOVER')
-                ->filter(fn (array $row): bool => $row['method'] === DailyPhotoMachineResolutionService::SENDER_MAPPING)->count(),
-            'requires_ocr_retry' => $rows->where('action', 'RETRY')->where('auto_recoverable', true)->count(),
-            'still_manual' => $rows->where('auto_recoverable', false)->where('protected', false)->count(),
-            'ambiguous' => $rows->filter(fn (array $row): bool => $row['candidate_conflict']
-                || in_array('MACHINE_AMBIGUOUS', $row['reasons'], true))->count(),
-            'protected_skipped' => $rows->where('protected', true)->count(),
-            'by_loss_stage' => $rows->countBy('loss_stage')->sortDesc()->all(),
+            ...$summary,
+            'by_actionable_subtype' => $subtypes,
+            'by_loss_stage' => $subtypes,
         ];
     }
 
     public function recover(array $filters): array
     {
-        $summary = ['total' => 0, 'recovered' => 0, 'queued_retry' => 0, 'still_exception' => 0, 'skipped_protected' => 0];
+        $summary = [
+            'total' => 0,
+            'recovered' => 0,
+            'queued_retry' => 0,
+            'still_exception' => 0,
+            'skipped_protected' => 0,
+            'eligibility_changed' => 0,
+        ];
         $caseIds = collect();
         $affected = collect();
 
         $this->query($filters)->chunkById(200, function (Collection $jobs) use (&$summary, $filters, $caseIds, $affected): void {
-            foreach ($this->analyse($jobs, $filters) as $row) {
-                if (($filters['reason'] ?? null) && ! in_array($filters['reason'], $row['reasons'], true)) {
-                    continue;
-                }
-                $summary['total']++;
-                DB::transaction(function () use ($row, &$summary, $caseIds, $affected): void {
-                    $job = OcrJob::query()->lockForUpdate()->findOrFail($row['job']->id);
-                    if ($job->status !== 'EXCEPTION' || $this->isProtected($job)) {
+            $rows = $this->analyse($jobs, $filters)
+                ->when($filters['reason'] ?? null, fn (Collection $items, string $reason) => $items
+                    ->filter(fn (array $row): bool => in_array($reason, $row['reasons'], true)))
+                ->values();
+            $summary['total'] += $rows->count();
+            if ($rows->isEmpty()) {
+                return;
+            }
+
+            DB::transaction(function () use ($rows, &$summary, $caseIds, $affected): void {
+                $locked = OcrJob::query()->whereKey($rows->pluck('job.id')->all())
+                    ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+
+                foreach ($rows as $row) {
+                    $job = $locked->get($row['job']->id);
+                    if (! $job || $job->status !== 'EXCEPTION') {
+                        $summary['eligibility_changed']++;
+
+                        continue;
+                    }
+                    if ($this->stateFingerprint($job) !== $row['state_fingerprint']) {
+                        $summary['eligibility_changed']++;
+
+                        continue;
+                    }
+                    if ($this->isProtected($job)) {
                         $summary['skipped_protected']++;
 
-                        return;
+                        continue;
                     }
                     if (! $row['auto_recoverable']) {
                         $summary['still_exception']++;
 
-                        return;
+                        continue;
                     }
 
                     if ($row['action'] === 'RETRY') {
@@ -149,7 +201,7 @@ class DailyPhotoBacklogService
                         ]);
                         $summary['queued_retry']++;
 
-                        return;
+                        continue;
                     }
 
                     $machine = $row['machine'];
@@ -200,8 +252,8 @@ class DailyPhotoBacklogService
                     $caseIds->push($case?->id);
                     $affected->push($machine->id.'|'.$job->extracted_date->format('Y-m-d'));
                     $summary['recovered']++;
-                }, 3);
-            }
+                }
+            }, 3);
         });
 
         $this->pairing->recomputeMany($caseIds->filter()->unique()->all());
@@ -219,7 +271,11 @@ class DailyPhotoBacklogService
 
     private function query(array $filters): Builder
     {
-        return OcrJob::query()->with(['attachment.message', 'machine:id,asset_code'])
+        return OcrJob::query()->with([
+            'attachment.message',
+            'machine:id,asset_code',
+            'dailyPhotoCaseEvidence.dailyPhotoCase',
+        ])
             ->where('document_type', 'DAILY_TIMEMARK')
             ->where('status', 'EXCEPTION')
             ->when($filters['job'] ?? null, fn (Builder $query, int|string $id) => $query->whereKey($id))
@@ -232,7 +288,7 @@ class DailyPhotoBacklogService
             ->orderBy('id');
     }
 
-    private function analyse(Collection $jobs, array $filters): Collection
+    public function analyse(Collection $jobs, array $filters = []): Collection
     {
         $senderIds = $jobs->map(fn (OcrJob $job) => $job->attachment?->message?->sender_id)->filter()->unique();
         $mappings = ZaloSenderMachineMapping::query()->with('machine:id,asset_code')
@@ -273,6 +329,9 @@ class DailyPhotoBacklogService
                 && (int) $job->ocr_retry_attempts < 1
                 && (int) $job->attempts < max(1, (int) config('ocr.max_attempts'));
 
+            $membership = $job->dailyPhotoCaseEvidence;
+            $retryValueNotMerged = $this->retryValueNotMerged($job, $stored);
+
             return [
                 'job' => $job,
                 'sender_id' => $message?->sender_id ?: '(không có sender)',
@@ -295,7 +354,19 @@ class DailyPhotoBacklogService
                     ! $job->machine_id && $stored['machine'] ? 'machine' : null,
                 ])->filter()->values()->all(),
                 'candidate_conflict' => $candidateConflict,
-                'loss_stage' => $this->lossStage($job, $stored, $completeFields),
+                'retry_value_not_merged' => $retryValueNotMerged,
+                'diagnostic_subtype' => $this->diagnosticSubtype(
+                    $job,
+                    $stored,
+                    $machine,
+                    $mapping,
+                    $recoveredDate,
+                    $recoveredTime,
+                    $completeFields,
+                    $membership,
+                    $protected,
+                ),
+                'state_fingerprint' => $this->stateFingerprint($job),
             ];
         });
 
@@ -324,6 +395,7 @@ class DailyPhotoBacklogService
             $row['candidate_assignments'] = $activeAssignments;
             $row['auto_recoverable'] = ! $row['protected'] && $inScope && $row['recoverable_fields'];
             $row['in_scope'] = $inScope;
+            $row['loss_stage'] = $row['diagnostic_subtype'];
 
             return $row;
         })->filter(fn (array $row): bool => $row['in_scope'])->values();
@@ -399,29 +471,96 @@ class DailyPhotoBacklogService
         ];
     }
 
-    private function lossStage(OcrJob $job, array $stored, bool $completeFields): string
-    {
-        if ($stored['machine_conflict'] || $stored['date_conflict'] || $stored['time_conflict']) {
-            return 'CANDIDATE_AGGREGATION_FAILURE';
+    private function diagnosticSubtype(
+        OcrJob $job,
+        array $stored,
+        mixed $machine,
+        mixed $mapping,
+        ?string $recoveredDate,
+        ?string $recoveredTime,
+        bool $completeFields,
+        mixed $membership,
+        bool $protected,
+    ): string {
+        if ($protected) {
+            return 'PROTECTED';
         }
-        if (! $job->extracted_date && $stored['date']) {
-            return 'PARSER_DROPPED_DATE';
+        if ($stored['machine_conflict']) {
+            return 'TRUE_MACHINE_CONFLICT';
         }
-        if (! $job->extracted_time && $stored['time']) {
-            return 'PARSER_DROPPED_TIME';
+        if ($stored['date_conflict']) {
+            return 'TRUE_DATE_CONFLICT';
         }
-        if (! $job->machine_id && $stored['machine']) {
-            return 'PARSER_DROPPED_MACHINE';
+        if ($stored['time_conflict']) {
+            return 'TRUE_TIME_CONFLICT';
         }
-        if ($completeFields && $job->status === 'EXCEPTION') {
-            return 'STALE_EXCEPTION_REASON';
+        if ($completeFields && $this->retryValueNotMerged($job, $stored)) {
+            return 'RETRY_VALUE_NOT_MERGED';
         }
-        if ($job->ocr_retry_attempts > 0) {
-            return filled(data_get($job->daily_metadata, 'ocr_recovery.retry_extraction'))
-                ? 'RETRY_RESULT_NOT_APPLIED' : 'RETRY_FAILED';
+        if ($completeFields && ! $job->machine_id && $mapping) {
+            return 'MAPPING_RECOVERABLE';
+        }
+        if ($completeFields && ($stored['legacy_conflicts'] ?? []) !== []) {
+            return 'LEGACY_AGGREGATION_FAILURE';
+        }
+        if ($completeFields && ($stored['duplicate_equivalent_fields'] ?? []) !== []) {
+            return 'DUPLICATE_EQUIVALENT_CANDIDATES';
+        }
+        if ($completeFields && (! $membership || ! $membership->capture_datetime)) {
+            return 'READY_TO_MATERIALIZE';
+        }
+        if ($completeFields) {
+            return 'STALE_EXCEPTION_ONLY';
+        }
+        if (! $machine) {
+            return $mapping ? 'MAPPING_RECOVERABLE' : 'MAPPING_MISSING';
+        }
+        if (! $recoveredDate && ! $recoveredTime
+            && ($stored['date_candidates'] ?? []) === []
+            && ($stored['time_candidates'] ?? []) === []) {
+            return 'OCR_RECOGNITION_FAILURE';
+        }
+        if (! $recoveredDate) {
+            return 'ACTUALLY_MISSING_DATE';
+        }
+        if (! $recoveredTime) {
+            return 'ACTUALLY_MISSING_TIME';
         }
 
         return 'OCR_RECOGNITION_FAILURE';
+    }
+
+    private function retryValueNotMerged(OcrJob $job, array $stored): bool
+    {
+        $retry = data_get($job->daily_metadata, 'ocr_recovery.retry_extraction', []);
+        if (! is_array($retry) || $retry === []) {
+            return false;
+        }
+
+        return (! $job->extracted_date && filled($retry['date'] ?? null) && filled($stored['date'] ?? null))
+            || (! $job->extracted_time && filled($retry['time'] ?? null) && filled($stored['time'] ?? null))
+            || (! $job->machine_id && filled($retry['asset_code'] ?? null) && filled($stored['machine'] ?? null));
+    }
+
+    private function stateFingerprint(OcrJob $job): string
+    {
+        return hash('sha256', serialize([
+            $job->status,
+            $job->review_status,
+            $job->reviewed_at?->format('Y-m-d H:i:s.u'),
+            $job->machine_id,
+            $job->machine_resolution_method,
+            $job->observed_asset_code,
+            $job->asset_code,
+            $job->extracted_date?->format('Y-m-d'),
+            $job->extracted_time,
+            $job->exceptions,
+            $job->ocr_retry_attempts,
+            $job->ocr_retry_reason,
+            $job->raw_text,
+            $job->ocr_initial_extraction,
+            $job->daily_metadata,
+        ]));
     }
 
     private function classifyShift(?string $time): ?string

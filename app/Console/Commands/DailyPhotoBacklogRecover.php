@@ -45,9 +45,9 @@ class DailyPhotoBacklogRecover extends Command
 
         if ($this->option('dry-run')) {
             $preview = $service->recoveryPreview($filters);
-            $this->table(['Metric', 'Count'], collect($preview)->except('by_loss_stage')
+            $this->table(['Metric', 'Count'], collect($preview)->except(['by_loss_stage', 'by_actionable_subtype'])
                 ->map(fn (mixed $count, string $metric): array => [$metric, $count])->values()->all());
-            $this->table(['Root cause / loss stage', 'Count'], collect($preview['by_loss_stage'])
+            $this->table(['Actionable subtype', 'Count'], collect($preview['by_actionable_subtype'])
                 ->map(fn (int $count, string $stage): array => [$stage, $count])->values()->all());
 
             return self::SUCCESS;

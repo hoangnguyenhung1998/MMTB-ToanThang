@@ -10,10 +10,11 @@
 | 16.10.4 | Automatic Daily Photo reconciliation and Zalo machine mapping | VERIFIED in production history; large-volume allocate-times follow-up COMPLETED locally — 272 tests / 1,362 assertions PASS | Phase 16.10.1; Phase 16.10.2; Phase 16.10.3 | Phase 16.9; Phase 16.10.5 | Production merges `eecee42`, `8db9f8c`; local large-volume hotfix from base `5839be6` | `docs/phases/PHASE-16.10.4.md` |
 | 16.10.5 | Auto Recovery OCR & Exception Backlog | VERIFIED in production history through PR #46 | Phase 16.10.4 | OCR worker; Exception Center; reconciliation sync | Production merge `5839be6`; checkpoints `9dc4bbb`, `233c5ed` | `docs/phases/PHASE-16.10.5.md` |
 | 16.10.6 | Daily Photo OCR Extraction & Recovery Hardening | COMPLETED locally — 280 Laravel / 49 worker tests PASS | Phase 16.10.5 | OCR worker parser; canonical materialization; backlog recovery | Base `3527725`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.6.md` |
+| 16.10.7 | Residual Daily Photo Exception Root-Cause & Deterministic Recovery | COMPLETED locally — 287 Laravel tests / 1,500 assertions PASS | Phase 16.10.6 | Canonical materialization; retry merge; actionable diagnostic | Base `d5aa4b3`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.7.md` |
 
 ## Relationship
 
-`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening`
+`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening → 16.10.7 Residual Deterministic Recovery`
 
 - 16.10.1 is a dependency because 16.10.3 must consume and preserve canonical case identity and resolution provenance.
 - 16.10.2 is a dependency because 16.10.3 must consume and preserve canonical evidence/interval/ambiguity semantics.
