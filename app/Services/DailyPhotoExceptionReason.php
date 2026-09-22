@@ -13,6 +13,8 @@ class DailyPhotoExceptionReason
         'SENDER_MAPPING_MISSING' => 'Người gửi chưa được ánh xạ máy',
         'CAPTURE_TIME_MISSING' => 'Thiếu giờ chụp',
         'CAPTURE_DATE_MISSING' => 'Thiếu ngày chụp',
+        'CAPTURE_DATE_AMBIGUOUS' => 'Ngày chụp có nhiều cách hiểu',
+        'CAPTURE_TIME_AMBIGUOUS' => 'Giờ chụp có nhiều candidate xung đột',
         'ASSIGNMENT_AMBIGUOUS' => 'Phân công máy không duy nhất',
         'DUPLICATE_TIMESTAMP' => 'Trùng thời điểm ảnh',
         'PAIRING_AMBIGUOUS' => 'Không thể ghép ảnh an toàn',
@@ -40,10 +42,11 @@ class DailyPhotoExceptionReason
             'UNKNOWN_ASSET_CODE' => filled($job?->observed_asset_code ?? $job?->asset_code)
                 ? 'MACHINE_OCR_INVALID'
                 : 'SENDER_MAPPING_MISSING',
-            'AMBIGUOUS_DATE' => 'CAPTURE_DATE_MISSING',
+            'AMBIGUOUS_DATE' => 'CAPTURE_DATE_AMBIGUOUS',
             'ODD_EVIDENCE_COUNT', 'INVALID_ORDER', 'NEAR_DUPLICATE' => 'PAIRING_AMBIGUOUS',
             'MACHINE_OCR_INVALID', 'MACHINE_NOT_FOUND', 'MACHINE_AMBIGUOUS',
             'SENDER_MAPPING_MISSING', 'CAPTURE_TIME_MISSING', 'CAPTURE_DATE_MISSING',
+            'CAPTURE_DATE_AMBIGUOUS', 'CAPTURE_TIME_AMBIGUOUS',
             'ASSIGNMENT_AMBIGUOUS', 'DUPLICATE_TIMESTAMP', 'PAIRING_AMBIGUOUS',
             'OCR_RETRY_FAILED' => $reason,
             default => 'OTHER',

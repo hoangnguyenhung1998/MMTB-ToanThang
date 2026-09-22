@@ -21,6 +21,7 @@ class DailyPhotoBacklogService
         private readonly DailyPhotoCaseService $cases,
         private readonly DailyPhotoPairingService $pairing,
         private readonly DailyPhotoSyncService $sync,
+        private readonly DailyPhotoStoredOcrExtractor $storedOcr,
     ) {}
 
     public function report(array $filters = []): array
@@ -82,6 +83,26 @@ class DailyPhotoBacklogService
                 'manual' => (int) (($stats['total'] ?? 0) - ($stats['auto_recoverable'] ?? 0)),
             ];
         })->sortByDesc('waiting')->values();
+    }
+
+    public function recoveryPreview(array $filters = []): array
+    {
+        $report = $this->report($filters);
+        $rows = $report['rows'];
+
+        return [
+            'total_considered' => $report['total'],
+            'recoverable_from_stored_ocr' => $rows->where('action', 'RECOVER')
+                ->filter(fn (array $row): bool => $row['stored_fields_applied'] !== [])->count(),
+            'recoverable_from_mapping' => $rows->where('action', 'RECOVER')
+                ->filter(fn (array $row): bool => $row['method'] === DailyPhotoMachineResolutionService::SENDER_MAPPING)->count(),
+            'requires_ocr_retry' => $rows->where('action', 'RETRY')->where('auto_recoverable', true)->count(),
+            'still_manual' => $rows->where('auto_recoverable', false)->where('protected', false)->count(),
+            'ambiguous' => $rows->filter(fn (array $row): bool => $row['candidate_conflict']
+                || in_array('MACHINE_AMBIGUOUS', $row['reasons'], true))->count(),
+            'protected_skipped' => $rows->where('protected', true)->count(),
+            'by_loss_stage' => $rows->countBy('loss_stage')->sortDesc()->all(),
+        ];
     }
 
     public function recover(array $filters): array
@@ -146,6 +167,13 @@ class DailyPhotoBacklogService
                     $metadata['image_asset_candidate_machine_ids'] = $asset['candidate_machine_ids'];
                     $metadata['sender_machine_mapping_id'] = $mapping?->id;
                     $metadata['backlog_recovered_at'] = now()->toIso8601String();
+                    $dailyMetadata = $job->daily_metadata ?? [];
+                    $final = data_get($dailyMetadata, 'ocr_recovery.final_chosen_result', $this->snapshot($job));
+                    $final['date'] = $job->extracted_date?->format('Y-m-d') ?? $row['recovered_date'];
+                    $final['time'] = $job->extracted_time ?? $row['recovered_time'];
+                    $final['asset_code'] = $job->observed_asset_code ?? $job->asset_code ?? $row['stored_extraction']['machine'];
+                    data_set($dailyMetadata, 'ocr_recovery.final_chosen_result', $final);
+                    data_set($dailyMetadata, 'ocr_recovery.source', $row['stored_fields_applied'] === [] ? 'BACKLOG_RECOVERY' : 'STORED_REPARSE');
                     $job->update([
                         'machine_id' => $machine->id,
                         'asset_code' => $asset['observed'] ?: $machine->asset_code,
@@ -153,18 +181,22 @@ class DailyPhotoBacklogService
                         'machine_resolution_method' => $method,
                         'machine_resolution_metadata' => $metadata,
                         'machine_resolved_at' => now(),
+                        'extracted_date' => $job->extracted_date?->format('Y-m-d') ?? $row['recovered_date'],
+                        'extracted_time' => $job->extracted_time ?? $row['recovered_time'],
+                        'shift' => $this->classifyShift($job->extracted_time ?? $row['recovered_time']),
                         'status' => 'COMPLETED',
                         'exceptions' => null,
+                        'daily_metadata' => $dailyMetadata,
                         'ocr_final_source' => match ($method) {
                             DailyPhotoMachineResolutionService::HUMAN => 'MANUAL',
                             DailyPhotoMachineResolutionService::SENDER_MAPPING,
                             DailyPhotoMachineResolutionService::SENDER_DRIVER_HISTORY => 'SENDER_MAPPING',
-                            default => 'OCR_INITIAL',
+                            default => $row['stored_fields_applied'] === [] ? 'OCR_INITIAL' : 'STORED_REPARSE',
                         },
                         'processed_at' => now(),
                     ]);
                     $caseIds->push($job->daily_photo_case_id);
-                    $case = $this->cases->materialize($job, false);
+                    $case = $this->cases->materialize($job, false, $row['candidate_assignments']);
                     $caseIds->push($case?->id);
                     $affected->push($machine->id.'|'.$job->extracted_date->format('Y-m-d'));
                     $summary['recovered']++;
@@ -190,6 +222,7 @@ class DailyPhotoBacklogService
         return OcrJob::query()->with(['attachment.message', 'machine:id,asset_code'])
             ->where('document_type', 'DAILY_TIMEMARK')
             ->where('status', 'EXCEPTION')
+            ->when($filters['job'] ?? null, fn (Builder $query, int|string $id) => $query->whereKey($id))
             ->when($filters['sender_id'] ?? null, fn (Builder $query, string $sender) => $query
                 ->whereHas('attachment.message', fn (Builder $message) => $message->where('sender_id', $sender)))
             ->when($filters['date_from'] ?? null, fn (Builder $query, string $date) => $query
@@ -207,7 +240,16 @@ class DailyPhotoBacklogService
 
         $rows = $jobs->map(function (OcrJob $job) use ($mappings): array {
             $message = $job->attachment?->message;
-            $asset = $this->assetCodes->resolve($job->observed_asset_code ?? $job->asset_code);
+            $stored = $this->storedOcr->extract($job);
+            $asset = $this->assetCodes->resolve($job->observed_asset_code ?? $job->asset_code ?? $stored['machine']);
+            if ($stored['machine_conflict']) {
+                $asset = [
+                    ...$asset,
+                    'status' => 'AMBIGUOUS',
+                    'machine' => null,
+                    'candidate_asset_codes' => $stored['machine_candidates'],
+                ];
+            }
             $candidates = $this->mappingCandidates(
                 $mappings->get($message?->sender_id) ?? collect(),
                 $message?->received_at,
@@ -220,8 +262,12 @@ class DailyPhotoBacklogService
                 : ($asset['machine'] ? DailyPhotoMachineResolutionService::IMAGE_ASSET : ($mapping ? DailyPhotoMachineResolutionService::SENDER_MAPPING : null));
             $reasons = $this->currentReasons($job, $asset, $machine, $candidates->count());
             $protected = $this->isProtected($job);
-            $completeFields = $machine && $job->extracted_date && $job->extracted_time;
+            $recoveredDate = $job->extracted_date?->format('Y-m-d') ?? $stored['date'];
+            $recoveredTime = $job->extracted_time ?? $stored['time'];
+            $candidateConflict = $stored['machine_conflict'] || $stored['date_conflict'] || $stored['time_conflict'];
+            $completeFields = $machine && $recoveredDate && $recoveredTime && ! $candidateConflict;
             $retryableFields = ! $completeFields
+                && ! $candidateConflict
                 && $asset['status'] !== 'AMBIGUOUS'
                 && $candidates->count() <= 1
                 && (int) $job->ocr_retry_attempts < 1
@@ -240,28 +286,42 @@ class DailyPhotoBacklogService
                 'protected' => $protected,
                 'recoverable_fields' => $completeFields || $retryableFields,
                 'action' => $completeFields ? 'RECOVER' : 'RETRY',
+                'stored_extraction' => $stored,
+                'recovered_date' => $recoveredDate,
+                'recovered_time' => $recoveredTime,
+                'stored_fields_applied' => collect([
+                    ! $job->extracted_date && $stored['date'] ? 'date' : null,
+                    ! $job->extracted_time && $stored['time'] ? 'time' : null,
+                    ! $job->machine_id && $stored['machine'] ? 'machine' : null,
+                ])->filter()->values()->all(),
+                'candidate_conflict' => $candidateConflict,
+                'loss_stage' => $this->lossStage($job, $stored, $completeFields),
             ];
         });
 
         $scopeRequested = filled($filters['command_center_id'] ?? null) || filled($filters['project_id'] ?? null);
-        $assignments = collect();
-        if ($scopeRequested) {
-            $dates = $rows->map(fn (array $row) => $row['job']->extracted_date?->format('Y-m-d'))->filter();
-            $assignments = MachineAssignment::query()
-                ->whereIn('machine_id', $rows->pluck('machine.id')->filter()->unique())
-                ->when($dates->isNotEmpty(), fn (Builder $query) => $query
-                    ->where('time_in', '<=', $dates->max().' 23:59:59')
-                    ->where(fn (Builder $query) => $query->whereNull('time_out')->orWhere('time_out', '>', $dates->min().' 00:00:00')))
-                ->when($filters['command_center_id'] ?? null, fn (Builder $query, int|string $id) => $query->where('command_center_id', $id))
-                ->when($filters['project_id'] ?? null, fn (Builder $query, int|string $id) => $query->where('project_id', $id))
-                ->get()->groupBy('machine_id');
-        }
+        $dates = $rows->pluck('recovered_date')->filter();
+        $assignments = $dates->isEmpty() ? collect() : MachineAssignment::query()
+            ->whereIn('machine_id', $rows->pluck('machine.id')->filter()->unique())
+            ->where('time_in', '<=', $dates->max().' 23:59:59')
+            ->where(fn (Builder $query) => $query->whereNull('time_out')->orWhere('time_out', '>', $dates->min().' 00:00:00'))
+            ->get()->groupBy('machine_id');
 
-        return $rows->map(function (array $row) use ($scopeRequested, $assignments): array {
-            $date = $row['job']->extracted_date?->format('Y-m-d');
-            $inScope = ! $scopeRequested || ($row['machine'] && $date && ($assignments->get($row['machine']->id) ?? collect())
-                ->contains(fn (MachineAssignment $assignment): bool => $assignment->time_in->lte($date.' 23:59:59')
-                    && (! $assignment->time_out || $assignment->time_out->gt($date.' 00:00:00'))));
+        return $rows->map(function (array $row) use ($scopeRequested, $assignments, $filters): array {
+            $date = $row['recovered_date'];
+            $activeAssignments = $row['machine'] && $date
+                ? ($assignments->get($row['machine']->id) ?? collect())->filter(
+                    fn (MachineAssignment $assignment): bool => $assignment->time_in->lte($date.' 23:59:59')
+                        && (! $assignment->time_out || $assignment->time_out->gt($date.' 00:00:00'))
+                )->values()
+                : collect();
+            $inScope = ! $scopeRequested || $activeAssignments->contains(
+                fn (MachineAssignment $assignment): bool => (! filled($filters['command_center_id'] ?? null)
+                        || $assignment->command_center_id === (int) $filters['command_center_id'])
+                    && (! filled($filters['project_id'] ?? null)
+                        || $assignment->project_id === (int) $filters['project_id'])
+            );
+            $row['candidate_assignments'] = $activeAssignments;
             $row['auto_recoverable'] = ! $row['protected'] && $inScope && $row['recoverable_fields'];
             $row['in_scope'] = $inScope;
 
@@ -337,5 +397,46 @@ class DailyPhotoBacklogService
             'raw_text' => $job->raw_text,
             'image_fingerprint' => data_get($job->daily_metadata, 'image_fingerprint'),
         ];
+    }
+
+    private function lossStage(OcrJob $job, array $stored, bool $completeFields): string
+    {
+        if ($stored['machine_conflict'] || $stored['date_conflict'] || $stored['time_conflict']) {
+            return 'CANDIDATE_AGGREGATION_FAILURE';
+        }
+        if (! $job->extracted_date && $stored['date']) {
+            return 'PARSER_DROPPED_DATE';
+        }
+        if (! $job->extracted_time && $stored['time']) {
+            return 'PARSER_DROPPED_TIME';
+        }
+        if (! $job->machine_id && $stored['machine']) {
+            return 'PARSER_DROPPED_MACHINE';
+        }
+        if ($completeFields && $job->status === 'EXCEPTION') {
+            return 'STALE_EXCEPTION_REASON';
+        }
+        if ($job->ocr_retry_attempts > 0) {
+            return filled(data_get($job->daily_metadata, 'ocr_recovery.retry_extraction'))
+                ? 'RETRY_RESULT_NOT_APPLIED' : 'RETRY_FAILED';
+        }
+
+        return 'OCR_RECOGNITION_FAILURE';
+    }
+
+    private function classifyShift(?string $time): ?string
+    {
+        if (! $time) {
+            return null;
+        }
+        $minutes = ((int) substr($time, 0, 2) * 60) + (int) substr($time, 3, 2);
+
+        return match (true) {
+            $minutes < 660 => 'MORNING',
+            $minutes < 810 => 'MIDDAY',
+            $minutes < 990 => 'AFTERNOON',
+            $minutes <= 1050 => 'AFTERNOON_OT',
+            default => 'EVENING_OT',
+        };
     }
 }

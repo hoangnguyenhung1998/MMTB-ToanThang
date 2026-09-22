@@ -108,6 +108,15 @@ class OcrJobService
                 $data = $this->mergeTargetedRetryResult($job, $data);
             }
 
+            $candidateMetadata = $data['candidate_metadata'] ?? [];
+            $candidateConflicts = collect($candidateMetadata['conflicts'] ?? [])->unique();
+            if ($candidateConflicts->contains('date')) {
+                $data['date'] = null;
+            }
+            if ($candidateConflicts->contains('time')) {
+                $data['time'] = null;
+            }
+
             $observedAssetCode = isset($data['asset_code'])
                 ? strtoupper(trim((string) $data['asset_code']))
                 : null;
@@ -118,7 +127,7 @@ class OcrJobService
                     $observedAssetCode,
                     $data['date'] ?? null,
                     $data['time'] ?? null,
-                    true,
+                    ! $candidateConflicts->contains('machine'),
                 )
                 : ($legacyAsset = app(AssetCodeResolver::class)->resolve($observedAssetCode)) + [
                     'observed_asset_code' => $observedAssetCode,
@@ -134,10 +143,19 @@ class OcrJobService
                         'image_asset_resolved_machine_id' => $legacyAsset['machine']?->id,
                     ],
                 ];
+            if ($candidateConflicts->contains('machine')
+                && $resolution['method'] !== DailyPhotoMachineResolutionService::HUMAN) {
+                $resolution['machine'] = null;
+                $resolution['image_machine'] = null;
+                $resolution['method'] = null;
+                $resolution['asset_resolution_status'] = 'AMBIGUOUS';
+                $resolution['metadata']['image_asset_resolution_status'] = 'AMBIGUOUS';
+                $resolution['metadata']['image_asset_candidate_codes'] = $candidateMetadata['machine_candidates'] ?? [];
+            }
             $machine = $resolution['machine'];
             $shift = isset($data['time']) ? $this->classifyShift($data['time']) : null;
-            $exceptions = $this->detectExceptions($data, $resolution, $shift);
-            $retryFocus = $this->retryFocus($job, $data, $resolution, $exceptions);
+            $exceptions = $this->detectExceptions($data, $resolution, $shift, $candidateConflicts->all());
+            $retryFocus = $this->retryFocus($job, $data, $resolution, $exceptions, $candidateConflicts->all());
             $willRetry = config('daily_photos.enabled') && ! $isTargetedRetry && $retryFocus !== [];
             if ($isTargetedRetry && $exceptions !== []) {
                 $exceptions[] = 'OCR_RETRY_FAILED';
@@ -158,6 +176,7 @@ class OcrJobService
                     default => 'UNRESOLVED',
                 },
                 'image_fingerprint' => $data['image_fingerprint'] ?? null,
+                'ocr_candidate_summary' => $candidateMetadata,
                 'ocr_recovery' => [
                     'initial_extraction' => $job->ocr_initial_extraction ?? $this->extractionSnapshot($data),
                     'retry_reason' => $willRetry ? implode(',', $retryFocus) : $job->ocr_retry_reason,
@@ -457,14 +476,18 @@ class OcrJobService
         return $jobs->count() + $exhausted->count();
     }
 
-    private function detectExceptions(array $data, array $resolution, ?string $shift): array
+    private function detectExceptions(array $data, array $resolution, ?string $shift, array $candidateConflicts = []): array
     {
         $exceptions = [];
 
-        if (empty($data['date'])) {
+        if (in_array('date', $candidateConflicts, true)) {
+            $exceptions[] = 'CAPTURE_DATE_AMBIGUOUS';
+        } elseif (empty($data['date'])) {
             $exceptions[] = 'CAPTURE_DATE_MISSING';
         }
-        if (empty($data['time'])) {
+        if (in_array('time', $candidateConflicts, true)) {
+            $exceptions[] = 'CAPTURE_TIME_AMBIGUOUS';
+        } elseif (empty($data['time'])) {
             $exceptions[] = 'CAPTURE_TIME_MISSING';
         } elseif ($shift === null) {
             $exceptions[] = 'CAPTURE_TIME_MISSING';
@@ -482,10 +505,13 @@ class OcrJobService
         return array_values(array_unique($exceptions));
     }
 
-    private function retryFocus(OcrJob $job, array $data, array $resolution, array $exceptions): array
+    private function retryFocus(OcrJob $job, array $data, array $resolution, array $exceptions, array $candidateConflicts = []): array
     {
         if ((int) $job->ocr_retry_attempts >= 1
             || (int) $job->attempts >= max(1, (int) config('ocr.max_attempts'))) {
+            return [];
+        }
+        if ($candidateConflicts !== []) {
             return [];
         }
 
@@ -494,8 +520,8 @@ class OcrJobService
         }
 
         return collect([
-            empty($data['date']) ? 'date' : null,
-            empty($data['time']) ? 'time' : null,
+            empty($data['date']) && ! in_array('date', $candidateConflicts, true) ? 'date' : null,
+            empty($data['time']) && ! in_array('time', $candidateConflicts, true) ? 'time' : null,
         ])->filter()->values()->all();
     }
 
@@ -515,6 +541,7 @@ class OcrJobService
         }
 
         $data['confidence'] = min((float) ($data['confidence'] ?? 0), (float) ($initial['confidence'] ?? 0));
+        $data['candidate_metadata'] ??= $initial['candidate_metadata'] ?? null;
 
         return $data;
     }
@@ -524,6 +551,7 @@ class OcrJobService
         return collect($data)->only([
             'date', 'time', 'asset_code', 'operator_name', 'phone', 'work_location',
             'confidence', 'raw_text', 'image_fingerprint',
+            'candidate_metadata',
         ])->all();
     }
 

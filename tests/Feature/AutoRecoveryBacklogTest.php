@@ -117,6 +117,34 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame(0, app(DailyPhotoBacklogService::class)->report(['sender_id' => 'collision'])['auto_recoverable']);
     }
 
+    public function test_worker_candidate_conflicts_fail_closed_without_mapping_fallback_or_retry(): void
+    {
+        $mapped = $this->machine('T-XX0717');
+        $job = $this->pendingJob('candidate-conflict');
+        $this->mapping($job, $mapped);
+
+        $completed = $this->complete($job, [
+            'date' => '2026-09-21',
+            'time' => '06:22:00',
+            'candidate_metadata' => [
+                'machine_candidates' => ['T-XX0717', 'T-XL0345'],
+                'date_candidates' => ['2026-09-21', '2026-09-22'],
+                'time_candidates' => ['06:22:00', '06:57:00'],
+                'conflicts' => ['machine', 'date', 'time'],
+            ],
+        ]);
+
+        $this->assertSame('EXCEPTION', $completed->status);
+        $this->assertNull($completed->machine_id);
+        $this->assertNull($completed->extracted_date);
+        $this->assertNull($completed->extracted_time);
+        $this->assertSame(0, $completed->ocr_retry_attempts);
+        $this->assertContains('MACHINE_AMBIGUOUS', $completed->exceptions);
+        $this->assertContains('CAPTURE_DATE_AMBIGUOUS', $completed->exceptions);
+        $this->assertContains('CAPTURE_TIME_AMBIGUOUS', $completed->exceptions);
+        $this->assertDatabaseCount('daily_photo_case_evidence', 0);
+    }
+
     public function test_creating_mapping_does_not_recover_backlog_until_explicit_action_and_action_is_idempotent(): void
     {
         $machine = $this->machine('T-XX0717');
@@ -340,6 +368,113 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame(1, $result['skipped_protected']);
         $this->assertSame('EXCEPTION', $job->fresh()->status);
         $this->assertSame('HUMAN', $job->fresh()->machine_resolution_method);
+    }
+
+    public function test_stored_raw_reparse_recovers_five_production_patterns_without_external_ocr(): void
+    {
+        $patterns = [
+            ['sender-a', 'T-XL0303', "[0deg/asset]\nT-XL 0303\n\n[0deg/full]\n06:22\n21 Sep,2026", '06:22:00'],
+            ['sender-b', 'T-3C0172', "[0deg/full]\nT-3C 0172\n11:02\n09/21/2026", '11:02:00'],
+            ['sender-c', 'T-3C0140', "[0deg/asset]\nT-3C0140\n\n[0deg/time_date]\n22:30\n\n[180deg/left_overlay]\n21 Tháng 9,2026", '22:30:00'],
+            ['sender-e', 'SGC-T-3C0556', "[0deg/full]\nSGC-T-3C0556\n17:33\n21 Tháng 9,20265C", '17:33:00'],
+        ];
+        $jobs = collect();
+        foreach ($patterns as [$sender, $assetCode, $raw, $time]) {
+            $this->machine($assetCode);
+            $job = $this->exceptionJob($sender, null);
+            $job->update([
+                'extracted_date' => null,
+                'extracted_time' => null,
+                'raw_text' => $raw,
+                'exceptions' => ['CAPTURE_DATE_MISSING', 'CAPTURE_TIME_MISSING'],
+            ]);
+            $jobs->push([$job, $assetCode, $time]);
+        }
+
+        $mappedMachine = $this->machine('SGC-T-3C0715');
+        $mapped = $this->exceptionJob('sender-d', '3C0JI2');
+        $mapped->update([
+            'extracted_date' => null,
+            'extracted_time' => null,
+            'raw_text' => "[0deg/asset]\n3C0JI2\n\n[0deg/time_date]\n06-57\n21 Tháng 9,2026",
+            'exceptions' => ['MACHINE_OCR_INVALID', 'CAPTURE_DATE_MISSING', 'CAPTURE_TIME_MISSING'],
+        ]);
+        $this->mapping($mapped, $mappedMachine);
+        $jobs->push([$mapped, $mappedMachine->asset_code, '06:57:00']);
+
+        $previewBefore = OcrJob::query()->orderBy('id')->get()->map->getAttributes();
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
+        $this->artisan('ocr:daily-backlog-recover --dry-run')->assertSuccessful();
+
+        $this->assertSame(5, $preview['recoverable_from_stored_ocr']);
+        $this->assertSame(1, $preview['recoverable_from_mapping']);
+        $this->assertEquals($previewBefore, OcrJob::query()->orderBy('id')->get()->map->getAttributes());
+
+        $first = app(DailyPhotoBacklogService::class)->recover([]);
+        $second = app(DailyPhotoBacklogService::class)->recover([]);
+
+        $this->assertSame(5, $first['recovered']);
+        $this->assertSame(0, $first['queued_retry']);
+        $this->assertSame(0, $second['total']);
+        foreach ($jobs as [$job, $assetCode, $time]) {
+            $fresh = $job->fresh();
+            $this->assertSame('COMPLETED', $fresh->status);
+            $this->assertSame($assetCode, $fresh->machine->asset_code);
+            $this->assertSame('2026-09-21', $fresh->extracted_date->format('Y-m-d'));
+            $this->assertSame($time, $fresh->extracted_time);
+            $this->assertNull($fresh->exceptions);
+            $this->assertNotNull($fresh->dailyPhotoCaseEvidence);
+        }
+        $this->assertDatabaseCount('daily_photo_case_evidence', 5);
+    }
+
+    public function test_stored_retry_payload_supplements_missing_field_and_clears_stale_retry_reason(): void
+    {
+        $machine = $this->machine('T-XL0303');
+        $job = $this->exceptionJob('stored-retry', $machine->asset_code);
+        $job->update([
+            'extracted_time' => null,
+            'ocr_retry_attempts' => 1,
+            'ocr_retry_reason' => 'time',
+            'exceptions' => ['CAPTURE_TIME_MISSING', 'OCR_RETRY_FAILED'],
+            'daily_metadata' => [
+                'ocr_recovery' => [
+                    'retry_extraction' => [
+                        'raw_text' => "[0deg/time_date]\n06:22\n21 Sep,2026",
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $fresh = $job->fresh();
+        $this->assertSame(1, $result['recovered']);
+        $this->assertSame('06:22:00', $fresh->extracted_time);
+        $this->assertSame('2026-09-10', $fresh->extracted_date->format('Y-m-d'));
+        $this->assertNull($fresh->exceptions);
+        $this->assertSame('STORED_REPARSE', $fresh->ocr_final_source);
+        $this->assertSame('STORED_REPARSE', data_get($fresh->daily_metadata, 'ocr_recovery.source'));
+    }
+
+    public function test_conflicting_stored_candidates_remain_manual_and_do_not_queue_retry(): void
+    {
+        $machine = $this->machine('T-XL0303');
+        $job = $this->exceptionJob('stored-conflict', $machine->asset_code);
+        $job->update([
+            'extracted_date' => null,
+            'raw_text' => "[0deg/full]\n21 Sep,2026\n22 Sep,2026\n06:22",
+            'exceptions' => ['CAPTURE_DATE_MISSING'],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview(['job' => $job->id]);
+        $result = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $this->assertSame(1, $preview['ambiguous']);
+        $this->assertSame(1, $preview['still_manual']);
+        $this->assertSame(1, $result['still_exception']);
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertSame(0, $job->fresh()->ocr_retry_attempts);
     }
 
     public function test_backlog_report_is_read_only_and_classifies_sender_and_reason(): void

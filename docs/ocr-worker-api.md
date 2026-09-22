@@ -85,13 +85,21 @@ If classification is uncertain, submit `UNKNOWN`; Laravel stores the job as `EXC
   "phone": "0367756204",
   "work_location": "Ha Long Xanh",
   "confidence": 0.96,
-  "raw_text": "full OCR text"
+  "raw_text": "full OCR text",
+  "candidate_metadata": {
+    "machine_candidates": ["T-XL0354"],
+    "date_candidates": ["2026-08-20"],
+    "time_candidates": ["16:45:00"],
+    "conflicts": []
+  }
 }
 ```
 
 Laravel assigns one deterministic shift: `MORNING`, `MIDDAY`, `AFTERNOON`, `AFTERNOON_OT`, or `EVENING_OT`.
 
 Machine codes are compared through a case-insensitive canonical key that removes whitespace and common separators (`- . _ / : ;`). A key must identify exactly one catalog machine. Unknown candidates may fall back to the sender mapping effective at message receipt; normalized catalog collisions remain exceptions.
+
+`candidate_metadata` is optional for backward compatibility. Updated RapidOCR workers aggregate deterministic candidates across crops and rotations. More than one valid machine/date/time candidate is reported in `conflicts`; Laravel fails closed, does not use sender fallback for a machine conflict, and does not schedule a retry merely to choose between conflicting valid values. A dash-separated time is normalized only when it came from the bounded `time_date` crop. Weekly Journal requests and semantics do not use this field.
 
 ## Complete a weekly journal
 

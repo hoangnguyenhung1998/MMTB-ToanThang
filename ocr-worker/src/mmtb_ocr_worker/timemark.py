@@ -10,7 +10,14 @@ import cv2
 from rapidocr import RapidOCR
 
 from .imaging import enhance_for_ocr, flatten_ocr_result, read_image, region, rotate
-from .parser import AssetMatcher, parse_date, parse_location, parse_operator, parse_phone, parse_time
+from .parser import (
+    AssetMatcher,
+    parse_date_candidates,
+    parse_location,
+    parse_operator,
+    parse_phone,
+    parse_time_candidates,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,7 @@ class TimeMarkResult:
     confidence: float
     raw_text: str
     image_fingerprint: str | None = None
+    candidate_metadata: dict | None = None
 
     def api_payload(self) -> dict:
         return {
@@ -36,6 +44,7 @@ class TimeMarkResult:
             "confidence": round(self.confidence, 4),
             "raw_text": self.raw_text,
             "image_fingerprint": self.image_fingerprint,
+            "candidate_metadata": self.candidate_metadata or {},
         }
 
 
@@ -51,9 +60,11 @@ class TimeMarkRecognizer:
         focus: list[str] | None = None,
     ) -> TimeMarkResult:
         image = read_image(path)
-        best_asset: tuple[str | None, float, str] = (None, 0.0, "")
-        captured_date = None
-        captured_time = None
+        best_observed_asset: tuple[str | None, float, str] = (None, 0.0, "")
+        asset_candidates: set[str] = set()
+        date_candidates = set()
+        time_candidates = set()
+        ambiguous_date = False
         operator_name = None
         phone = None
         work_location = None
@@ -94,23 +105,26 @@ class TimeMarkRecognizer:
                 debug_parts.append(f"[{angle}deg/{region_name}]\n{text}")
 
                 asset = self.matcher.match(text)
-                if asset[1] > best_asset[1]:
-                    best_asset = asset
-                captured_date = captured_date or parse_date(text)
-                # A time candidate needs date context; don't mistake an isolated meter for time.
-                if parse_date(text):
-                    captured_time = captured_time or parse_time(text)
+                if asset[1] > best_observed_asset[1]:
+                    best_observed_asset = asset
+                asset_candidates.update(self.matcher.valid_matches(text))
+                dates, date_is_ambiguous = parse_date_candidates(text)
+                date_candidates.update(dates)
+                ambiguous_date = ambiguous_date or date_is_ambiguous
+                time_candidates.update(parse_time_candidates(text, allow_dash=region_name == "time_date"))
                 operator_name = operator_name or parse_operator(text)
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
 
-                if self._requested_fields_found(requested, best_asset, captured_date, captured_time):
-                    break
-            if (focus and self._requested_fields_found(requested, best_asset, captured_date, captured_time)) or (
-                not focus and captured_date and captured_time
-            ):
-                break
-
+        captured_date = next(iter(date_candidates)) if len(date_candidates) == 1 and not ambiguous_date else None
+        captured_time = next(iter(time_candidates)) if len(time_candidates) == 1 else None
+        if len(asset_candidates) == 1:
+            selected_asset = next(iter(asset_candidates))
+            best_asset = (selected_asset, 1.0, selected_asset)
+        elif len(asset_candidates) > 1:
+            best_asset = (None, 0.0, "")
+        else:
+            best_asset = best_observed_asset
         average_ocr = sum(confidences) / len(confidences) if confidences else 0.0
         confidence = min(average_ocr, best_asset[1]) if best_asset[0] else average_ocr
         return TimeMarkResult(
@@ -123,14 +137,18 @@ class TimeMarkRecognizer:
             work_location=work_location,
             confidence=confidence,
             raw_text="\n\n".join(debug_parts),
-        )
-
-    @staticmethod
-    def _requested_fields_found(requested, best_asset, captured_date, captured_time) -> bool:
-        return bool(
-            ("machine" not in requested or (best_asset[0] and best_asset[1] >= 0.85))
-            and ("date" not in requested or captured_date)
-            and ("time" not in requested or captured_time)
+            candidate_metadata={
+                "machine_candidates": sorted(asset_candidates),
+                "date_candidates": sorted(candidate.isoformat() for candidate in date_candidates),
+                "time_candidates": sorted(candidate.isoformat() for candidate in time_candidates),
+                "conflicts": [
+                    name for name, conflict in (
+                        ("machine", len(asset_candidates) > 1),
+                        ("date", len(date_candidates) > 1 or ambiguous_date),
+                        ("time", len(time_candidates) > 1),
+                    ) if conflict
+                ],
+            },
         )
 
     @staticmethod
