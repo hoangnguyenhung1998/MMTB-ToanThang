@@ -13,10 +13,11 @@
 | 16.10.7 | Residual Daily Photo Exception Root-Cause & Deterministic Recovery | COMPLETED locally — 287 Laravel tests / 1,500 assertions PASS | Phase 16.10.6 | Canonical materialization; retry merge; actionable diagnostic | Base `d5aa4b3`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.7.md` |
 | 16.10.8 | Daily Photo OCR Hardening — time/date recovery and non-daily image gate | COMPLETED locally — 291 Laravel / 56 worker tests PASS | Phase 16.10.7 | OCR worker classification/parser; stored recovery; canonical exclusion | Base `68bf7d8`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.8.md` |
 | 16.10.9 | Daily Photo TimeMark-First OCR + Source-Aware Fallback | COMPLETED locally — 293 Laravel / 58 worker tests PASS | Phase 16.10.8 | TimeMark recognizer; stored OCR recovery; protected backlog | Base `c53c6c8`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.9.md` |
+| 16.10.9.1 | Safe Manual Daily Photo Re-OCR | COMPLETED locally — 306 Laravel / 58 worker tests PASS | Phase 16.10.9 | OcrJob claim/lease; manual backlog protection | Production base `854b175`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.9.1.md` |
 
 ## Relationship
 
-`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening → 16.10.7 Residual Deterministic Recovery → 16.10.8 Context-aware OCR + Image Gate → 16.10.9 TimeMark-first + Source-aware Fallback`
+`16.10.1 Canonical Foundation → 16.10.2 Deterministic Pairing → 16.10.3 Canonical Downstream Integration → 16.10.4 Auto-first Reconciliation + Sender Mapping → 16.10.5 Auto Recovery + Backlog → 16.10.6 Extraction + Recovery Hardening → 16.10.7 Residual Deterministic Recovery → 16.10.8 Context-aware OCR + Image Gate → 16.10.9 TimeMark-first + Source-aware Fallback → 16.10.9.1 Safe Manual Re-OCR`
 
 - 16.10.1 is a dependency because 16.10.3 must consume and preserve canonical case identity and resolution provenance.
 - 16.10.2 is a dependency because 16.10.3 must consume and preserve canonical evidence/interval/ambiguity semantics.

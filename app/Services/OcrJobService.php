@@ -37,7 +37,10 @@ class OcrJobService
                     $documentTypes !== [],
                     fn ($query) => $query->whereIn('document_type', $documentTypes),
                 )
-                ->where('attempts', '<', $maxAttempts)
+                ->where(function ($query) use ($maxAttempts): void {
+                    $query->where('attempts', '<', $maxAttempts)
+                        ->orWhere('daily_metadata->manual_reocr->claimable', true);
+                })
                 ->where(function ($query): void {
                     $query->whereIn('status', ['PENDING', 'RETRY'])
                         ->orWhere(function ($expired): void {
@@ -53,14 +56,26 @@ class OcrJobService
                 return null;
             }
 
-            $job->update([
+            $dailyMetadata = $job->daily_metadata ?? [];
+            $manualReocrClaim = data_get($dailyMetadata, 'manual_reocr.claimable') === true;
+            if ($manualReocrClaim) {
+                data_set($dailyMetadata, 'manual_reocr.claimable', false);
+                data_set($dailyMetadata, 'manual_reocr.claimed_at', now()->toIso8601String());
+                data_set($dailyMetadata, 'manual_reocr.worker_id', $workerId);
+            }
+
+            $claimUpdates = [
                 'status' => 'PROCESSING',
                 'claimed_by' => $workerId,
                 'claimed_at' => now(),
                 'lease_expires_at' => now()->addSeconds(max(1, (int) config('ocr.lease_seconds'))),
                 'attempts' => $job->attempts + 1,
                 'error_message' => null,
-            ]);
+            ];
+            if ($manualReocrClaim) {
+                $claimUpdates['daily_metadata'] = $dailyMetadata;
+            }
+            $job->update($claimUpdates);
 
             $this->processingRuns->start($job, $workerId);
 
@@ -186,6 +201,12 @@ class OcrJobService
                     'source' => $finalSource,
                 ],
             ];
+            if ($manualReocr = data_get($job->daily_metadata, 'manual_reocr')) {
+                $manualReocr['completed_at'] = now()->toIso8601String();
+                $manualReocr['completed_attempt'] = $attempt;
+                $manualReocr['result_status'] = $willRetry ? 'RETRY' : ($exceptions === [] ? 'COMPLETED' : 'EXCEPTION');
+                $metadata['manual_reocr'] = $manualReocr;
+            }
             if (config('daily_photos.enabled') && $machine && ! empty($data['date']) && ! empty($metadata['image_fingerprint'])) {
                 $metadata['near_duplicate_ids'] = OcrJob::query()->where('machine_id', $machine->id)->whereDate('extracted_date', $data['date'])
                     ->whereKeyNot($job->id)->whereNotNull('daily_metadata')->get()->filter(function ($other) use ($metadata) {
@@ -469,6 +490,10 @@ class OcrJobService
         $exhausted = OcrJob::query()
             ->whereIn('status', ['PENDING', 'RETRY'])
             ->where('attempts', '>=', $maxAttempts)
+            ->where(function ($query): void {
+                $query->whereNull('daily_metadata->manual_reocr->claimable')
+                    ->orWhere('daily_metadata->manual_reocr->claimable', '!=', true);
+            })
             ->lockForUpdate()
             ->limit(100)
             ->get();
