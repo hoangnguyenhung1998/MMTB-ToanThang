@@ -411,13 +411,14 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertSame('EXCEPTION', $protected->fresh()->status);
     }
 
-    public function test_stored_raw_reparse_recovers_five_production_patterns_without_external_ocr(): void
+    public function test_stored_raw_reparse_recovers_source_aware_production_patterns_without_external_ocr(): void
     {
         $patterns = [
-            ['sender-a', 'T-XL0303', "[0deg/asset]\nT-XL 0303\n\n[0deg/full]\n06:22\n21 Sep,2026", '06:22:00'],
+            ['sender-a', 'T-XL0303', "[0deg/left_overlay]\nT-XL 0303\n13:52\n21Sep,2026", '13:52:00'],
             ['sender-b', 'T-3C0172', "[0deg/full]\nT-3C 0172\n11:02\n09/21/2026", '11:02:00'],
             ['sender-c', 'T-3C0140', "[0deg/asset]\nT-3C0140\n\n[0deg/time_date]\n22:30\n\n[180deg/left_overlay]\n21 Tháng 9,2026", '22:30:00'],
             ['sender-e', 'SGC-T-3C0556', "[0deg/full]\nSGC-T-3C0556\n17:33\n21 Tháng 9,20265C", '17:33:00'],
+            ['sender-f', 'VT-LL0008', "[0deg/time_date]\nVT-LL0008\n11:01\n21 Tháng 9,2026\n\n[0deg/left_overlay]\nVT-LL0008\n11:01\n21 Tháng 9,2026\n\n[180deg/full]\nVT-LL0008\n10:11\n21 Tháng 9,2026", '11:01:00'],
         ];
         $jobs = collect();
         foreach ($patterns as [$sender, $assetCode, $raw, $time]) {
@@ -449,14 +450,14 @@ class AutoRecoveryBacklogTest extends TestCase
         $preview = app(DailyPhotoBacklogService::class)->recoveryPreview();
         $this->artisan('ocr:daily-backlog-recover --dry-run')->assertSuccessful();
 
-        $this->assertSame(5, $preview['recoverable_from_stored_ocr']);
+        $this->assertSame(6, $preview['recoverable_from_stored_ocr']);
         $this->assertSame(1, $preview['recoverable_from_mapping']);
         $this->assertEquals($previewBefore, OcrJob::query()->orderBy('id')->get()->map->getAttributes());
 
         $first = app(DailyPhotoBacklogService::class)->recover([]);
         $second = app(DailyPhotoBacklogService::class)->recover([]);
 
-        $this->assertSame(5, $first['recovered']);
+        $this->assertSame(6, $first['recovered']);
         $this->assertSame(0, $first['queued_retry']);
         $this->assertSame(0, $second['total']);
         foreach ($jobs as [$job, $assetCode, $time]) {
@@ -468,7 +469,7 @@ class AutoRecoveryBacklogTest extends TestCase
             $this->assertNull($fresh->exceptions);
             $this->assertNotNull($fresh->dailyPhotoCaseEvidence);
         }
-        $this->assertDatabaseCount('daily_photo_case_evidence', 5);
+        $this->assertDatabaseCount('daily_photo_case_evidence', 6);
     }
 
     public function test_stored_reparse_handles_compact_machine_artifact_date_and_context_time(): void
@@ -566,6 +567,48 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertNotNull($missingTime->fresh()->dailyPhotoCaseEvidence);
     }
 
+    public function test_source_aware_candidate_metadata_recovers_without_new_ocr_and_is_idempotent(): void
+    {
+        $machine = $this->machine('VT-LL0008');
+        $job = $this->exceptionJob('metadata-reparse', $machine->asset_code);
+        $job->attachment->message->update(['received_at' => '2026-09-22 06:01:00']);
+        $job->update([
+            'extracted_date' => null,
+            'extracted_time' => null,
+            'raw_text' => null,
+            'exceptions' => ['CAPTURE_DATE_MISSING', 'CAPTURE_TIME_AMBIGUOUS'],
+            'daily_metadata' => [
+                'ocr_candidate_summary' => [
+                    'machine_candidates' => ['VT-LL0008'],
+                    'date_candidates' => ['2026-09-21'],
+                    'time_candidates' => ['11:01:00'],
+                    'machine_evidence' => [
+                        ['value' => 'VT-LL0008', 'accepted' => true, 'rotation' => 0, 'region' => 'primary_timemark', 'priority' => 0],
+                    ],
+                    'date_evidence' => [
+                        ['value' => '2026-09-21', 'accepted' => true, 'rotation' => 0, 'region' => 'primary_timemark', 'priority' => 0],
+                    ],
+                    'time_evidence' => [
+                        ['value' => '11:01:00', 'accepted' => true, 'rotation' => 0, 'region' => 'primary_timemark', 'priority' => 0],
+                        ['value' => '10:11:00', 'accepted' => true, 'rotation' => 180, 'region' => 'full', 'priority' => 3],
+                    ],
+                    'conflicts' => ['time'],
+                ],
+            ],
+        ]);
+
+        $preview = app(DailyPhotoBacklogService::class)->recoveryPreview(['job' => $job->id]);
+        $first = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+        $second = app(DailyPhotoBacklogService::class)->recover(['job' => $job->id]);
+
+        $this->assertSame(1, $preview['eligible_recover']);
+        $this->assertSame(1, $first['recovered']);
+        $this->assertSame(0, $second['total']);
+        $this->assertSame('11:01:00', $job->fresh()->extracted_time);
+        $this->assertSame('2026-09-21', $job->fresh()->extracted_date->format('Y-m-d'));
+        $this->assertNotNull($job->fresh()->dailyPhotoCaseEvidence);
+    }
+
     public function test_vt_lu0196_complete_residual_rows_materialize_despite_stale_automatic_reasons(): void
     {
         $machine = $this->machine('VT-LU0196');
@@ -607,7 +650,7 @@ class AutoRecoveryBacklogTest extends TestCase
             'machine_resolution_method' => 'IMAGE_ASSET',
             'extracted_date' => '2026-07-27',
             'extracted_time' => '14:30:00',
-            'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[180deg/time_date]\n2026-07-27 16:47",
+            'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[0deg/left_overlay]\n2026-07-27 16:47",
             'exceptions' => json_encode(['CAPTURE_TIME_AMBIGUOUS']),
             'status' => 'EXCEPTION',
         ]);
@@ -809,7 +852,7 @@ class AutoRecoveryBacklogTest extends TestCase
                 'machine_resolution_method' => 'IMAGE_ASSET',
                 'extracted_date' => '2026-07-27',
                 'extracted_time' => '14:30:00',
-                'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[180deg/time_date]\n2026-07-27 16:47",
+                'raw_text' => "[0deg/time_date]\n2026-07-27 14:30\n\n[0deg/left_overlay]\n2026-07-27 16:47",
                 'exceptions' => json_encode(['CAPTURE_TIME_AMBIGUOUS']),
                 'created_at' => $now,
                 'updated_at' => $now,

@@ -1,50 +1,57 @@
 # Project State
 
-- Updated: 2026-09-22
-- Current Phase: 16.10.8 — Daily Photo OCR Hardening.
+- Updated: 2026-09-24
+- Current Phase: 16.10.9 — Daily Photo TimeMark-First OCR + Source-Aware Fallback.
 - Status: COMPLETED locally — implementation, required tests, documentation and final checks PASS.
-- Branch: `fix/phase-16-10-8-daily-photo-ocr-hardening`.
-- Verified production base: `68bf7d8`.
+- Branch: `fix/phase-16-10-9-timemark-first-ocr`.
+- Verified production base: `c53c6c8` (Phase 16.10.8 production merge).
 - Current HEAD: final local checkpoint commit containing this document; resolve with `git rev-parse HEAD`.
-- Push / PR / merge / deploy / production recovery / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
+- Push / PR / merge / deploy / production recovery / mass re-OCR / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
 
 ## Current result
 
-- Source-aware time/date evidence now retains crop/rotation/context and excludes work intervals, durations, invalid tokens and dates after local receipt date.
-- Trusted TimeMark repair supports bounded dash and one trailing `1`; controlled Vietnamese date corruption and compact exact machine forms are recoverable.
-- Online classification can terminate confident hour-meter and known non-daily images before the expensive Daily TimeMark crop pass. This gate still uses the existing full-image classification OCR and is not fully pre-OCR.
-- Stored backlog cleanup supports the same ignored terminal states, provenance, canonical detachment, protected-row guard, idempotency and expanded dry-run metrics/samples.
-- No schema change. API additions are backward-compatible for old workers; deployment requires Laravel/API before worker update/restart.
+- Daily TimeMark recognition now starts with one 0° bottom-left relative ROI and stops immediately when machine/date/time are deterministic.
+- Missing fields progress through 0° TimeMark crops, wider 0° crops and only then 180°/90°/270° fallback.
+- Machine/date/time candidates retain orientation, crop, preprocessing and priority. Lower tiers supplement missing fields but cannot create conflict against resolved higher-tier evidence; true same-tier ambiguity still fails closed.
+- Stored OCR raw sections and candidate metadata use the same hierarchy, allowing deterministic dry-run recovery without blind re-OCR.
+- Compact English month dates such as `21Sep,2026` are supported. Time artifacts remain trusted-region-only, ambiguous artifacts are not guessed, and fuzzy machine substitution was removed.
+- Protected/manual/HUMAN and hour-meter/non-daily safety rules are unchanged.
 
 ## Proven root causes
 
-- Previous aggregation discarded evidence source/context and treated all crop times as peers.
-- Work interval values were not excluded before conflict detection.
-- Controlled trailing-digit and compact/corrupted date forms were outside the parser grammar.
-- Capture dates lacked a `received_at` upper bound.
-- Known non-daily images had no terminal ignored state; hour meters had no multi-signal classifier.
-- Stored Laravel machine recovery did not share the worker's compact whole-text exact catalog scan.
+- The Phase 16.10.8 recognizer always executed 20 passes: five crops across 0°/180°/90°/270°.
+- Online and stored aggregation treated every accepted candidate as equal regardless of source, allowing rotated/wide OCR noise to manufacture false conflicts.
+- Compact day/month English dates were outside the parser grammar.
+- EXIF transpose already exists; no OCR engine or orientation-detector replacement was needed.
 
 ## Verified checks
 
 | Check | Result |
 |---|---|
-| Worker targeted parser/classifier/TimeMark/API/lease set | PASS: 51 tests |
-| Laravel API + backlog + diagnostic targeted set | PASS: 57 tests, 432 assertions |
-| Full Python suite | PASS: 56 tests, 1.93s |
-| Python compile | PASS with isolated pycache path; project pycache was not deleted |
-| 1,000-row backlog guards | PASS: final full-suite timings 2.66s and 1.55s; query guards intact |
-| Full Laravel suite | PASS: 291 tests, 1,537 assertions, 57.16s |
-| Pint `--test` | PASS: 12 changed PHP files |
-| PHP syntax | PASS: 12 changed PHP files |
+| Worker targeted parser/TimeMark/classifier/worker | PASS: 46 tests |
+| Laravel API/backlog/diagnostic/asset targeted | PASS: 61 tests, 479 assertions |
+| Full Python worker suite | PASS: 58 tests, 1.481s |
+| Full Laravel suite | PASS: 293 tests, 1,561 assertions, 92.29s |
+| 1,000-row backlog performance/query guards | PASS inside full Laravel suite |
+| Python compile | PASS with isolated temporary pycache |
+| PHP syntax | PASS: 5 changed PHP files |
+| Pint `--test` | PASS: 5 changed PHP files |
 | `git diff --check` | PASS |
 
-Tests use synthetic/mock OCR outputs and SQLite in-memory databases. Live images, production MySQL distribution and production runtime behavior are NOT VERIFIED.
+Tests use mocked OCR output and SQLite in-memory databases. Live production images, production MySQL distribution, reported backlog counts and runtime CPU are NOT VERIFIED.
+
+## Deployment impact
+
+- Migration/backfill: NO.
+- Laravel/API update: YES, before worker rollout.
+- OCR worker update/restart: YES, only after approved merged code is available on the runtime laptop.
+- Collector update/restart: NO.
+- Production recovery: dry-run first; any `--execute` remains separately gated.
 
 ## NEXT ACTION
 
-1. Review the final local checkpoint commit on `fix/phase-16-10-8-daily-photo-ocr-hardening` with `git show --stat --oneline HEAD`.
-2. If review passes, explicitly authorize push/PR; do not push, merge or deploy automatically.
-3. After separately authorized deployment, deploy Laravel/API first, then update/restart the OCR worker and verify health plus one controlled flow. No migration or Collector restart is required.
-4. Run read-only `php artisan ocr:daily-backlog-recover --dry-run --limit=20` with approved filters; review ignored/recovered/conflict/retry/protected counts and samples.
-5. Run `--execute` only after the same-scope dry-run is accepted and production write is separately authorized.
+1. Review the local checkpoint on `fix/phase-16-10-9-timemark-first-ocr` with `git show --stat --oneline HEAD` and inspect the TimeMark/source-aware diff.
+2. If review passes, explicitly authorize push/PR. Do not push, merge or deploy automatically.
+3. After a separately approved deployment, update Laravel/API first, then update/restart only the OCR worker and verify health plus one clean primary-ROI Daily Photo flow.
+4. Run a scoped production dry-run of `php artisan ocr:daily-backlog-recover --dry-run --limit=20`; verify the 18 protected rows remain protected and inspect recovered/true-conflict samples.
+5. Authorize any production `--execute` only after accepting the same-scope dry-run. Do not mass re-OCR.

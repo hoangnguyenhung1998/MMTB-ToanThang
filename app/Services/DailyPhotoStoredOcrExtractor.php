@@ -42,15 +42,10 @@ class DailyPhotoStoredOcrExtractor
             ->unique('raw_text')
             ->values();
 
-        $dates = collect();
-        $times = collect();
-        $ambiguousDates = collect();
-        $machineCandidates = collect([
-            $job->observed_asset_code,
-            data_get($job->ocr_initial_extraction, 'asset_code'),
-            data_get($job->daily_metadata, 'ocr_recovery.retry_extraction.asset_code'),
-            data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result.asset_code'),
-        ])->filter();
+        $machineRecords = collect();
+        $dateRecords = collect();
+        $timeRecords = collect();
+        $ambiguousDateRecords = collect();
         $candidateOccurrences = ['machine' => 0, 'date' => 0, 'time' => 0];
         $legacyConflicts = collect();
         $dateEvidence = collect();
@@ -58,21 +53,47 @@ class DailyPhotoStoredOcrExtractor
 
         foreach ($payloads as $payload) {
             foreach ($this->sections((string) $payload['raw_text']) as $section) {
+                $priority = $this->sourcePriority($section['rotation'], $section['region']);
                 $parsed = $this->parseText($section['text'], $section['region']);
                 $candidateOccurrences['date'] += count($parsed['dates']);
                 $candidateOccurrences['time'] += count($parsed['times']);
-                $dates->push(...$parsed['dates']);
-                $times->push(...$parsed['times']);
-                $ambiguousDates->push(...$parsed['ambiguous_dates']);
+                foreach ($parsed['dates'] as $value) {
+                    $dateRecords->push(compact('value', 'priority'));
+                }
+                foreach ($parsed['times'] as $value) {
+                    $timeRecords->push(compact('value', 'priority'));
+                }
+                foreach ($parsed['ambiguous_dates'] as $value) {
+                    $ambiguousDateRecords->push(compact('value', 'priority'));
+                }
                 $dateEvidence->push(...collect($parsed['date_evidence'] ?? [])->map(fn (array $item): array => [
                     ...$item, 'source' => $payload['source'], 'rotation' => $section['rotation'], 'region' => $section['region'],
+                    'priority' => $priority,
                 ]));
                 $timeEvidence->push(...collect($parsed['time_evidence'] ?? [])->map(fn (array $item): array => [
                     ...$item, 'source' => $payload['source'], 'rotation' => $section['rotation'], 'region' => $section['region'],
+                    'priority' => $priority,
                 ]));
                 $sectionMachines = $this->machineCandidates($section['text']);
                 $candidateOccurrences['machine'] += count($sectionMachines);
-                $machineCandidates->push(...$sectionMachines);
+                foreach ($sectionMachines as $candidate) {
+                    $resolved = $this->assetCodes->resolve($candidate);
+                    if ($resolved['status'] === 'MATCHED') {
+                        $machineRecords->push(['value' => $resolved['machine']->asset_code, 'priority' => $priority]);
+                    }
+                }
+            }
+        }
+
+        foreach (collect([
+            $job->observed_asset_code,
+            data_get($job->ocr_initial_extraction, 'asset_code'),
+            data_get($job->daily_metadata, 'ocr_recovery.retry_extraction.asset_code'),
+            data_get($job->daily_metadata, 'ocr_recovery.final_chosen_result.asset_code'),
+        ])->filter() as $candidate) {
+            $resolved = $this->assetCodes->resolve($candidate);
+            if ($resolved['status'] === 'MATCHED') {
+                $machineRecords->push(['value' => $resolved['machine']->asset_code, 'priority' => -1]);
             }
         }
 
@@ -84,20 +105,62 @@ class DailyPhotoStoredOcrExtractor
         ])->filter(fn (mixed $metadata): bool => is_array($metadata) && $metadata !== []);
         foreach ($candidateMetadata as $metadata) {
             $metadataMachines = collect($metadata['machine_candidates'] ?? [])->filter();
-            $metadataDates = collect($metadata['date_candidates'] ?? [])
-                ->map(fn (mixed $value): ?string => $this->normalizeDate($value))->filter();
-            $metadataTimes = collect($metadata['time_candidates'] ?? [])
-                ->map(fn (mixed $value): ?string => $this->normalizeTime($value))->filter();
+            $metadataDates = collect($metadata['date_candidates'] ?? [])->map(fn (mixed $value): ?string => $this->normalizeDate($value))->filter();
+            $metadataTimes = collect($metadata['time_candidates'] ?? [])->map(fn (mixed $value): ?string => $this->normalizeTime($value))->filter();
             $candidateOccurrences['machine'] = max($candidateOccurrences['machine'], $metadataMachines->count());
             $candidateOccurrences['date'] = max($candidateOccurrences['date'], $metadataDates->count());
             $candidateOccurrences['time'] = max($candidateOccurrences['time'], $metadataTimes->count());
-            $machineCandidates->push(...$metadataMachines);
-            $dates->push(...$metadataDates);
-            $times->push(...$metadataTimes);
             $legacyConflicts->push(...collect($metadata['conflicts'] ?? [])
                 ->filter(fn (mixed $field): bool => in_array($field, ['machine', 'date', 'time'], true)));
-            $dateEvidence->push(...collect($metadata['date_evidence'] ?? [])->filter(fn ($item): bool => is_array($item)));
-            $timeEvidence->push(...collect($metadata['time_evidence'] ?? [])->filter(fn ($item): bool => is_array($item)));
+
+            $metadataMachineEvidence = collect($metadata['machine_evidence'] ?? [])->filter(fn ($item): bool => is_array($item));
+            $metadataDateEvidence = collect($metadata['date_evidence'] ?? [])->filter(fn ($item): bool => is_array($item));
+            $metadataTimeEvidence = collect($metadata['time_evidence'] ?? [])->filter(fn ($item): bool => is_array($item));
+            foreach ($metadataMachineEvidence->where('accepted', true) as $item) {
+                $resolved = $this->assetCodes->resolve($item['value'] ?? null);
+                if ($resolved['status'] === 'MATCHED') {
+                    $machineRecords->push([
+                        'value' => $resolved['machine']->asset_code,
+                        'priority' => $this->evidencePriority($item),
+                    ]);
+                }
+            }
+            foreach ($metadataDateEvidence->where('accepted', true) as $item) {
+                if ($value = $this->normalizeDate($item['value'] ?? null)) {
+                    $dateRecords->push(['value' => $value, 'priority' => $this->evidencePriority($item)]);
+                }
+            }
+            foreach ($metadataTimeEvidence->where('accepted', true) as $item) {
+                if ($value = $this->normalizeTime($item['value'] ?? null)) {
+                    $timeRecords->push(['value' => $value, 'priority' => $this->evidencePriority($item)]);
+                }
+            }
+            if ($metadataMachineEvidence->isEmpty()) {
+                foreach ($metadataMachines as $candidate) {
+                    $resolved = $this->assetCodes->resolve($candidate);
+                    if ($resolved['status'] === 'MATCHED') {
+                        $machineRecords->push(['value' => $resolved['machine']->asset_code, 'priority' => (int) data_get($metadata, 'selected_priorities.machine', 2)]);
+                    }
+                }
+            }
+            if ($metadataDateEvidence->isEmpty()) {
+                foreach ($metadataDates as $value) {
+                    $dateRecords->push(['value' => $value, 'priority' => (int) data_get($metadata, 'selected_priorities.date', 2)]);
+                }
+            }
+            if ($metadataTimeEvidence->isEmpty()) {
+                foreach ($metadataTimes as $value) {
+                    $timeRecords->push(['value' => $value, 'priority' => (int) data_get($metadata, 'selected_priorities.time', 2)]);
+                }
+            }
+            if (($metadata['ambiguous_date'] ?? false) === true) {
+                $ambiguousDateRecords->push([
+                    'value' => 'METADATA_AMBIGUOUS_DATE',
+                    'priority' => (int) data_get($metadata, 'selected_priorities.date', 2),
+                ]);
+            }
+            $dateEvidence->push(...$metadataDateEvidence);
+            $timeEvidence->push(...$metadataTimeEvidence);
         }
 
         // Structured retry values are authoritative supplements for fields that
@@ -108,55 +171,110 @@ class DailyPhotoStoredOcrExtractor
                 continue;
             }
             if (! $job->extracted_date && ($date = $this->normalizeDate($snapshot['date'] ?? null))) {
-                $dates->push($date);
+                $dateRecords->push(['value' => $date, 'priority' => -1]);
             }
             if (! $job->extracted_time && ($time = $this->normalizeTime($snapshot['time'] ?? null))) {
-                $times->push($time);
+                $timeRecords->push(['value' => $time, 'priority' => -1]);
             }
         }
 
-        $machines = $machineCandidates->map(fn (mixed $candidate): array => $this->assetCodes->resolve($candidate))
-            ->filter(fn (array $result): bool => $result['status'] === 'MATCHED')
-            ->map(fn (array $result): string => $result['machine']->asset_code)
-            ->unique()->values();
         $receivedDate = $job->attachment?->message?->received_at?->toDateString();
-        $discardedFutureDates = $dates->filter(fn (string $value): bool => $receivedDate && $value > $receivedDate)->unique()->sort()->values();
-        $dates = $dates->reject(fn (string $value): bool => $receivedDate && $value > $receivedDate)->unique()->sort()->values();
-        $times = $times->unique()->sort()->values();
+        $discardedFutureDates = $dateRecords->filter(fn (array $item): bool => $receivedDate && $item['value'] > $receivedDate)
+            ->pluck('value')->unique()->sort()->values();
+        $dateRecords = $dateRecords->reject(fn (array $item): bool => $receivedDate && $item['value'] > $receivedDate)->values();
+        $machine = $this->resolveRecords($machineRecords);
+        $date = $this->resolveRecords($dateRecords, $ambiguousDateRecords);
+        $time = $this->resolveRecords($timeRecords);
 
         return [
-            'machine_candidates' => $machines->all(),
-            'date_candidates' => $dates->all(),
-            'time_candidates' => $times->all(),
-            'ambiguous_date_tokens' => $ambiguousDates->unique()->values()->all(),
-            'machine' => $machines->count() === 1 ? $machines->first() : null,
-            'date' => $dates->count() === 1 && $ambiguousDates->isEmpty() ? $dates->first() : null,
-            'time' => $times->count() === 1 ? $times->first() : null,
-            'machine_conflict' => $machines->count() > 1,
-            'date_conflict' => $dates->count() > 1 || $ambiguousDates->isNotEmpty(),
-            'time_conflict' => $times->count() > 1,
+            'machine_candidates' => $machine['candidates'],
+            'date_candidates' => $date['candidates'],
+            'time_candidates' => $time['candidates'],
+            'ambiguous_date_tokens' => $ambiguousDateRecords->pluck('value')->unique()->values()->all(),
+            'machine' => $machine['value'],
+            'date' => $date['value'],
+            'time' => $time['value'],
+            'machine_conflict' => $machine['conflict'],
+            'date_conflict' => $date['conflict'],
+            'time_conflict' => $time['conflict'],
             'legacy_conflicts' => $legacyConflicts->unique()->values()->all(),
             'duplicate_equivalent_fields' => collect($candidateOccurrences)
                 ->filter(fn (int $count, string $field): bool => $count > match ($field) {
-                    'machine' => $machines->count(),
-                    'date' => $dates->count(),
-                    'time' => $times->count(),
+                    'machine' => count($machine['candidates']),
+                    'date' => count($date['candidates']),
+                    'time' => count($time['candidates']),
                 } && match ($field) {
-                    'machine' => $machines->count() === 1,
-                    'date' => $dates->count() === 1 && $ambiguousDates->isEmpty(),
-                    'time' => $times->count() === 1,
+                    'machine' => $machine['value'] !== null,
+                    'date' => $date['value'] !== null,
+                    'time' => $time['value'] !== null,
                 })->keys()->values()->all(),
             'sources' => $payloads->pluck('source')->all(),
             'date_evidence' => $dateEvidence->values()->all(),
             'time_evidence' => $timeEvidence->values()->all(),
             'discarded_date_candidates' => $discardedFutureDates->all(),
+            'selected_priorities' => [
+                'machine' => $machine['priority'],
+                'date' => $date['priority'],
+                'time' => $time['priority'],
+            ],
         ];
+    }
+
+    private function resolveRecords($records, $ambiguities = null): array
+    {
+        $records = collect($records)->filter(fn (mixed $item): bool => is_array($item) && filled($item['value'] ?? null));
+        $ambiguities = collect($ambiguities)->filter(fn (mixed $item): bool => is_array($item));
+        $priorities = $records->pluck('priority')->push(...$ambiguities->pluck('priority'))->filter(fn ($value): bool => is_numeric($value));
+        if ($priorities->isEmpty()) {
+            return ['value' => null, 'candidates' => [], 'conflict' => false, 'priority' => null];
+        }
+
+        $priority = (int) $priorities->min();
+        $candidates = $records->where('priority', $priority)->pluck('value')->unique()->sort()->values();
+        $conflict = $ambiguities->where('priority', $priority)->isNotEmpty() || $candidates->count() > 1;
+
+        return [
+            'value' => ! $conflict && $candidates->count() === 1 ? $candidates->first() : null,
+            'candidates' => $candidates->all(),
+            'conflict' => $conflict,
+            'priority' => $priority,
+        ];
+    }
+
+    private function evidencePriority(array $item): int
+    {
+        if (isset($item['priority']) && is_numeric($item['priority'])) {
+            return (int) $item['priority'];
+        }
+
+        return $this->sourcePriority(
+            isset($item['rotation']) && is_numeric($item['rotation']) ? (int) $item['rotation'] : null,
+            Str::lower((string) ($item['region'] ?? 'unknown')),
+        );
+    }
+
+    private function sourcePriority(?int $rotation, string $region): int
+    {
+        if ($rotation === 0 && $region === 'primary_timemark') {
+            return 0;
+        }
+        if ($rotation === 0 && in_array($region, ['asset', 'time_date', 'left_overlay'], true)) {
+            return 1;
+        }
+        if ($rotation === 0) {
+            return 2;
+        }
+        if (in_array($rotation, [90, 180, 270], true)) {
+            return 3;
+        }
+
+        return 2;
     }
 
     public function parseText(string $text, bool|string $region = false): array
     {
         $region = is_bool($region) ? ($region ? 'time_date' : 'unknown') : $region;
-        $trustedTimeRegion = $region === 'time_date';
+        $trustedTimeRegion = in_array($region, ['primary_timemark', 'time_date', 'left_overlay'], true);
         $normalized = Str::upper(Str::ascii($text));
         $dates = collect();
         $times = collect();
@@ -183,7 +301,7 @@ class DailyPhotoStoredOcrExtractor
             }
         }
 
-        preg_match_all('/(?<!\d)(\d{1,2})\s+(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*(20\d{2})/', $normalized, $matches, PREG_SET_ORDER);
+        preg_match_all('/(?<!\d)(\d{1,2})\s*(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*(20\d{2})/', $normalized, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) {
             $this->pushDate($dates, (int) $match[3], self::MONTHS[$match[2]], (int) $match[1]);
         }

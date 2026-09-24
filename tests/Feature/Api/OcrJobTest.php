@@ -198,19 +198,24 @@ class OcrJobTest extends TestCase
                     'conflicts' => ['date'],
                     'ambiguous_date' => false,
                     'date_evidence' => [
-                        ['value' => '2026-09-21', 'accepted' => true, 'reason' => 'PARSED', 'rotation' => 0, 'region' => 'time_date'],
-                        ['value' => '2026-09-23', 'accepted' => false, 'reason' => 'AFTER_RECEIVED_DATE', 'rotation' => 180, 'region' => 'full'],
+                        ['value' => '2026-09-21', 'accepted' => true, 'reason' => 'PARSED', 'rotation' => 0, 'region' => 'primary_timemark', 'preprocessing' => 'ENHANCED', 'priority' => 0, 'source_tier' => 'PRIMARY_TIMEMARK_0'],
+                        ['value' => '2026-09-23', 'accepted' => false, 'reason' => 'AFTER_RECEIVED_DATE', 'rotation' => 180, 'region' => 'full', 'preprocessing' => 'ENHANCED', 'priority' => 3, 'source_tier' => 'ROTATION_FALLBACK'],
                     ],
                     'time_evidence' => [
-                        ['raw' => '06-24', 'value' => '06:24:00', 'accepted' => true, 'reason' => 'TRUSTED_DASH', 'rotation' => 0, 'region' => 'time_date'],
+                        ['raw' => '06-24', 'value' => '06:24:00', 'accepted' => true, 'reason' => 'TRUSTED_DASH', 'rotation' => 0, 'region' => 'primary_timemark', 'preprocessing' => 'ENHANCED', 'priority' => 0, 'source_tier' => 'PRIMARY_TIMEMARK_0'],
                     ],
+                    'selected_priorities' => ['machine' => 0, 'date' => 0, 'time' => 0],
+                    'ocr_pass_count' => 1,
+                    'stages_executed' => ['PRIMARY_TIMEMARK_0'],
                 ],
             ])
             ->assertOk()
             ->assertJsonPath('job.status', 'COMPLETED')
             ->assertJsonPath('job.extracted_date', '2026-09-21')
             ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.discarded_date_candidates.0', '2026-09-23')
-            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.time_evidence.0.reason', 'TRUSTED_DASH');
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.time_evidence.0.reason', 'TRUSTED_DASH')
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.time_evidence.0.priority', 0)
+            ->assertJsonPath('job.daily_metadata.ocr_candidate_summary.ocr_pass_count', 1);
     }
 
     public function test_daily_image_submitted_one_day_late_is_accepted(): void

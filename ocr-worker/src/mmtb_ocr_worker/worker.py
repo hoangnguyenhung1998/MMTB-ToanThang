@@ -209,11 +209,13 @@ class OcrWorker:
         )
         self._ensure_active(heartbeat, started_at, job_id, attempt)
         LOGGER.info(
-            "TimeMark OCR finished job_id=%s attempt=%s worker_id=%s duration_ms=%s",
+            "TimeMark OCR finished job_id=%s attempt=%s worker_id=%s duration_ms=%s passes=%s stages=%s",
             job_id,
             attempt,
             self.settings.worker_id,
             round((time.monotonic() - timemark_started) * 1000),
+            (result.candidate_metadata or {}).get("ocr_pass_count", "?"),
+            ",".join((result.candidate_metadata or {}).get("stages_executed", [])) or "?",
         )
         heartbeat.prepare_finalization()
         LOGGER.info("TimeMark completion requested job_id=%s attempt=%s worker_id=%s", job_id, attempt, self.settings.worker_id)
