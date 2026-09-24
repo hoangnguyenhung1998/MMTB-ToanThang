@@ -8,7 +8,7 @@ from datetime import date, time
 YMD_DATE_PATTERN = re.compile(r"(?<!\d)(20\d{2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)")
 NUMERIC_DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(20\d{2})(?!\d)")
 ENGLISH_DATE_PATTERN = re.compile(
-    r"(?<!\d)(\d{1,2})\s+(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*(20\d{2})",
+    r"(?<!\d)(\d{1,2})\s*(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s*,?\s*(20\d{2})",
     re.I,
 )
 VIETNAMESE_DATE_PATTERN = re.compile(
@@ -210,15 +210,6 @@ def parse_location(text: str) -> str | None:
 
 
 class AssetMatcher:
-    CONFUSION_PAIRS = {
-        frozenset(("I", "1")),
-        frozenset(("L", "1")),
-        frozenset(("O", "0")),
-        frozenset(("S", "5")),
-        frozenset(("B", "8")),
-        frozenset(("Z", "2")),
-    }
-
     def __init__(self, asset_codes: list[str]):
         normalized = [normalize_asset(code) for code in asset_codes]
         self.asset_codes = sorted({code for code in normalized if code}, key=len, reverse=True)
@@ -230,21 +221,6 @@ class AssetMatcher:
     @staticmethod
     def _compact(value: object) -> str:
         return re.sub(r"[^A-Z0-9]", "", normalize_text(value))
-
-    @classmethod
-    def _confusion_count(cls, observed: str, canonical: str) -> int | None:
-        if len(observed) != len(canonical):
-            return None
-
-        substitutions = 0
-        for observed_char, canonical_char in zip(observed, canonical):
-            if observed_char == canonical_char:
-                continue
-            if frozenset((observed_char, canonical_char)) not in cls.CONFUSION_PAIRS:
-                return None
-            substitutions += 1
-
-        return substitutions
 
     @staticmethod
     def _candidates(text: str) -> list[str]:
@@ -278,24 +254,6 @@ class AssetMatcher:
         observed_code = normalize_asset(candidates[0]) if candidates else None
         observed_raw = candidates[0].strip() if candidates else ""
 
-        safe_matches: list[tuple[int, str, str]] = []
-        for raw in candidates:
-            observed = self._compact(raw)
-            for compact, canonical_codes in self.compact_codes.items():
-                for canonical in canonical_codes:
-                    substitutions = self._confusion_count(observed, compact)
-                    if substitutions is not None:
-                        safe_matches.append((substitutions, canonical, raw.strip()))
-
-        if safe_matches:
-            minimum = min(match[0] for match in safe_matches)
-            best = [match for match in safe_matches if match[0] == minimum]
-            canonical_codes = {match[1] for match in best}
-            if len(canonical_codes) == 1:
-                substitutions, canonical, raw = best[0]
-                confidence = max(0.85, 1.0 - substitutions * 0.05)
-                return canonical, confidence, raw
-
         # Preserve an OCR-observed code that is not in the Laravel catalog.
         # Laravel will store it without a machine_id and mark UNKNOWN_ASSET_CODE.
         if observed_code:
@@ -305,24 +263,9 @@ class AssetMatcher:
 
     def valid_matches(self, text: str) -> set[str]:
         whole = self._compact(text)
-        exact = {
-            canonical_codes[0]
+        return {
+            canonical
             for compact, canonical_codes in self.compact_codes.items()
-            if compact and compact in whole and len(canonical_codes) == 1
+            if compact and compact in whole
+            for canonical in canonical_codes
         }
-        if exact:
-            return exact
-
-        safe_matches: list[tuple[int, str]] = []
-        for raw in self._candidates(text):
-            observed = self._compact(raw)
-            for compact, canonical_codes in self.compact_codes.items():
-                for canonical in canonical_codes:
-                    substitutions = self._confusion_count(observed, compact)
-                    if substitutions is not None:
-                        safe_matches.append((substitutions, canonical))
-        if not safe_matches:
-            return set()
-
-        minimum = min(match[0] for match in safe_matches)
-        return {canonical for substitutions, canonical in safe_matches if substitutions == minimum}

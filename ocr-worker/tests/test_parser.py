@@ -27,6 +27,7 @@ class ParserTest(unittest.TestCase):
         for raw in (
             "21 Sep 2026",
             "21 Sep,2026",
+            "21Sep,2026",
             "21 SEPTEMBER, 2026",
             "P21 Sep,2026",
             "21 Tháng 9 2026",
@@ -73,6 +74,10 @@ class ParserTest(unittest.TestCase):
     def test_dash_time_is_only_allowed_in_trusted_region(self):
         self.assertIsNone(parse_time('06-57'))
         self.assertEqual('06:57:00', parse_time('06-57', allow_dash=True).isoformat())
+        self.assertEqual(
+            {'11:01:00'},
+            {value.isoformat() for value in parse_time_candidates('11:01 11-01', allow_dash=True)},
+        )
         self.assertEqual(set(), parse_time_candidates('plate 15-45'))
         self.assertEqual({'15:45:00'}, {value.isoformat() for value in parse_time_candidates('15-45', allow_dash=True)})
 
@@ -94,6 +99,7 @@ class ParserTest(unittest.TestCase):
         self.assertIsNone(parse_time('54:62'))
         self.assertIsNone(parse_time('090:123:4567'))
         self.assertIsNone(parse_time('T-3C0172'))
+        self.assertIsNone(parse_time('06-5724 Thang9,92026', allow_dash=True, allow_trailing_artifact=True))
 
     def test_parses_phone(self):
         self.assertEqual("0866886292", parse_phone("SĐT: 0866 886 292"))
@@ -111,11 +117,11 @@ class ParserTest(unittest.TestCase):
         matcher = AssetMatcher(["VT-LU0216", "T-XL0354"])
         self.assertEqual("VT-LU0216", matcher.match("Ảnh máy VT-LU0216")[0])
 
-    def test_matches_common_ocr_confusion(self):
+    def test_does_not_fuzzy_match_common_ocr_confusion(self):
         matcher = AssetMatcher(["VT-LU0216"])
         code, confidence, _ = matcher.match("VT-LUO216")
-        self.assertEqual("VT-LU0216", code)
-        self.assertGreaterEqual(confidence, 0.84)
+        self.assertEqual("VT-LUO216", code)
+        self.assertLess(confidence, 0.84)
 
     def test_does_not_replace_unknown_numeric_code_with_nearest_catalog_code(self):
         matcher = AssetMatcher(["VT-LU5020"])

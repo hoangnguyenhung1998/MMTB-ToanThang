@@ -37,8 +37,9 @@ class DailyPhotoOcrDiagnosticTest extends TestCase
 
         $this->assertSame(['T-XL0303'], $result['machine_candidates']);
         $this->assertSame(['2026-09-21'], $result['date_candidates']);
-        $this->assertSame(['06:22:00', '06:57:00'], $result['time_candidates']);
-        $this->assertTrue($result['time_conflict']);
+        $this->assertSame(['06:22:00'], $result['time_candidates']);
+        $this->assertSame('06:22:00', $result['time']);
+        $this->assertFalse($result['time_conflict']);
     }
 
     public function test_numeric_date_is_only_selected_when_orientation_is_deterministic(): void
@@ -53,6 +54,34 @@ class DailyPhotoOcrDiagnosticTest extends TestCase
         $this->assertSame([], $extractor->parseText('plate 15-45')['times']);
         $this->assertSame(['15:45:00'], $extractor->parseText('15-45', true)['times']);
         $this->assertSame([], $extractor->parseText('24:99')['times']);
+        $this->assertSame(['2026-09-21'], $extractor->parseText('21Sep,2026')['dates']);
+        $this->assertSame([], $extractor->parseText('06-5724 Thang9,92026', true)['times']);
+        $this->assertSame([], $extractor->parseText('06-5724 Thang9,92026', true)['dates']);
+    }
+
+    public function test_primary_zero_degree_timemark_beats_rotation_noise_but_same_tier_conflicts_fail_closed(): void
+    {
+        $this->machine('VT-LL0008');
+        $winner = $this->exceptionJob(implode("\n\n", [
+            "[0deg/time_date]\nVT-LL0008\n11:01\n21 Tháng 9,2026",
+            "[0deg/left_overlay]\nVT-LL0008\n11:01\n21 Tháng 9,2026",
+            "[0deg/lower_full]\nVT-LL0008\n11:01\n21 Tháng 9,2026",
+            "[180deg/full]\nVT-LL0008\n10:11\n21 Tháng 9,2026",
+        ]));
+        $conflict = $this->exceptionJob(implode("\n\n", [
+            "[0deg/time_date]\nVT-LL0008\n11:01\n21 Tháng 9,2026",
+            "[0deg/left_overlay]\nVT-LL0008\n11:31\n21 Tháng 9,2026",
+        ]));
+
+        $winnerResult = app(DailyPhotoStoredOcrExtractor::class)->extract($winner);
+        $conflictResult = app(DailyPhotoStoredOcrExtractor::class)->extract($conflict);
+
+        $this->assertSame('VT-LL0008', $winnerResult['machine']);
+        $this->assertSame('2026-09-21', $winnerResult['date']);
+        $this->assertSame('11:01:00', $winnerResult['time']);
+        $this->assertFalse($winnerResult['time_conflict']);
+        $this->assertNull($conflictResult['time']);
+        $this->assertTrue($conflictResult['time_conflict']);
     }
 
     public function test_diagnostic_aggregates_all_jobs_limits_samples_and_does_not_mutate(): void

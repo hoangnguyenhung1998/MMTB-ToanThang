@@ -50,6 +50,13 @@ class TimeMarkResult:
 
 
 class TimeMarkRecognizer:
+    SOURCE_TIERS = {
+        0: "PRIMARY_TIMEMARK_0",
+        1: "OTHER_0_DEG_TIMEMARK",
+        2: "0_DEG_WIDER_FALLBACK",
+        3: "ROTATION_FALLBACK",
+    }
+
     def __init__(self, asset_codes: list[str], engine: RapidOCR | None = None):
         self.matcher = AssetMatcher(asset_codes)
         self.engine = engine or RapidOCR()
@@ -63,10 +70,12 @@ class TimeMarkRecognizer:
     ) -> TimeMarkResult:
         image = read_image(path)
         best_observed_asset: tuple[str | None, float, str] = (None, 0.0, "")
-        asset_candidates: set[str] = set()
-        date_candidates = set()
-        time_candidates = set()
-        ambiguous_date = False
+        candidates: dict[str, dict[int, set]] = {
+            "machine": {},
+            "date": {},
+            "time": {},
+        }
+        ambiguous_date_priorities: set[int] = set()
         operator_name = None
         phone = None
         work_location = None
@@ -77,24 +86,53 @@ class TimeMarkRecognizer:
         time_evidence: list[dict] = []
         discarded_date_candidates: set[str] = set()
         requested = set(focus or ["machine", "date", "time"])
+        ocr_pass_count = 0
+        stages_executed: list[str] = []
 
-        for angle in (0, 180, 90, 270):
+        def add_candidate(field: str, priority: int, value) -> None:
+            candidates[field].setdefault(priority, set()).add(value)
+
+        def resolve(field: str) -> tuple[object | None, bool, set, int | None]:
+            field_candidates = candidates[field]
+            candidate_priority = min(field_candidates) if field_candidates else None
+            if field == "date" and ambiguous_date_priorities:
+                ambiguous_priority = min(ambiguous_date_priorities)
+                if candidate_priority is None or ambiguous_priority <= candidate_priority:
+                    values = field_candidates.get(ambiguous_priority, set())
+                    return None, True, values, ambiguous_priority
+            if candidate_priority is None:
+                return None, False, set(), None
+            values = field_candidates[candidate_priority]
+            return (next(iter(values)) if len(values) == 1 else None), len(values) > 1, values, candidate_priority
+
+        def stage_is_terminal() -> bool:
+            return all(resolve(field)[0] is not None or resolve(field)[1] for field in requested)
+
+        def stage_specs(angle: int, names: tuple[str, ...]) -> list[tuple[int, str, object]]:
             rotated = rotate(image, angle)
-            candidates = [
-                ("asset", region(rotated, 0.00, 0.28, 0.50, 0.58)),
-                ("time_date", region(rotated, 0.00, 0.48, 0.62, 0.73)),
-                ("left_overlay", region(rotated, 0.00, 0.25, 0.75, 0.92)),
-                ("lower_full", region(rotated, 0.00, 0.38, 1.00, 1.00)),
-                ("full", rotated),
-            ]
-            if focus:
-                allowed = {"left_overlay", "lower_full", "full"}
-                if "machine" in requested:
-                    allowed.add("asset")
-                if requested.intersection({"date", "time"}):
-                    allowed.add("time_date")
-                candidates = [candidate for candidate in candidates if candidate[0] in allowed]
-            for region_name, candidate in candidates:
+            crops = {
+                "primary_timemark": region(rotated, 0.00, 0.50, 0.82, 1.00),
+                "time_date": region(rotated, 0.00, 0.48, 0.62, 0.73),
+                "left_overlay": region(rotated, 0.00, 0.25, 0.75, 0.92),
+                "lower_full": region(rotated, 0.00, 0.38, 1.00, 1.00),
+                "full": rotated,
+            }
+            return [(angle, name, crops[name]) for name in names]
+
+        overlay_names = ("left_overlay",) if requested == {"machine"} else ("time_date", "left_overlay")
+        stages = [
+            ("PRIMARY_TIMEMARK_0", 0, [(0, ("primary_timemark",))]),
+            ("OTHER_0_DEG_TIMEMARK", 1, [(0, overlay_names)]),
+            ("0_DEG_WIDER_FALLBACK", 2, [(0, ("lower_full", "full"))]),
+            ("ROTATION_FALLBACK", 3, [
+                (angle, ("left_overlay", "lower_full", "full")) for angle in (180, 90, 270)
+            ]),
+        ]
+
+        for stage_name, priority, stage_sources in stages:
+            stages_executed.append(stage_name)
+            specs = [spec for angle, names in stage_sources for spec in stage_specs(angle, names)]
+            for angle, region_name, candidate in specs:
                 if progress is not None:
                     progress("started", angle, region_name, None)
                 engine_started = time.monotonic()
@@ -103,6 +141,7 @@ class TimeMarkRecognizer:
                 finally:
                     if progress is not None:
                         progress("finished", angle, region_name, round((time.monotonic() - engine_started) * 1000))
+                ocr_pass_count += 1
                 text = "\n".join(texts)
                 if not text.strip():
                     continue
@@ -114,15 +153,30 @@ class TimeMarkRecognizer:
                 if asset[1] > best_observed_asset[1]:
                     best_observed_asset = asset
                 section_asset_candidates = self.matcher.valid_matches(text)
-                asset_candidates.update(section_asset_candidates)
+                for value in section_asset_candidates:
+                    add_candidate("machine", priority, value)
                 machine_evidence.extend({
                     "value": value,
                     "accepted": True,
-                    "reason": "EXACT_OR_BOUNDED_CATALOG_MATCH",
+                    "reason": "EXACT_CATALOG_MATCH",
                     "rotation": angle,
                     "region": region_name,
+                    "preprocessing": "ENHANCED",
+                    "priority": priority,
+                    "source_tier": stage_name,
                 } for value in sorted(section_asset_candidates))
                 dates, date_is_ambiguous = parse_date_candidates(text)
+                if date_is_ambiguous:
+                    ambiguous_date_priorities.add(priority)
+                    date_evidence.append({
+                        "accepted": False,
+                        "reason": "AMBIGUOUS_NUMERIC_DATE",
+                        "rotation": angle,
+                        "region": region_name,
+                        "preprocessing": "ENHANCED",
+                        "priority": priority,
+                        "source_tier": stage_name,
+                    })
                 for candidate_date in dates:
                     accepted = received_date is None or candidate_date <= received_date
                     date_evidence.append({
@@ -131,43 +185,55 @@ class TimeMarkRecognizer:
                         "reason": "PARSED" if accepted else "AFTER_RECEIVED_DATE",
                         "rotation": angle,
                         "region": region_name,
+                        "preprocessing": "ENHANCED",
+                        "priority": priority,
+                        "source_tier": stage_name,
                     })
                     if accepted:
-                        date_candidates.add(candidate_date)
+                        add_candidate("date", priority, candidate_date)
                     else:
                         discarded_date_candidates.add(candidate_date.isoformat())
-                ambiguous_date = ambiguous_date or date_is_ambiguous
                 parsed_times, parsed_evidence = parse_time_evidence(
                     text,
-                    allow_dash=region_name == "time_date",
-                    allow_trailing_artifact=region_name == "time_date",
+                    allow_dash=region_name in {"primary_timemark", "time_date", "left_overlay"},
+                    allow_trailing_artifact=region_name in {"primary_timemark", "time_date", "left_overlay"},
                 )
                 normalized_text = text.upper()
                 capture_context = (
-                    region_name in {"time_date", "left_overlay"}
+                    region_name in {"primary_timemark", "time_date", "left_overlay"}
                     or bool(dates)
                     or "TIMEMARK" in normalized_text
                     or "TIME MARK" in normalized_text
                     or "TAN CA" in normalized_text
                 )
                 for evidence in parsed_evidence:
-                    item = {**evidence, "rotation": angle, "region": region_name}
+                    item = {
+                        **evidence,
+                        "rotation": angle,
+                        "region": region_name,
+                        "preprocessing": "ENHANCED",
+                        "priority": priority,
+                        "source_tier": stage_name,
+                    }
                     if evidence.get("accepted") and not capture_context:
                         item["accepted"] = False
                         item["reason"] = "UNTRUSTED_CONTEXT"
                     time_evidence.append(item)
                 if capture_context:
-                    time_candidates.update(parsed_times)
+                    for parsed_time in parsed_times:
+                        add_candidate("time", priority, parsed_time)
                 operator_name = operator_name or parse_operator(text)
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
+            if stage_is_terminal():
+                break
 
-        captured_date = next(iter(date_candidates)) if len(date_candidates) == 1 and not ambiguous_date else None
-        captured_time = next(iter(time_candidates)) if len(time_candidates) == 1 else None
-        if len(asset_candidates) == 1:
-            selected_asset = next(iter(asset_candidates))
+        selected_asset, machine_conflict, machine_candidates, machine_priority = resolve("machine")
+        captured_date, date_conflict, date_candidates, date_priority = resolve("date")
+        captured_time, time_conflict, time_candidates, time_priority = resolve("time")
+        if selected_asset is not None:
             best_asset = (selected_asset, 1.0, selected_asset)
-        elif len(asset_candidates) > 1:
+        elif machine_conflict:
             best_asset = (None, 0.0, "")
         else:
             best_asset = best_observed_asset
@@ -184,19 +250,27 @@ class TimeMarkRecognizer:
             confidence=confidence,
             raw_text="\n\n".join(debug_parts),
             candidate_metadata={
-                "machine_candidates": sorted(asset_candidates),
+                "machine_candidates": sorted(machine_candidates),
                 "machine_evidence": machine_evidence,
                 "date_candidates": sorted(candidate.isoformat() for candidate in date_candidates),
                 "time_candidates": sorted(candidate.isoformat() for candidate in time_candidates),
                 "date_evidence": date_evidence,
                 "time_evidence": time_evidence,
                 "discarded_date_candidates": sorted(discarded_date_candidates),
-                "ambiguous_date": ambiguous_date,
+                "ambiguous_date": date_conflict and bool(ambiguous_date_priorities),
+                "source_priority": self.SOURCE_TIERS,
+                "selected_priorities": {
+                    "machine": machine_priority,
+                    "date": date_priority,
+                    "time": time_priority,
+                },
+                "ocr_pass_count": ocr_pass_count,
+                "stages_executed": stages_executed,
                 "conflicts": [
                     name for name, conflict in (
-                        ("machine", len(asset_candidates) > 1),
-                        ("date", len(date_candidates) > 1 or ambiguous_date),
-                        ("time", len(time_candidates) > 1),
+                        ("machine", machine_conflict),
+                        ("date", date_conflict),
+                        ("time", time_conflict),
                     ) if conflict
                 ],
             },
