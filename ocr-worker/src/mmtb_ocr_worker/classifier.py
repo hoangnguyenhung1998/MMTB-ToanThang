@@ -81,19 +81,33 @@ def classify_text(
 
     hour_meter_markers = {
         marker for marker, present in (
-            ("QUARTZ", "QUARTZ" in normalized),
             ("HOURS", bool(re.search(r"\bHOURS?\b", normalized))),
             ("HOUR_METER", "HOUR METER" in normalized),
             ("ENGINE_HOURS", "ENGINE HOURS" in normalized),
         ) if present
     }
-    counter_tokens = re.findall(r"(?<!\d)\d(?:[ .]?\d){3,7}(?:[.,]\d)?(?!\d)", normalized)
-    if len(hour_meter_markers) >= 2 and counter_tokens and hour_meter_structure >= 0.25:
+    counter_tokens = re.findall(
+        r"(?<!\d)(?:\d{4,8}(?:[.,]\d)?|\d{1,3}(?:[ .]\d{3}){1,2}(?:[.,]\d)?)(?!\d)",
+        normalized,
+    )
+    counter_tokens = [
+        token for token in counter_tokens
+        if re.search(r"[.,]\d$", token.replace(" ", ""))
+        or len(re.sub(r"\D", "", token)) >= 5
+    ]
+    decimal_counter = any(re.search(r"[.,]\d$", token.replace(" ", "")) for token in counter_tokens)
+    tenths_marker = bool(re.search(r"(?<!\d)1\s*/\s*10(?!\d)", normalized))
+    meter_context = bool(hour_meter_markers.intersection({"HOUR_METER", "ENGINE_HOURS"}))
+    hour_label = "HOURS" in hour_meter_markers or meter_context
+    semantic_signals = len(hour_meter_markers) + int(decimal_counter) + int(tenths_marker)
+    if hour_label and counter_tokens and semantic_signals >= 2 and hour_meter_structure >= 0.25:
         confidence = min(0.99, 0.82 + min(hour_meter_structure, 1.0) * 0.12)
         return Classification("IGNORED_HOUR_METER", confidence, text, {
             "reason": "MULTI_SIGNAL_HOUR_METER",
             "semantic_markers": sorted(hour_meter_markers),
             "counter_token_count": len(counter_tokens),
+            "decimal_counter": decimal_counter,
+            "tenths_marker": tenths_marker,
             "structure_score": round(hour_meter_structure, 4),
         })
 

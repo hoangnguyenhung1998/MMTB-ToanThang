@@ -86,6 +86,7 @@ class TimeMarkRecognizer:
         time_evidence: list[dict] = []
         discarded_date_candidates: set[str] = set()
         requested = set(focus or ["machine", "date", "time"])
+        locked: set[str] = set()
         ocr_pass_count = 0
         stages_executed: list[str] = []
 
@@ -105,8 +106,17 @@ class TimeMarkRecognizer:
             values = field_candidates[candidate_priority]
             return (next(iter(values)) if len(values) == 1 else None), len(values) > 1, values, candidate_priority
 
+        def lock_resolved_fields() -> None:
+            for field in requested:
+                value, conflict, _, _ = resolve(field)
+                if value is not None or conflict:
+                    locked.add(field)
+
         def stage_is_terminal() -> bool:
-            return all(resolve(field)[0] is not None or resolve(field)[1] for field in requested)
+            temporal = requested.intersection({"date", "time"})
+            # Machine evidence may be collected while finding Date/Time, but it
+            # never authorizes extra fallback/rotation by itself.
+            return not temporal or temporal.issubset(locked)
 
         def stage_specs(angle: int, names: tuple[str, ...]) -> list[tuple[int, str, object]]:
             rotated = rotate(image, angle)
@@ -153,8 +163,9 @@ class TimeMarkRecognizer:
                 if asset[1] > best_observed_asset[1]:
                     best_observed_asset = asset
                 section_asset_candidates = self.matcher.valid_matches(text)
-                for value in section_asset_candidates:
-                    add_candidate("machine", priority, value)
+                if "machine" not in locked:
+                    for value in section_asset_candidates:
+                        add_candidate("machine", priority, value)
                 machine_evidence.extend({
                     "value": value,
                     "accepted": True,
@@ -166,7 +177,7 @@ class TimeMarkRecognizer:
                     "source_tier": stage_name,
                 } for value in sorted(section_asset_candidates))
                 dates, date_is_ambiguous = parse_date_candidates(text)
-                if date_is_ambiguous:
+                if "date" not in locked and date_is_ambiguous:
                     ambiguous_date_priorities.add(priority)
                     date_evidence.append({
                         "accepted": False,
@@ -190,13 +201,15 @@ class TimeMarkRecognizer:
                         "source_tier": stage_name,
                     })
                     if accepted:
-                        add_candidate("date", priority, candidate_date)
+                        if "date" not in locked:
+                            add_candidate("date", priority, candidate_date)
                     else:
                         discarded_date_candidates.add(candidate_date.isoformat())
                 parsed_times, parsed_evidence = parse_time_evidence(
                     text,
                     allow_dash=region_name in {"primary_timemark", "time_date", "left_overlay"},
                     allow_trailing_artifact=region_name in {"primary_timemark", "time_date", "left_overlay"},
+                    allow_dot=region_name in {"primary_timemark", "time_date", "left_overlay"},
                 )
                 normalized_text = text.upper()
                 capture_context = (
@@ -219,12 +232,13 @@ class TimeMarkRecognizer:
                         item["accepted"] = False
                         item["reason"] = "UNTRUSTED_CONTEXT"
                     time_evidence.append(item)
-                if capture_context:
+                if capture_context and "time" not in locked:
                     for parsed_time in parsed_times:
                         add_candidate("time", priority, parsed_time)
                 operator_name = operator_name or parse_operator(text)
                 phone = phone or parse_phone(text)
                 work_location = work_location or parse_location(text)
+            lock_resolved_fields()
             if stage_is_terminal():
                 break
 

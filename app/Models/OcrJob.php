@@ -152,4 +152,9 @@ class OcrJob extends Model
     {
         return $this->hasMany(OcrProcessingRun::class);
     }
+
+    public function regressionCases(): HasMany
+    {
+        return $this->hasMany(OcrRegressionCase::class, 'source_ocr_job_id');
+    }
 }

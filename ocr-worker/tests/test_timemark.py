@@ -31,9 +31,56 @@ class TimeMarkTest(unittest.TestCase):
             result = TimeMarkRecognizer(["VT-XL0196"], engine).recognize(Path("test.jpg"))
         self.assertIsNone(result.asset_code)
         self.assertEqual("13:55:00", result.captured_time)
-        self.assertEqual(14, engine.call_count)
-        self.assertEqual(14, result.candidate_metadata["ocr_pass_count"])
-        self.assertEqual("ROTATION_FALLBACK", result.candidate_metadata["stages_executed"][-1])
+        self.assertEqual(1, engine.call_count)
+        self.assertEqual(1, result.candidate_metadata["ocr_pass_count"])
+        self.assertEqual(["PRIMARY_TIMEMARK_0"], result.candidate_metadata["stages_executed"])
+
+    def test_primary_dot_time_locks_before_rotation_noise(self):
+        engine = Mock()
+        outputs = iter([(["10.32\n24 Tháng 9,2026\nMTS:VT-XI1154"], [0.99]), (["10:52"], [0.99])])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XI1154"], engine).recognize(Path("test.jpg"))
+
+        self.assertEqual("2026-09-24", result.captured_date)
+        self.assertEqual("10:32:00", result.captured_time)
+        self.assertEqual(1, engine.call_count)
+        self.assertNotIn("time", result.candidate_metadata["conflicts"])
+
+    def test_missing_time_continues_only_until_time_is_found_and_keeps_primary_date(self):
+        engine = Mock()
+        outputs = iter([(["24 Tháng 9,2026"], [0.99]), (["10:47\n25 Tháng 9,2026"], [0.99]), ([], [])])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XI1154"], engine).recognize(Path("test.jpg"))
+
+        self.assertEqual("2026-09-24", result.captured_date)
+        self.assertEqual("10:47:00", result.captured_time)
+        self.assertEqual(3, engine.call_count)
+        self.assertNotIn("date", result.candidate_metadata["conflicts"])
+
+    def test_missing_date_continues_only_until_date_is_found_and_keeps_primary_time(self):
+        engine = Mock()
+        outputs = iter([(["10:47"], [0.99]), (["14:01\n24 Tháng 9,2026"], [0.99]), ([], [])])
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", side_effect=lambda *_: next(outputs, ([], []))):
+            result = TimeMarkRecognizer(["VT-XI1154"], engine).recognize(Path("test.jpg"))
+
+        self.assertEqual("2026-09-24", result.captured_date)
+        self.assertEqual("10:47:00", result.captured_time)
+        self.assertEqual(3, engine.call_count)
+        self.assertNotIn("time", result.candidate_metadata["conflicts"])
+
+    def test_same_primary_tier_conflicting_dates_fail_closed(self):
+        engine = Mock()
+        with patch("mmtb_ocr_worker.timemark.read_image", return_value=np.zeros((200, 200, 3), dtype=np.uint8)), \
+             patch("mmtb_ocr_worker.timemark.flatten_ocr_result", return_value=(["24 Sep,2026\n25 Sep,2026\n10:47"], [0.99])):
+            result = TimeMarkRecognizer(["VT-XI1154"], engine).recognize(Path("test.jpg"))
+
+        self.assertIsNone(result.captured_date)
+        self.assertEqual("10:47:00", result.captured_time)
+        self.assertIn("date", result.candidate_metadata["conflicts"])
+        self.assertEqual(1, engine.call_count)
 
     def test_progress_telemetry_does_not_change_result(self):
         engine = Mock()

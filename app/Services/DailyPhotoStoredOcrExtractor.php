@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\Models\OcrJob;
+use App\Models\ZaloAttachment;
+use App\Models\ZaloMessage;
+use Carbon\CarbonImmutable;
 use DateTimeImmutable;
 use Illuminate\Support\Str;
 
@@ -24,6 +27,31 @@ class DailyPhotoStoredOcrExtractor
     ];
 
     public function __construct(private readonly AssetCodeResolver $assetCodes) {}
+
+    public function extractSnapshot(array $snapshot): array
+    {
+        $job = (new OcrJob)->forceFill([
+            'raw_text' => $snapshot['raw_text'] ?? null,
+            'observed_asset_code' => $snapshot['observed_asset_code'] ?? null,
+            'asset_code' => $snapshot['asset_code'] ?? null,
+            'extracted_date' => $snapshot['extracted_date'] ?? null,
+            'extracted_time' => $snapshot['extracted_time'] ?? null,
+            'ocr_initial_extraction' => $snapshot['ocr_initial_extraction'] ?? null,
+            'daily_metadata' => $snapshot['daily_metadata'] ?? [
+                'ocr_candidate_summary' => $snapshot['candidate_metadata'] ?? null,
+            ],
+        ]);
+        $message = (new ZaloMessage)->forceFill([
+            'received_at' => filled($snapshot['received_at'] ?? null)
+                ? CarbonImmutable::parse($snapshot['received_at'])
+                : null,
+        ]);
+        $attachment = new ZaloAttachment;
+        $attachment->setRelation('message', $message);
+        $job->setRelation('attachment', $attachment);
+
+        return $this->extract($job);
+    }
 
     public function extract(OcrJob $job): array
     {
@@ -326,10 +354,10 @@ class DailyPhotoStoredOcrExtractor
         foreach ($durations as $duration) {
             $timeEvidence->push(['raw' => $duration[0], 'accepted' => false, 'reason' => 'DURATION']);
         }
-        $captureContext = in_array($region, ['time_date', 'left_overlay'], true)
+        $captureContext = in_array($region, ['primary_timemark', 'time_date', 'left_overlay'], true)
             || $dates->isNotEmpty()
             || Str::contains($normalized, ['TIMEMARK', 'TIME MARK', 'TAN CA']);
-        $separator = $trustedTimeRegion ? '[:.H-]' : '[:.H]';
+        $separator = $trustedTimeRegion ? '[:.H-]' : '[:H]';
         preg_match_all('/(?<![\d.])([01]?\d|2[0-3])\s*'.$separator.'\s*([0-5]\d)(?:\s*([AP])\s*\.?\s*M\.?)?(?![\d.])/', $withoutIntervals, $matches, PREG_SET_ORDER);
         foreach ($matches as $match) {
             $hour = (int) $match[1];

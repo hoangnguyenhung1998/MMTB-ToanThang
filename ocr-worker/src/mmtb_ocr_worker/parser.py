@@ -15,7 +15,8 @@ VIETNAMESE_DATE_PATTERN = re.compile(
     r"(?<!\d)(\d{1,2})\s*THA(?:NG|NIG|RIG|MG)\s*(\d{1,2})(?:\s+NAM)?\s*,?\s*(20\d{2})",
     re.I,
 )
-TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*[:.hH]\s*([0-5]\d)(?::([0-5]\d))?(?![\d.])(?:\s*([AP])\s*\.?\s*M\.?)?", re.I)
+TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*[:hH]\s*([0-5]\d)(?::([0-5]\d))?(?![\d.])(?:\s*([AP])\s*\.?\s*M\.?)?", re.I)
+DOT_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*\.\s*([0-5]\d)(?![\d.])", re.I)
 DASH_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*-\s*([0-5]\d)(?![\d.])", re.I)
 TRAILING_ARTIFACT_TIME_PATTERN = re.compile(r"(?<![\d.])([01]?\d|2[0-3])\s*:\s*([0-5]\d)1(?!\d)", re.I)
 WORK_INTERVAL_PATTERN = re.compile(
@@ -100,6 +101,7 @@ def parse_time_evidence(
     text: str,
     allow_dash: bool = False,
     allow_trailing_artifact: bool = False,
+    allow_dot: bool = False,
 ) -> tuple[set[time], list[dict]]:
     clean = re.sub(r"(?<=\d)[Oo](?=\d)", "0", text)
     for pattern in (YMD_DATE_PATTERN, NUMERIC_DATE_PATTERN, ENGLISH_DATE_PATTERN, VIETNAMESE_DATE_PATTERN):
@@ -113,6 +115,8 @@ def parse_time_evidence(
         return any(start >= left and end <= right for left, right in excluded_spans)
 
     patterns: list[tuple[re.Pattern, str]] = [(TIME_PATTERN, "STANDARD")]
+    if allow_dot:
+        patterns.append((DOT_TIME_PATTERN, "TRUSTED_DOT"))
     if allow_dash:
         patterns.append((DASH_TIME_PATTERN, "TRUSTED_DASH"))
     if allow_trailing_artifact:
@@ -159,13 +163,19 @@ def parse_time_candidates(
     text: str,
     allow_dash: bool = False,
     allow_trailing_artifact: bool = False,
+    allow_dot: bool = False,
 ) -> set[time]:
-    candidates, _ = parse_time_evidence(text, allow_dash, allow_trailing_artifact)
+    candidates, _ = parse_time_evidence(text, allow_dash, allow_trailing_artifact, allow_dot)
     return candidates
 
 
-def parse_time(text: str, allow_dash: bool = False, allow_trailing_artifact: bool = False) -> time | None:
-    candidates = parse_time_candidates(text, allow_dash, allow_trailing_artifact)
+def parse_time(
+    text: str,
+    allow_dash: bool = False,
+    allow_trailing_artifact: bool = False,
+    allow_dot: bool = False,
+) -> time | None:
+    candidates = parse_time_candidates(text, allow_dash, allow_trailing_artifact, allow_dot)
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
