@@ -10,6 +10,7 @@ class DailyPhotoManualRetry extends Command
     protected $signature = 'ocr:daily-manual-retry
         {--dry-run : Chỉ báo cáo, tuyệt đối không ghi dữ liệu}
         {--execute : Xếp lại hàng đợi sau khi đã review dry-run}
+        {--retry-version= : Cho phép retry đúng một lần cho phiên bản pipeline được chỉ định}
         {--sample-limit=20 : Số bản ghi mẫu tối đa}';
 
     protected $description = 'Xếp lại hàng đợi OCR cho Daily Photo đang cần xử lý thủ công, với đầy đủ protection guard';
@@ -23,9 +24,17 @@ class DailyPhotoManualRetry extends Command
         }
 
         $sampleLimit = max(0, min(100, (int) $this->option('sample-limit')));
-        $result = $this->option('execute')
-            ? $service->execute($sampleLimit)
-            : $service->preview($sampleLimit);
+        $retryVersion = $this->option('retry-version');
+
+        try {
+            $result = $this->option('execute')
+                ? $service->execute($sampleLimit, null, is_string($retryVersion) ? $retryVersion : null)
+                : $service->preview($sampleLimit, is_string($retryVersion) ? $retryVersion : null);
+        } catch (\InvalidArgumentException $exception) {
+            $this->error($exception->getMessage());
+
+            return self::INVALID;
+        }
 
         $this->table(
             ['Metric', 'Count'],

@@ -19,20 +19,20 @@ class DailyPhotoManualRetryService
 
     public function __construct(private readonly DailyPhotoBacklogService $backlog) {}
 
-    public function preview(int $sampleLimit = 20): array
+    public function preview(int $sampleLimit = 20, ?string $retryVersion = null): array
     {
-        return $this->scan(false, max(0, min(100, $sampleLimit)));
+        return $this->scan(false, max(0, min(100, $sampleLimit)), null, $this->normalizeRetryVersion($retryVersion));
     }
 
     /**
      * The callback is a concurrency test seam. The command never supplies it.
      */
-    public function execute(int $sampleLimit = 20, ?callable $afterScan = null): array
+    public function execute(int $sampleLimit = 20, ?callable $afterScan = null, ?string $retryVersion = null): array
     {
-        return $this->scan(true, max(0, min(100, $sampleLimit)), $afterScan);
+        return $this->scan(true, max(0, min(100, $sampleLimit)), $afterScan, $this->normalizeRetryVersion($retryVersion));
     }
 
-    private function scan(bool $execute, int $sampleLimit, ?callable $afterScan = null): array
+    private function scan(bool $execute, int $sampleLimit, ?callable $afterScan = null, ?string $retryVersion = null): array
     {
         $summary = $this->emptySummary();
         $samples = collect();
@@ -42,6 +42,7 @@ class DailyPhotoManualRetryService
             $execute,
             $sampleLimit,
             $afterScan,
+            $retryVersion,
             &$afterScanCalled,
             &$summary,
             $samples,
@@ -50,7 +51,7 @@ class DailyPhotoManualRetryService
 
             foreach ($rows as $row) {
                 $summary['total_manual_considered']++;
-                $decision = $this->decision($row['job'], $row);
+                $decision = $this->decision($row['job'], $row, $retryVersion);
                 $this->recordDecision($summary, $decision);
                 if ($samples->count() < $sampleLimit) {
                     $samples->push($this->sample($row, $decision));
@@ -61,7 +62,9 @@ class DailyPhotoManualRetryService
                 return;
             }
 
-            $eligibleRows = $rows->filter(fn (array $row): bool => $this->decision($row['job'], $row) === 'ELIGIBLE')->values();
+            $eligibleRows = $rows->filter(
+                fn (array $row): bool => $this->decision($row['job'], $row, $retryVersion) === 'ELIGIBLE'
+            )->values();
             if ($eligibleRows->isEmpty()) {
                 return;
             }
@@ -71,7 +74,7 @@ class DailyPhotoManualRetryService
                 $afterScan($eligibleRows->pluck('job.id')->all());
             }
 
-            DB::transaction(function () use ($eligibleRows, &$summary): void {
+            DB::transaction(function () use ($eligibleRows, $retryVersion, &$summary): void {
                 $locked = OcrJob::query()
                     ->with(['attachment.message', 'machine:id,asset_code', 'dailyPhotoCaseEvidence.dailyPhotoCase'])
                     ->whereKey($eligibleRows->pluck('job.id')->all())
@@ -84,14 +87,14 @@ class DailyPhotoManualRetryService
                     $current = $currentRows->get($scannedRow['job']->id);
                     if (! $current
                         || $this->fingerprint($current['job']) !== $scannedRow['state_fingerprint']
-                        || $this->decision($current['job'], $current) !== 'ELIGIBLE') {
+                        || $this->decision($current['job'], $current, $retryVersion) !== 'ELIGIBLE') {
                         $summary['eligible_reocr']--;
                         $summary['eligibility_changed']++;
 
                         continue;
                     }
 
-                    $this->requeue($current['job']);
+                    $this->requeue($current['job'], $retryVersion);
                     $summary['requeued']++;
                 }
             }, 3);
@@ -129,7 +132,7 @@ class DailyPhotoManualRetryService
             ->values();
     }
 
-    private function decision(OcrJob $job, array $row): string
+    private function decision(OcrJob $job, array $row, ?string $retryVersion = null): string
     {
         if ($this->isHumanCorrected($job)) {
             return 'HUMAN_CORRECTED';
@@ -155,7 +158,10 @@ class DailyPhotoManualRetryService
         if ($job->daily_photo_case_id || $job->dailyPhotoCaseEvidence) {
             return 'ALREADY_RESOLVED';
         }
-        if (data_get($job->daily_metadata, 'manual_reocr.attempted_at')) {
+        if ($retryVersion !== null && $this->hasVersionAttempt($job, $retryVersion)) {
+            return 'ALREADY_ATTEMPTED_FOR_VERSION';
+        }
+        if ($retryVersion === null && data_get($job->daily_metadata, 'manual_reocr.attempted_at')) {
             return 'ALREADY_ATTEMPTED';
         }
         if ($job->status !== 'EXCEPTION' || $job->document_type !== 'DAILY_TIMEMARK') {
@@ -198,16 +204,38 @@ class DailyPhotoManualRetryService
         }
     }
 
-    private function requeue(OcrJob $job): void
+    private function requeue(OcrJob $job, ?string $retryVersion = null): void
     {
         $metadata = $job->daily_metadata ?? [];
-        data_set($metadata, 'manual_reocr', [
-            'version' => self::VERSION,
-            'attempted_at' => now()->toIso8601String(),
-            'claimable' => true,
-            'requested_pipeline' => 'PHASE_16_10_9_OR_LATER',
-            'previous_state' => $this->historicalSnapshot($job),
-        ]);
+        $requestedAt = now()->toIso8601String();
+        if ($retryVersion === null) {
+            data_set($metadata, 'manual_reocr', [
+                'version' => self::VERSION,
+                'attempted_at' => $requestedAt,
+                'claimable' => true,
+                'requested_pipeline' => 'PHASE_16_10_9_OR_LATER',
+                'previous_state' => $this->historicalSnapshot($job),
+            ]);
+        } else {
+            $manualReocr = data_get($metadata, 'manual_reocr', []);
+            $manualReocr = is_array($manualReocr) ? $manualReocr : [];
+            $versionAttempts = $manualReocr['version_attempts'] ?? [];
+            $versionAttempts = is_array($versionAttempts) ? $versionAttempts : [];
+
+            // The version is a direct array key, never a data_set path. Validation also rejects path syntax.
+            $versionAttempts[$retryVersion] = [
+                'requested_at' => $requestedAt,
+                'requested_pipeline' => $retryVersion,
+                'claimable' => true,
+                'previous_state' => $this->historicalSnapshot($job),
+            ];
+            $manualReocr['version_attempts'] = $versionAttempts;
+            $manualReocr['active_version'] = $retryVersion;
+            $manualReocr['claimable'] = true;
+            $manualReocr['attempted_at'] ??= $requestedAt;
+            $manualReocr['version'] ??= self::VERSION;
+            $metadata['manual_reocr'] = $manualReocr;
+        }
 
         $job->update([
             'status' => 'RETRY',
@@ -276,6 +304,7 @@ class DailyPhotoManualRetryService
             'PROTECTED' => 'protected_only_skipped',
             'ALREADY_RESOLVED' => 'already_resolved_skipped',
             'ALREADY_ATTEMPTED' => 'already_reocr_attempted_skipped',
+            'ALREADY_ATTEMPTED_FOR_VERSION' => 'already_attempted_for_version',
             'PENDING_QUEUED', 'TARGETED_RETRY' => 'pending_queued_skipped',
             'ACTIVE_PROCESSING' => 'active_processing_skipped',
             'IGNORED_HOUR_METER' => 'ignored_hour_meter_skipped',
@@ -319,6 +348,7 @@ class DailyPhotoManualRetryService
             'reviewed_confirmed_skipped',
             'already_resolved_skipped',
             'already_reocr_attempted_skipped',
+            'already_attempted_for_version',
             'pending_queued_skipped',
             'active_processing_skipped',
             'ignored_hour_meter_skipped',
@@ -328,5 +358,26 @@ class DailyPhotoManualRetryService
             'eligibility_changed',
             'still_ineligible',
         ], 0);
+    }
+
+    private function hasVersionAttempt(OcrJob $job, string $retryVersion): bool
+    {
+        $attempts = data_get($job->daily_metadata, 'manual_reocr.version_attempts', []);
+
+        return is_array($attempts) && array_key_exists($retryVersion, $attempts);
+    }
+
+    private function normalizeRetryVersion(?string $retryVersion): ?string
+    {
+        if ($retryVersion === null) {
+            return null;
+        }
+
+        $retryVersion = trim($retryVersion);
+        if (strlen($retryVersion) > 32 || preg_match('/\A\d+(?:\.\d+){1,3}\z/D', $retryVersion) !== 1) {
+            throw new \InvalidArgumentException('Giá trị --retry-version không hợp lệ; dùng dạng số như 16.10.10.');
+        }
+
+        return $retryVersion;
     }
 }
