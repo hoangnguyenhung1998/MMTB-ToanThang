@@ -47,10 +47,13 @@
                 <label><span>Số điện thoại</span><input name="phone" value="{{ $job->phone }}"></label>
                 <label class="daily-wide-field"><span>Vị trí</span><textarea name="work_location" rows="2">{{ $job->work_location }}</textarea></label>
                 <label class="daily-wide-field"><span>Ghi chú hậu kiểm</span><textarea name="review_notes" rows="2">{{ $job->review_notes }}</textarea></label>
+                <label><span>Nhóm case OCR</span><select name="case_category">@foreach(\App\Models\OcrRegressionCase::CATEGORIES as $category)<option value="{{ $category }}">{{ $category }}</option>@endforeach</select></label>
+                <label><span>Kết quả mong đợi</span><select name="expected_disposition"><option value="DAILY_TIMEMARK">Ảnh hằng ngày</option><option value="IGNORED_HOUR_METER">Bỏ qua — đồng hồ giờ</option><option value="IGNORED_NON_DAILY_PHOTO">Bỏ qua — ảnh khác</option></select></label>
             </div>
             <div class="daily-review-actions">
 
                 <button class="btn btn-primary" name="action" value="correct">Lưu chỉnh sửa</button>
+                <button class="btn btn-outline-primary" name="action" value="correct_and_add_case">Lưu + thêm vào bộ case OCR</button>
                 <button class="btn btn-danger" name="action" value="reject">Từ chối</button>
             </div>
             </form>

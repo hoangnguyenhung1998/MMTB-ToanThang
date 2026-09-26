@@ -93,9 +93,9 @@ class CanonicalDailyPhotoFoundationTest extends TestCase
 
         $this->assertNull($completed->machine_id);
         $this->assertNull($completed->machine_resolution_method);
-        $this->assertSame('RETRY', $completed->status);
+        $this->assertSame('EXCEPTION', $completed->status);
         $this->assertContains('SENDER_MAPPING_MISSING', $completed->exceptions);
-        $this->assertSame('machine', $completed->ocr_retry_reason);
+        $this->assertNull($completed->ocr_retry_reason);
         $this->assertNull($completed->daily_photo_case_id);
         $this->assertDatabaseCount('daily_photo_cases', 0);
     }

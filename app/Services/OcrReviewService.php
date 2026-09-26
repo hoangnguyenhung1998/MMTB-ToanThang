@@ -20,6 +20,7 @@ class OcrReviewService
     public function __construct(
         private readonly ReconciliationEvidenceSyncService $evidenceSync,
         private readonly DailyPhotoCaseService $dailyPhotoCases,
+        private readonly OcrRegressionCaseService $regressionCases,
     ) {}
 
     public function paginate(array $filters): LengthAwarePaginator
@@ -105,8 +106,26 @@ class OcrReviewService
         $previous = clone $job;
         $reviewed = DB::transaction(function () use ($job, $data, $user): OcrJob {
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
+            $wasDaily = $job->document_type === 'DAILY_TIMEMARK';
             $before = $job->only(['status', 'review_status', 'machine_id', 'asset_code', 'extracted_date', 'extracted_time', 'exceptions']);
-            $action = $data['action'];
+            $requestedAction = $data['action'];
+            $addRegressionCase = $requestedAction === 'correct_and_add_case';
+            $expectedDisposition = $data['expected_disposition'] ?? 'DAILY_TIMEMARK';
+            $markIgnored = $addRegressionCase && in_array($expectedDisposition, ['IGNORED_HOUR_METER', 'IGNORED_NON_DAILY_PHOTO'], true);
+            $inputSnapshot = $addRegressionCase ? $this->regressionCases->snapshot($job) : [];
+            $action = $addRegressionCase ? 'correct' : $requestedAction;
+            $sameReviewedGroundTruth = $addRegressionCase
+                && $job->reviewed_at
+                && ($markIgnored
+                    ? $job->document_type === $expectedDisposition
+                    : (int) $job->machine_id === (int) ($data['machine_id'] ?? 0)
+                        && $job->extracted_date?->format('Y-m-d') === ($data['extracted_date'] ?? null)
+                        && substr((string) $job->extracted_time, 0, 5) === ($data['extracted_time'] ?? null));
+            if ($sameReviewedGroundTruth) {
+                $this->regressionCases->captureVerified($job->fresh(['attachment.message', 'machine']), $inputSnapshot, $data, $user);
+
+                return $job->fresh(['dailyPhotoCase']);
+            }
             $changes = [
                 'review_status' => match ($action) {
                     'approve' => 'APPROVED',
@@ -118,7 +137,7 @@ class OcrReviewService
                 'review_notes' => $data['review_notes'] ?? null,
             ];
 
-            if ($action === 'correct') {
+            if ($action === 'correct' && ! $markIgnored) {
                 $machine = Machine::query()->findOrFail($data['machine_id']);
                 $resolutionMetadata = $job->machine_resolution_metadata ?? [];
                 $resolutionMetadata['human_resolution'] = [
@@ -147,7 +166,16 @@ class OcrReviewService
                 ];
             }
 
-            if ($action === 'approve' && !$job->machine_resolution_method && $job->machine_id) {
+            if ($markIgnored) {
+                $changes += [
+                    'document_type' => $expectedDisposition,
+                    'status' => 'COMPLETED',
+                    'exceptions' => null,
+                    'daily_photo_case_id' => null,
+                ];
+            }
+
+            if ($action === 'approve' && ! $job->machine_resolution_method && $job->machine_id) {
                 $changes['machine_resolution_method'] = DailyPhotoMachineResolutionService::HUMAN;
                 $changes['machine_resolution_metadata'] = [
                     ...($job->machine_resolution_metadata ?? []),
@@ -162,7 +190,7 @@ class OcrReviewService
                 $changes['machine_resolved_at'] = now();
             }
 
-            if ($job->document_type === 'DAILY_TIMEMARK' && $action !== 'reject') {
+            if ($job->document_type === 'DAILY_TIMEMARK' && $action !== 'reject' && ! $markIgnored) {
                 $machineId = $changes['machine_id'] ?? $job->machine_id;
                 $date = $changes['extracted_date'] ?? $job->extracted_date;
                 $time = $changes['extracted_time'] ?? $job->extracted_time;
@@ -181,12 +209,15 @@ class OcrReviewService
             }
             $job->update($changes);
             $fresh = $job->fresh();
-            if ($fresh->document_type === 'DAILY_TIMEMARK') {
-                if ($action === 'reject') {
+            if ($wasDaily || $fresh->document_type === 'DAILY_TIMEMARK') {
+                if ($action === 'reject' || $markIgnored) {
                     $this->dailyPhotoCases->detach($fresh);
                 } else {
                     $this->dailyPhotoCases->materialize($fresh);
                 }
+            }
+            if ($addRegressionCase) {
+                $this->regressionCases->captureVerified($fresh->fresh(['attachment.message', 'machine']), $inputSnapshot, $data, $user);
             }
             ActivityLog::query()->create([
                 'user_id' => $user->id,
@@ -196,7 +227,7 @@ class OcrReviewService
                 'subject_type' => OcrJob::class,
                 'subject_id' => $job->id,
                 'properties' => [
-                    'action' => $action,
+                    'action' => $requestedAction,
                     'before' => $before,
                     'after' => $job->fresh()->only(array_keys($before)),
                 ],
@@ -207,9 +238,15 @@ class OcrReviewService
         });
 
         if ($reviewed->document_type === 'DAILY_TIMEMARK') {
-            if ($reviewed->machine_id && $reviewed->extracted_date) $this->syncRelatedPeriods($reviewed);
+            if ($reviewed->machine_id && $reviewed->extracted_date) {
+                $this->syncRelatedPeriods($reviewed);
+            }
             if ($previous->machine_id && $previous->extracted_date
-                && ($previous->machine_id !== $reviewed->machine_id || !$previous->extracted_date->eq($reviewed->extracted_date))) $this->syncRelatedPeriods($previous);
+                && ($previous->machine_id !== $reviewed->machine_id || ! $previous->extracted_date->eq($reviewed->extracted_date))) {
+                $this->syncRelatedPeriods($previous);
+            }
+        } elseif ($previous->document_type === 'DAILY_TIMEMARK' && $previous->machine_id && $previous->extracted_date) {
+            $this->syncRelatedPeriods($previous);
         }
 
         return $reviewed;
@@ -228,7 +265,6 @@ class OcrReviewService
                 $job->extracted_date->format('Y-m-d'),
             ));
     }
-
 
     public function updateJournal(OcrJob $job, array $data, User $user): OcrJob
     {
@@ -270,14 +306,18 @@ class OcrReviewService
                 }
 
                 $exceptions = [];
-                if (empty($rowData['work_date'])) $exceptions[] = 'MISSING_DATE';
+                if (empty($rowData['work_date'])) {
+                    $exceptions[] = 'MISSING_DATE';
+                }
                 $isStatusOnly = filled($rowData['error_explanation'] ?? null)
                     && empty($rowData['start_time'])
                     && empty($rowData['end_time']);
                 if (! $isStatusOnly && (empty($rowData['start_time']) || empty($rowData['end_time']))) {
                     $exceptions[] = 'MISSING_TIME';
                 }
-                if (blank($rowData['work_content'] ?? null)) $exceptions[] = 'MISSING_WORK_CONTENT';
+                if (blank($rowData['work_content'] ?? null)) {
+                    $exceptions[] = 'MISSING_WORK_CONTENT';
+                }
 
                 $totalMinutes = null;
                 if (! empty($rowData['start_time']) && ! empty($rowData['end_time'])) {

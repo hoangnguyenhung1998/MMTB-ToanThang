@@ -60,6 +60,21 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual("IGNORED_HOUR_METER", strong.document_type)
         self.assertEqual("MULTI_SIGNAL_HOUR_METER", strong.metadata["reason"])
 
+    def test_production_hour_meter_uses_hours_counter_and_tenths_without_brand_rule(self):
+        result = classify_text(
+            "CURTIS\nHOURS\n20570.8\n1/10\n10:52\n24 Tháng 9,2026",
+            hour_meter_structure=0.70,
+        )
+        self.assertEqual("IGNORED_HOUR_METER", result.document_type)
+        self.assertTrue(result.metadata["decimal_counter"])
+        self.assertTrue(result.metadata["tenths_marker"])
+
+    def test_hours_token_alone_is_not_an_hour_meter(self):
+        result = classify_text("HOURS\n10:52\n24 Tháng 9,2026", hour_meter_structure=0.70)
+        self.assertNotEqual("IGNORED_HOUR_METER", result.document_type)
+        year_only = classify_text("HOURS\n1/10\n24 Tháng 9,2026", hour_meter_structure=0.70)
+        self.assertNotEqual("IGNORED_HOUR_METER", year_only.document_type)
+
     def test_known_non_daily_document_is_ignored_but_uncertain_image_is_not(self):
         self.assertEqual(
             "IGNORED_NON_DAILY_PHOTO",

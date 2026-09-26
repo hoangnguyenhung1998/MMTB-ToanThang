@@ -557,10 +557,6 @@ class OcrJobService
             return [];
         }
 
-        if (! $resolution['machine'] && in_array($resolution['asset_resolution_status'] ?? null, ['MISSING', 'NOT_FOUND'], true)) {
-            return ['machine'];
-        }
-
         return collect([
             empty($data['date']) && ! in_array('date', $candidateConflicts, true) ? 'date' : null,
             empty($data['time']) && ! in_array('time', $candidateConflicts, true) ? 'time' : null,

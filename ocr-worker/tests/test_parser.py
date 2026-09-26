@@ -60,9 +60,14 @@ class ParserTest(unittest.TestCase):
 
     def test_24_hour_time_and_meridiem_are_normalized(self):
         for raw, expected in [('6h14', '06:14:00'), ('13:55', '13:55:00'), ('1:55 PM', '13:55:00'),
-                              ('12:00 AM', '00:00:00'), ('12:00 PM', '12:00:00'), ('06.14', '06:14:00')]:
+                              ('12:00 AM', '00:00:00'), ('12:00 PM', '12:00:00')]:
             with self.subTest(raw=raw):
                 self.assertEqual(expected, parse_time(raw).isoformat())
+
+    def test_dot_time_is_only_allowed_in_trusted_timemark_context(self):
+        self.assertIsNone(parse_time('counter 20570.8'))
+        self.assertIsNone(parse_time('10.32'))
+        self.assertEqual('10:32:00', parse_time('10.32', allow_dot=True).isoformat())
 
     def test_date_is_not_misread_as_a_time(self):
         self.assertIsNone(parse_time('05.09.2026'))

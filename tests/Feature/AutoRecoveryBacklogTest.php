@@ -65,7 +65,7 @@ class AutoRecoveryBacklogTest extends TestCase
         $this->assertDatabaseCount('zalo_sender_machine_mappings', 1);
     }
 
-    public function test_missing_machine_uses_mapping_but_missing_mapping_retries_then_fails_closed(): void
+    public function test_missing_machine_uses_mapping_but_missing_mapping_requires_mapping_without_reocr(): void
     {
         $machine = $this->machine('T-XX0717');
         $mappedJob = $this->pendingJob('mapped');
@@ -76,14 +76,9 @@ class AutoRecoveryBacklogTest extends TestCase
 
         $unmappedJob = $this->pendingJob('unmapped');
         $retry = $this->complete($unmappedJob, ['date' => '2026-09-10', 'time' => '07:30:00', 'confidence' => 0.1]);
-        $this->assertSame('RETRY', $retry->status);
-        $this->assertSame('machine', $retry->ocr_retry_reason);
-
-        $failed = $this->complete($retry, []);
-        $this->assertSame('EXCEPTION', $failed->status);
-        $this->assertContains('SENDER_MAPPING_MISSING', $failed->exceptions);
-        $this->assertContains('OCR_RETRY_FAILED', $failed->exceptions);
-        $this->assertNotContains('LOW_CONFIDENCE', $failed->exceptions);
+        $this->assertSame('EXCEPTION', $retry->status);
+        $this->assertNull($retry->ocr_retry_reason);
+        $this->assertContains('SENDER_MAPPING_MISSING', $retry->exceptions);
     }
 
     public function test_targeted_time_retry_preserves_initial_fields_and_continues_automatically(): void
