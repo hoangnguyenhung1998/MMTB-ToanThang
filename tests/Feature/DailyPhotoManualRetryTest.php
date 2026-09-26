@@ -74,11 +74,124 @@ class DailyPhotoManualRetryTest extends TestCase
     {
         $job = $this->manualJob('command-execute');
 
-        $this->artisan('ocr:daily-manual-retry --execute --sample-limit=0')->assertSuccessful();
+        $this->artisan('ocr:daily-manual-retry --execute --retry-version=16.10.10 --sample-limit=0')->assertSuccessful();
 
         $this->assertSame('RETRY', $job->fresh()->status);
         $this->assertTrue(data_get($job->fresh()->daily_metadata, 'manual_reocr.claimable'));
+        $this->assertNotNull($job->fresh()->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['requested_at']);
         $this->assertDatabaseCount('ocr_processing_runs', 0);
+    }
+
+    public function test_versioned_retry_bypasses_legacy_attempt_preserves_history_and_is_one_shot_per_version(): void
+    {
+        $job = $this->manualJob('versioned-legacy');
+        $legacyAttemptedAt = '2026-09-24T08:00:00+07:00';
+        $job->update(['daily_metadata' => [
+            'manual_reocr' => [
+                'version' => '16.10.9.1',
+                'attempted_at' => $legacyAttemptedAt,
+                'completed_at' => '2026-09-24T08:01:00+07:00',
+                'result_status' => 'EXCEPTION',
+                'previous_state' => ['raw_text' => 'immutable legacy snapshot'],
+            ],
+        ]]);
+        $before = $job->fresh()->getAttributes();
+
+        $preview = app(DailyPhotoManualRetryService::class)->preview(20, ' 16.10.10 ');
+
+        $this->assertSame(1, $preview['eligible_reocr']);
+        $this->assertSame(0, $preview['already_reocr_attempted_skipped']);
+        $this->assertSame(0, $preview['already_attempted_for_version']);
+        $this->assertSame($before, $job->fresh()->getAttributes());
+
+        $executed = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
+        $requeued = $job->fresh();
+        $this->assertSame(1, $executed['requeued']);
+        $this->assertSame($legacyAttemptedAt, data_get($requeued->daily_metadata, 'manual_reocr.attempted_at'));
+        $this->assertSame('immutable legacy snapshot', data_get($requeued->daily_metadata, 'manual_reocr.previous_state.raw_text'));
+        $this->assertSame('legacy raw OCR', $requeued->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['previous_state']['raw_text']);
+
+        $claimed = app(OcrJobService::class)->claim('versioned-worker', ['DAILY_TIMEMARK']);
+        $this->assertSame('versioned-worker', $claimed?->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['worker_id']);
+        $this->assertNotNull($claimed?->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['claimed_at']);
+        $completed = app(OcrJobService::class)->complete($claimed, [
+            'worker_id' => 'versioned-worker',
+            'attempt' => $claimed->attempts,
+            'confidence' => 0.99,
+            'raw_text' => 'version 16.10.10 still unresolved',
+            'candidate_metadata' => [],
+        ]);
+        $this->assertSame('EXCEPTION', $completed->status);
+        $this->assertSame('EXCEPTION', $completed->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['result_status']);
+        $this->assertNotNull($completed->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['completed_at']);
+        $this->assertSame('immutable legacy snapshot', data_get($completed->daily_metadata, 'manual_reocr.previous_state.raw_text'));
+
+        $sameVersion = app(DailyPhotoManualRetryService::class)->preview(20, '16.10.10');
+        $legacyMode = app(DailyPhotoManualRetryService::class)->preview();
+        $this->assertSame(0, $sameVersion['eligible_reocr']);
+        $this->assertSame(1, $sameVersion['already_attempted_for_version']);
+        $this->assertSame(1, $legacyMode['already_reocr_attempted_skipped']);
+    }
+
+    public function test_a_different_version_requires_explicit_request_and_remains_one_shot(): void
+    {
+        $job = $this->manualJob('different-version');
+        $job->update(['daily_metadata' => [
+            'manual_reocr' => [
+                'attempted_at' => '2026-09-24T08:00:00+07:00',
+                'version_attempts' => [
+                    '16.10.10' => ['requested_at' => '2026-09-26T08:00:00+07:00', 'result_status' => 'EXCEPTION'],
+                ],
+            ],
+        ]]);
+
+        $legacyMode = app(DailyPhotoManualRetryService::class)->preview();
+        $differentVersion = app(DailyPhotoManualRetryService::class)->preview(20, '16.10.11');
+        $this->assertSame(1, $legacyMode['already_reocr_attempted_skipped']);
+        $this->assertSame(1, $differentVersion['eligible_reocr']);
+
+        app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.11');
+        $claimed = app(OcrJobService::class)->claim('next-version-worker', ['DAILY_TIMEMARK']);
+        app(OcrJobService::class)->complete($claimed, [
+            'worker_id' => 'next-version-worker',
+            'attempt' => $claimed->attempts,
+            'confidence' => 0.99,
+            'raw_text' => 'next version still unresolved',
+            'candidate_metadata' => [],
+        ]);
+
+        $sameVersion = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.11');
+        $this->assertSame(0, $sameVersion['requeued']);
+        $this->assertSame(1, $sameVersion['already_attempted_for_version']);
+        $this->assertArrayHasKey('16.10.10', data_get($job->fresh()->daily_metadata, 'manual_reocr.version_attempts'));
+        $this->assertArrayHasKey('16.10.11', data_get($job->fresh()->daily_metadata, 'manual_reocr.version_attempts'));
+    }
+
+    public function test_versioned_worker_failure_records_terminal_result_without_rewriting_legacy_provenance(): void
+    {
+        $job = $this->manualJob('versioned-failure');
+        $job->update(['daily_metadata' => ['manual_reocr' => [
+            'attempted_at' => '2026-09-24T08:00:00+07:00',
+            'previous_state' => ['raw_text' => 'legacy failure snapshot'],
+        ]]]);
+
+        app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
+        $claimed = app(OcrJobService::class)->claim('failing-versioned-worker', ['DAILY_TIMEMARK']);
+        $failed = app(OcrJobService::class)->fail($claimed, [
+            'worker_id' => 'failing-versioned-worker',
+            'attempt' => $claimed->attempts,
+            'retryable' => true,
+            'error' => 'test worker failure',
+        ]);
+
+        $versionAttempt = $failed->daily_metadata['manual_reocr']['version_attempts']['16.10.10'];
+        $this->assertSame('FAILED', $failed->status);
+        $this->assertSame('2026-09-24T08:00:00+07:00', data_get($failed->daily_metadata, 'manual_reocr.attempted_at'));
+        $this->assertSame('legacy failure snapshot', data_get($failed->daily_metadata, 'manual_reocr.previous_state.raw_text'));
+        $this->assertSame('failing-versioned-worker', $versionAttempt['worker_id']);
+        $this->assertSame('FAILED', $versionAttempt['result_status']);
+        $this->assertNotNull($versionAttempt['completed_at']);
+        $this->assertArrayNotHasKey('active_version', $failed->daily_metadata['manual_reocr']);
     }
 
     public function test_completed_manual_reocr_preserves_provenance_and_is_not_queued_again_when_still_unresolved(): void
@@ -135,13 +248,13 @@ class DailyPhotoManualRetryTest extends TestCase
         $snapshots = OcrJob::query()->whereKey([$human->id, $reviewed->id, $corrected->id])
             ->orderBy('id')->get()->map->getAttributes();
 
-        $preview = app(DailyPhotoManualRetryService::class)->preview();
+        $preview = app(DailyPhotoManualRetryService::class)->preview(20, '16.10.10');
         $this->assertSame(3, $preview['protected_skipped']);
         $this->assertSame(2, $preview['human_corrected_skipped']);
         $this->assertSame(1, $preview['reviewed_confirmed_skipped']);
         $this->assertEquals($snapshots, OcrJob::query()->whereKey([$human->id, $reviewed->id, $corrected->id])->orderBy('id')->get()->map->getAttributes());
 
-        $result = app(DailyPhotoManualRetryService::class)->execute();
+        $result = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
         $this->assertSame(0, $result['requeued']);
         $this->assertEquals($snapshots, OcrJob::query()->whereKey([$human->id, $reviewed->id, $corrected->id])->orderBy('id')->get()->map->getAttributes());
     }
@@ -160,7 +273,7 @@ class DailyPhotoManualRetryTest extends TestCase
         $job->update(['daily_photo_case_id' => $case->id]);
         $before = $job->fresh()->getAttributes();
 
-        $result = app(DailyPhotoManualRetryService::class)->execute();
+        $result = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
 
         $this->assertSame(1, $result['already_resolved_skipped']);
         $this->assertSame(0, $result['requeued']);
@@ -172,7 +285,7 @@ class DailyPhotoManualRetryTest extends TestCase
         $job = $this->manualJob('missing-source');
         Storage::disk('local')->delete($job->attachment->storage_path);
 
-        $result = app(DailyPhotoManualRetryService::class)->execute();
+        $result = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
 
         $this->assertSame(1, $result['missing_source_image']);
         $this->assertSame(0, $result['requeued']);
@@ -183,12 +296,16 @@ class DailyPhotoManualRetryTest extends TestCase
     {
         $job = $this->manualJob('active-lease');
         $job->update(['claimed_by' => 'worker', 'claimed_at' => now(), 'lease_expires_at' => now()->addMinute()]);
+        $running = $this->manualJob('running');
+        $running->update(['status' => 'PROCESSING', 'claimed_by' => 'worker', 'lease_expires_at' => now()->addMinute()]);
+        $runningBefore = $running->fresh()->getAttributes();
 
-        $result = app(DailyPhotoManualRetryService::class)->execute();
+        $result = app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
 
         $this->assertSame(1, $result['active_processing_skipped']);
         $this->assertSame(0, $result['requeued']);
         $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertSame($runningBefore, $running->fresh()->getAttributes());
     }
 
     public function test_pending_processing_targeted_retry_ignored_and_weekly_jobs_are_not_touched(): void
@@ -226,6 +343,39 @@ class DailyPhotoManualRetryTest extends TestCase
         $this->assertSame(1, $result['eligibility_changed']);
         $this->assertSame('EXCEPTION', $job->fresh()->status);
         $this->assertSame('APPROVED', $job->fresh()->review_status);
+    }
+
+    public function test_competing_same_version_marker_prevents_duplicate_requeue_under_lock(): void
+    {
+        $job = $this->manualJob('version-race');
+        $job->update(['daily_metadata' => ['manual_reocr' => [
+            'attempted_at' => '2026-09-24T08:00:00+07:00',
+        ]]]);
+
+        $result = app(DailyPhotoManualRetryService::class)->execute(20, function () use ($job): void {
+            $metadata = $job->fresh()->daily_metadata;
+            $metadata['manual_reocr']['version_attempts']['16.10.10'] = [
+                'requested_at' => now()->toIso8601String(),
+            ];
+            $job->update(['daily_metadata' => $metadata]);
+        }, '16.10.10');
+
+        $this->assertSame(0, $result['requeued']);
+        $this->assertSame(1, $result['eligibility_changed']);
+        $this->assertSame('EXCEPTION', $job->fresh()->status);
+        $this->assertSame(1, app(DailyPhotoManualRetryService::class)
+            ->preview(20, '16.10.10')['already_attempted_for_version']);
+    }
+
+    public function test_retry_version_rejects_metadata_path_injection(): void
+    {
+        $job = $this->manualJob('invalid-version');
+        $before = $job->fresh()->getAttributes();
+
+        $this->artisan('ocr:daily-manual-retry --dry-run --retry-version=16.10.10.version_attempts')
+            ->assertExitCode(2);
+
+        $this->assertSame($before, $job->fresh()->getAttributes());
     }
 
     public function test_normal_new_daily_photo_claim_path_does_not_gain_manual_retry_metadata(): void

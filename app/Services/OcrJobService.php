@@ -60,8 +60,21 @@ class OcrJobService
             $manualReocrClaim = data_get($dailyMetadata, 'manual_reocr.claimable') === true;
             if ($manualReocrClaim) {
                 data_set($dailyMetadata, 'manual_reocr.claimable', false);
-                data_set($dailyMetadata, 'manual_reocr.claimed_at', now()->toIso8601String());
-                data_set($dailyMetadata, 'manual_reocr.worker_id', $workerId);
+                $manualReocr = data_get($dailyMetadata, 'manual_reocr', []);
+                $activeVersion = is_array($manualReocr) ? ($manualReocr['active_version'] ?? null) : null;
+                $versionAttempts = is_array($manualReocr) ? ($manualReocr['version_attempts'] ?? []) : [];
+                if (is_string($activeVersion)
+                    && is_array($versionAttempts)
+                    && is_array($versionAttempts[$activeVersion] ?? null)) {
+                    $versionAttempts[$activeVersion]['claimable'] = false;
+                    $versionAttempts[$activeVersion]['claimed_at'] = now()->toIso8601String();
+                    $versionAttempts[$activeVersion]['worker_id'] = $workerId;
+                    $manualReocr['version_attempts'] = $versionAttempts;
+                    $dailyMetadata['manual_reocr'] = $manualReocr;
+                } else {
+                    data_set($dailyMetadata, 'manual_reocr.claimed_at', now()->toIso8601String());
+                    data_set($dailyMetadata, 'manual_reocr.worker_id', $workerId);
+                }
             }
 
             $claimUpdates = [
@@ -202,9 +215,8 @@ class OcrJobService
                 ],
             ];
             if ($manualReocr = data_get($job->daily_metadata, 'manual_reocr')) {
-                $manualReocr['completed_at'] = now()->toIso8601String();
-                $manualReocr['completed_attempt'] = $attempt;
-                $manualReocr['result_status'] = $willRetry ? 'RETRY' : ($exceptions === [] ? 'COMPLETED' : 'EXCEPTION');
+                $resultStatus = $willRetry ? 'RETRY' : ($exceptions === [] ? 'COMPLETED' : 'EXCEPTION');
+                $manualReocr = $this->completeManualReocrMetadata($manualReocr, $attempt, $resultStatus);
                 $metadata['manual_reocr'] = $manualReocr;
             }
             if (config('daily_photos.enabled') && $machine && ! empty($data['date']) && ! empty($metadata['image_fingerprint'])) {
@@ -417,12 +429,23 @@ class OcrJobService
             $this->ensureClaimOwner($job, $data['worker_id'], isset($data['attempt']) ? (int) $data['attempt'] : null);
             $retryable = (bool) $data['retryable'] && $job->attempts < max(1, (int) config('ocr.max_attempts'));
 
-            $job->update([
+            $updates = [
                 'status' => $retryable ? 'RETRY' : 'FAILED',
                 'error_message' => $data['error'],
                 'lease_expires_at' => null,
                 'processed_at' => $retryable ? null : now(),
-            ]);
+            ];
+            $manualReocr = data_get($job->daily_metadata, 'manual_reocr');
+            if (is_array($manualReocr) && isset($manualReocr['active_version'])) {
+                $dailyMetadata = $job->daily_metadata ?? [];
+                $dailyMetadata['manual_reocr'] = $this->completeManualReocrMetadata(
+                    $manualReocr,
+                    $attempt,
+                    $retryable ? 'RETRY' : 'FAILED',
+                );
+                $updates['daily_metadata'] = $dailyMetadata;
+            }
+            $job->update($updates);
 
             $this->processingRuns->finish($job, $data['worker_id'], $attempt, 'FAILED', $data['error']);
 
@@ -454,6 +477,30 @@ class OcrJobService
                 'attempt' => 'This OCR job claim is stale or is not owned by the supplied worker.',
             ]);
         }
+    }
+
+    private function completeManualReocrMetadata(array $manualReocr, int $attempt, string $resultStatus): array
+    {
+        $activeVersion = $manualReocr['active_version'] ?? null;
+        $versionAttempts = $manualReocr['version_attempts'] ?? [];
+        if (is_string($activeVersion)
+            && is_array($versionAttempts)
+            && is_array($versionAttempts[$activeVersion] ?? null)) {
+            $versionAttempts[$activeVersion]['completed_at'] = now()->toIso8601String();
+            $versionAttempts[$activeVersion]['completed_attempt'] = $attempt;
+            $versionAttempts[$activeVersion]['result_status'] = $resultStatus;
+            $manualReocr['version_attempts'] = $versionAttempts;
+            $manualReocr['last_version'] = $activeVersion;
+            unset($manualReocr['active_version']);
+
+            return $manualReocr;
+        }
+
+        $manualReocr['completed_at'] = now()->toIso8601String();
+        $manualReocr['completed_attempt'] = $attempt;
+        $manualReocr['result_status'] = $resultStatus;
+
+        return $manualReocr;
     }
 
     private function materializeExpiredLeases(int $maxAttempts): int

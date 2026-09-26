@@ -1,46 +1,46 @@
 # Project State
 
 - Updated: 2026-09-26
-- Current Phase: 16.10.10 — Daily Photo OCR Consolidation + Field Lock + OCR Case Library.
-- Status: COMPLETED locally — implementation, targeted/full suites, final static checks and local checkpoint commit complete.
-- Branch: `phase16-10-10-daily-ocr-consolidation`.
-- Verified production base: `ff46acf1adab7da4c2e4fec14c3be051e24da437`.
-- Push / PR / merge / deploy / production migration / production audit / production recovery / mass re-OCR / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
+- Current Phase: 16.10.10.1 — Versioned Manual Daily Photo Re-OCR Hotfix.
+- Status: COMPLETED locally — implementation, targeted/related/full Laravel suites, static checks, continuity docs and local checkpoint commit complete.
+- Branch: `hotfix/versioned-manual-daily-reocr`.
+- Verified base: `cdbab092093db0cd78beb6e77eb9e60ce3079821` — Phase 16.10.10 checkpoint.
+- Push / PR / merge / deploy / production command / production re-OCR / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
 
 ## Current result
 
-- Worker locks Date/Time per field and stops after deterministic Date+Time even when Machine is absent.
-- Machine-only absence no longer triggers targeted retry or rotation; mapping is the deterministic fallback and absent mapping uses existing MAPPING_REQUIRED-equivalent reasons.
-- Trusted TimeMark `HH.MM` is supported; untrusted decimals remain excluded.
-- Hour-meter gate recognizes HOURS + counter + decimal/tenths semantics without brand hardcoding.
-- Read-only `ocr:daily-parser-audit` and VERIFIED OCR Case Library/regression runner are implemented.
-- Additive migration `2026_09_26_000001_create_ocr_regression_cases_table.php` is present; no backfill.
-- Weekly Journal and Collector files are unchanged.
+- `ocr:daily-manual-retry` accepts optional `--retry-version=<numeric-dot-version>`.
+- Without the option, legacy `manual_reocr.attempted_at` behavior is unchanged.
+- With the option, a legacy-attempted unresolved job can be requeued once only when that exact version has no entry in `manual_reocr.version_attempts`.
+- Version request/claim/worker/completion/result history is appended without overwriting the legacy attempted timestamp or snapshot.
+- HUMAN/reviewed/protected, canonical, queued/processing/lease, missing-source and non-daily guards remain authoritative.
+- Dry-run is read-only; execute only requeues the existing OcrJob for the laptop worker.
+- No migration, Python worker file, Collector file or runtime configuration changed.
 
-## Verified checks so far
+## Verified checks
 
 | Check | Result |
 |---|---|
-| Baseline worker parser/TimeMark/classifier | PASS: 44 tests |
-| Updated targeted worker parser/TimeMark/classifier | PASS: 51 tests |
-| Targeted Laravel consolidation/backlog/canonical/review | PASS: 65 tests, 426 assertions |
-| New 1,000 audit jobs + 1,000 OCR cases guard | PASS inside consolidation suite: 8 tests, 48 assertions; 2.45s |
-| Full Laravel suite | PASS: 314 tests, 1,669 assertions, 47.41s |
-| Full Python worker suite | PASS: 65 tests, 1.570s |
-| PHP syntax / Python compile / Pint / diff check | PASS: 19 PHP files / isolated pycache / 18 PHP files / clean diff check |
+| Baseline manual retry suite | PASS: 13 tests / 63 assertions |
+| Versioned manual retry targeted suite | PASS: 18 tests / 101 assertions |
+| Manual retry + OcrJob API + Daily Photo workflow | PASS: 59 tests / 333 assertions |
+| Full Laravel suite | PASS: 319 tests / 1,707 assertions / 50.90s |
+| PHP syntax / Pint `--test` / diff check | PASS: 3 application files / 4 PHP files / clean diff check |
 
-## Findings requiring production read-only evidence
+## Production evidence motivating the hotfix
 
-- The edit-form machine is exactly `ocr_jobs.machine_id`; code does not substitute the current mapping while rendering.
-- The local DB has no VT-XL0362/SGC-T-3C0057 matching production row. Exact live provenance (HUMAN, historical mapping, image resolution snapshot or stale state) is NOT VERIFIED locally. The parser audit now emits the relevant method/metadata/protection fields so production can be checked read-only after deployment approval.
+- Pre-hotfix dry-run: 354 manual considered, 0 eligible, 22 protected/reviewed-confirmed skipped, 332 legacy-attempted skipped.
+- The 332 rows were blocked by the legacy global marker, not proof that pipeline 16.10.10 had run.
+- Post-hotfix production totals remain NOT VERIFIED until an authorized read-only versioned dry-run is reviewed.
 
 ## NEXT ACTION
 
-1. Review the current local `HEAD` on `phase16-10-10-daily-ocr-consolidation` and the 50-item handoff report.
-2. If approved later, separately authorize push/PR; do not merge or deploy automatically.
-3. After an approved Laravel-first deployment/migration and worker update, run only the read-only production parser audit before authorizing any recovery.
-4. Use the audit provenance for the VT-XL0362/SGC-T-3C0057 live rows; do not overwrite rows marked HUMAN/protected.
+1. Review the local diff and checkpoint commit on `hotfix/versioned-manual-daily-reocr`.
+2. If approved later, separately authorize push/PR/merge and Laravel hosting deployment; there is no migration.
+3. Confirm the existing laptop worker already runs the approved Phase 16.10.10 OCR pipeline; do not update or restart it for this hotfix.
+4. After deployment approval, run only `php artisan ocr:daily-manual-retry --dry-run --retry-version=16.10.10` and verify protected remains 22 before any mutation is authorized.
+5. Only after separate approval, run the matching `--execute --retry-version=16.10.10` once and monitor the existing queue.
 
 ## Still prohibited
 
-Do not push, create/merge a PR, deploy, migrate production, run production mutation/recovery/re-OCR, restart `MMTB-RapidOCRWorker`, or restart Collector without separate authorization.
+Do not push, create/merge a PR, deploy, run production commands, execute production re-OCR, choose another retry version, restart the OCR worker, or restart Collector without separate authorization.
