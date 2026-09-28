@@ -1,46 +1,35 @@
 # Project State
 
-- Updated: 2026-09-26
-- Current Phase: 16.10.10.1 — Versioned Manual Daily Photo Re-OCR Hotfix.
-- Status: COMPLETED locally — implementation, targeted/related/full Laravel suites, static checks, continuity docs and local checkpoint commit complete.
-- Branch: `hotfix/versioned-manual-daily-reocr`.
-- Verified base: `cdbab092093db0cd78beb6e77eb9e60ce3079821` — Phase 16.10.10 checkpoint.
+- Updated: 2026-09-28
+- Current Phase: 16.11.2 — Complete AI Rescue OCR + Manual Dashboard UI.
+- Status: COMPLETED locally — implementation and all required local checks PASS; not published or deployed.
+- Branch: `phase16-11-1-ai-rescue-foundation`.
+- Verified base: `44c785a` — production merge of Phase 16.10.10.1.
 - Push / PR / merge / deploy / production command / production re-OCR / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
 
 ## Current result
 
-- `ocr:daily-manual-retry` accepts optional `--retry-version=<numeric-dot-version>`.
-- Without the option, legacy `manual_reocr.attempted_at` behavior is unchanged.
-- With the option, a legacy-attempted unresolved job can be requeued once only when that exact version has no entry in `manual_reocr.version_attempts`.
-- Version request/claim/worker/completion/result history is appended without overwriting the legacy attempted timestamp or snapshot.
-- HUMAN/reviewed/protected, canonical, queued/processing/lease, missing-source and non-daily guards remain authoritative.
-- Dry-run is read-only; execute only requeues the existing OcrJob for the laptop worker.
-- No migration, Python worker file, Collector file or runtime configuration changed.
+- Phase 16.11.1 foundation remains intact: separate durable attempt history, original-image-only worker input, strict versioned schema, fenced lease/retry and authoritative Laravel validation/materialization.
+- Added deliberate single-photo AI Rescue and reason-group bulk operation to the existing Manual OCR dashboard.
+- Bulk always uses a server-generated preview, unique-photo deduplication, encrypted expiring token and confirmation-time eligibility recheck.
+- Added safe status/history UI and aggregate resolution/token metrics without rendering secrets or raw provider responses.
+- Single/bulk overlap, duplicate requests and duplicate callbacks are idempotent; HUMAN/review/canonical protections remain fail-safe.
+- Journal worker reuses the existing `JOURNAL_VISION_*` OpenAI-compatible configuration and gives weekly/handover/intake queues a priority check after a bounded rescue streak.
+- Collector, OpenClaw and reconciliation-worker are unchanged. No automatic mass enqueue exists.
 
 ## Verified checks
 
-| Check | Result |
-|---|---|
-| Baseline manual retry suite | PASS: 13 tests / 63 assertions |
-| Versioned manual retry targeted suite | PASS: 18 tests / 101 assertions |
-| Manual retry + OcrJob API + Daily Photo workflow | PASS: 59 tests / 333 assertions |
-| Full Laravel suite | PASS: 319 tests / 1,707 assertions / 50.90s |
-| PHP syntax / Pint `--test` / diff check | PASS: 3 application files / 4 PHP files / clean diff check |
-
-## Production evidence motivating the hotfix
-
-- Pre-hotfix dry-run: 354 manual considered, 0 eligible, 22 protected/reviewed-confirmed skipped, 332 legacy-attempted skipped.
-- The 332 rows were blocked by the legacy global marker, not proof that pipeline 16.10.10 had run.
-- Post-hotfix production totals remain NOT VERIFIED until an authorized read-only versioned dry-run is reviewed.
+- Full Laravel suite: PASS — 339 tests / 1,912 assertions.
+- AI Rescue Laravel suite: PASS — 19 tests / 199 assertions.
+- RapidOCR worker suite: PASS — 65 tests.
+- Journal/AI Vision worker suite: PASS — 42 tests.
+- PHP syntax, scoped Pint and `git diff --check`: PASS.
+- Baseline at `44c785a` is verified by Git. Production runtime, exact environment-owned Vision model and live backlog remain NOT VERIFIED.
 
 ## NEXT ACTION
 
-1. Review the local diff and checkpoint commit on `hotfix/versioned-manual-daily-reocr`.
-2. If approved later, separately authorize push/PR/merge and Laravel hosting deployment; there is no migration.
-3. Confirm the existing laptop worker already runs the approved Phase 16.10.10 OCR pipeline; do not update or restart it for this hotfix.
-4. After deployment approval, run only `php artisan ocr:daily-manual-retry --dry-run --retry-version=16.10.10` and verify protected remains 22 before any mutation is authorized.
-5. Only after separate approval, run the matching `--execute --retry-version=16.10.10` once and monitor the existing queue.
+Review the final local diff. With explicit approval only: commit/push through the normal Git flow, deploy the exact approved commit, run the additive migration, update/restart only the Journal worker, verify UI/health, then run one separately authorized photo end to end. Do not execute automatic or broad backlog AI OCR.
 
 ## Still prohibited
 
-Do not push, create/merge a PR, deploy, run production commands, execute production re-OCR, choose another retry version, restart the OCR worker, or restart Collector without separate authorization.
+Do not push, create/merge a PR, deploy, run production commands, enqueue mass AI OCR, execute production AI Rescue, restart any worker, change Collector or introduce OpenClaw without separate authorization.

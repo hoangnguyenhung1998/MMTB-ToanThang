@@ -1,6 +1,6 @@
 # MMTB Journal Worker
 
-Worker dùng chung Vision API cho hai hàng đợi tách biệt: nhật trình tuần và hồ sơ tiếp nhận máy. Nhật trình luôn được ưu tiên; khi rảnh worker nhận ảnh đăng kiểm, ảnh số khung/số máy để tự điền hồ sơ Phase 16.2. Hai loại dữ liệu dùng endpoint và bảng riêng, nhưng dùng chung cấu hình, retry, Scheduled Task và Health Agent.
+Worker dùng chung Vision API cho các hàng đợi tách biệt: AI Rescue Daily Photo được yêu cầu rõ ràng, nhật trình tuần và hồ sơ tiếp nhận/bàn giao máy. Mỗi loại dữ liệu dùng endpoint và bảng phù hợp nhưng dùng chung cấu hình provider/model, image transport, retry, Scheduled Task và Health Agent.
 
 External Python worker for handwritten weekly journal images. Laravel remains the source of truth and owns durable jobs, private images, machine matching, journal documents, journal rows, status, and exceptions.
 
@@ -14,6 +14,10 @@ The worker:
 6. Deletes its temporary image and retries safely on network/model failures.
 
 RapidOCR continues to handle `DAILY_TIMEMARK`. The same worker also claims machine-intake documents and `HANDOVER_REPORT` images; handover OCR is advisory and Laravel requires a human confirmation before changing machine status. The existing Telegram PDF bot remains independent and unchanged.
+
+Daily Photo AI Rescue never scans or enqueues the Manual backlog. It only claims durable attempts explicitly created by Laravel, reads the original stored image, and sends the versioned `daily_photo_rescue_v1` structured result back for Laravel-side validation and protected-state recheck.
+
+After at most `DAILY_PHOTO_AI_RESCUE_MAX_CONSECUTIVE` consecutive rescue jobs (default `3`), the worker gives the existing weekly-journal, handover and intake queues a priority check so an operator bulk request cannot starve them.
 
 ## Windows setup
 

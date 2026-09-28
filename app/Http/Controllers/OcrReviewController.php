@@ -7,6 +7,7 @@ use App\Http\Requests\IndexOcrReviewsRequest;
 use App\Http\Requests\UpdateOcrReviewRequest;
 use App\Http\Requests\UpdateWeeklyJournalRequest;
 use App\Models\OcrJob;
+use App\Services\DailyPhotoAiRescueBatchService;
 use App\Services\OcrReviewService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Storage;
@@ -15,20 +16,23 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class OcrReviewController extends Controller
 {
-    public function __construct(private readonly OcrReviewService $service) {}
+    public function __construct(
+        private readonly OcrReviewService $service,
+        private readonly DailyPhotoAiRescueBatchService $aiRescue,
+    ) {}
 
     public function index(IndexOcrReviewsRequest $r): View
     {
         $f = $r->validated();
 
-        return view('ocr-reviews.index', ['jobs' => $this->service->paginate($f), 'statusCounts' => $this->service->statusCounts(), 'reviewStatusCounts' => $this->service->reviewStatusCounts(), 'dailyOverview' => $this->service->dailyOverview($f['overview_date'] ?? now()->toDateString()), 'machines' => $this->service->machineOptions(), 'filters' => $f]);
+        return view('ocr-reviews.index', ['jobs' => $this->service->paginate($f), 'statusCounts' => $this->service->statusCounts(), 'reviewStatusCounts' => $this->service->reviewStatusCounts(), 'dailyOverview' => $this->service->dailyOverview($f['overview_date'] ?? now()->toDateString()), 'machines' => $this->service->machineOptions(), 'filters' => $f, 'aiRescueDashboard' => config('daily_photos.enabled') ? $this->aiRescue->dashboard() : null]);
     }
 
     public function show(OcrJob $ocrJob): View
     {
         $j = $this->service->detail($ocrJob);
 
-        return view('ocr-reviews.show', ['job' => $j, 'machines' => $this->service->machineOptions(), 'imageExists' => $this->service->imageExists($j), 'exceptionLabels' => $this->service->exceptionLabels()]);
+        return view('ocr-reviews.show', ['job' => $j, 'machines' => $this->service->machineOptions(), 'imageExists' => $this->service->imageExists($j), 'exceptionLabels' => $this->service->exceptionLabels(), 'aiRescueState' => ($j->document_type === 'DAILY_TIMEMARK' || $j->aiRescueAttempts->isNotEmpty()) ? $this->aiRescue->state($j) : null]);
     }
 
     public function update(UpdateOcrReviewRequest $r, OcrJob $ocrJob): RedirectResponse

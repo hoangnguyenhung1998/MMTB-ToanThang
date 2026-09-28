@@ -54,6 +54,16 @@ class LaravelJournalClient:
             return None
         return response.json()["job"]
 
+    def claim_daily_rescue(self) -> dict | None:
+        response = self._request(
+            "POST",
+            "/daily-ai-rescue/jobs/claim",
+            json={"worker_id": self.worker_id},
+        )
+        if response.status_code == 204:
+            return None
+        return response.json()["job"]
+
     def claim_intake(self) -> dict | None:
         response = self._request("POST", "/intake/jobs/claim", json={"worker_id": self.worker_id})
         if response.status_code == 204:
@@ -94,6 +104,14 @@ class LaravelJournalClient:
         )
         return response.json()["job"]
 
+    def complete_daily_rescue(self, attempt_id: int, attempt: int, payload: dict) -> dict:
+        response = self._request(
+            "POST",
+            f"/daily-ai-rescue/jobs/{attempt_id}/complete",
+            json={"worker_id": self.worker_id, "attempt": attempt, **payload},
+        )
+        return response.json()["job"]
+
     def complete_intake(self, job_id: int, payload: dict) -> dict:
         response = self._request("POST", f"/intake/jobs/{job_id}/complete", json={"worker_id": self.worker_id, **payload})
         return response.json()["job"]
@@ -110,6 +128,29 @@ class LaravelJournalClient:
                 "worker_id": self.worker_id,
                 "error": error[:2000],
                 "retryable": retryable,
+            },
+        )
+        return response.json()["job"]
+
+    def fail_daily_rescue(
+        self,
+        attempt_id: int,
+        attempt: int,
+        error: str,
+        retryable: bool,
+        provider: str,
+        model: str,
+    ) -> dict:
+        response = self._request(
+            "POST",
+            f"/daily-ai-rescue/jobs/{attempt_id}/fail",
+            json={
+                "worker_id": self.worker_id,
+                "attempt": attempt,
+                "error": error[:5000],
+                "retryable": retryable,
+                "provider": provider,
+                "model": model,
             },
         )
         return response.json()["job"]

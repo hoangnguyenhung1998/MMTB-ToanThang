@@ -156,6 +156,7 @@ class OcrJobService
                     $data['date'] ?? null,
                     $data['time'] ?? null,
                     ! $candidateConflicts->contains('machine'),
+                    ! is_array(data_get($job->daily_metadata, 'manual_reocr')),
                 )
                 : ($legacyAsset = app(AssetCodeResolver::class)->resolve($observedAssetCode)) + [
                     'observed_asset_code' => $observedAssetCode,

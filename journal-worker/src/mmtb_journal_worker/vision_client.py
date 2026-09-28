@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,13 @@ class VisionError(RuntimeError):
     def __init__(self, message: str, retryable: bool = True):
         super().__init__(message)
         self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class StructuredVisionResponse:
+    data: dict[str, Any]
+    raw_content: str
+    usage: dict[str, Any]
 
 
 class JournalVisionClient:
@@ -34,6 +42,13 @@ class JournalVisionClient:
 
     def extract(self, image_path: Path, machine_codes: list[str]) -> JournalExtraction:
         payload = self._build_payload(image_path, machine_codes)
+        response = self.request_json(payload)
+        try:
+            return JournalExtraction.model_validate(response.data)
+        except ValidationError as exc:
+            raise VisionError(f"Vision response failed journal schema validation: {exc}", retryable=False) from exc
+
+    def request_json(self, payload: dict[str, Any]) -> StructuredVisionResponse:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -56,7 +71,10 @@ class JournalVisionClient:
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"]["content"]
-            return JournalExtraction.model_validate(self._parse_json_content(content))
+            parsed = self._parse_json_content(content)
+            raw_content = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            return StructuredVisionResponse(parsed, raw_content, usage)
         except httpx.HTTPStatusError as exc:
             retryable = exc.response.status_code == 429 or exc.response.status_code >= 500
             raise VisionError(
@@ -65,12 +83,11 @@ class JournalVisionClient:
             ) from exc
         except (httpx.HTTPError, OSError) as exc:
             raise VisionError(f"Vision API request failed: {exc}", retryable=True) from exc
-        except ValidationError as exc:
-            raise VisionError(f"Vision response failed journal schema validation: {exc}", retryable=False) from exc
         except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise VisionError(f"Vision response is not valid journal JSON: {exc}", retryable=False) from exc
+            raise VisionError(f"Vision response is not valid structured JSON: {exc}", retryable=False) from exc
 
-    def _build_payload(self, image_path: Path, machine_codes: list[str]) -> dict[str, Any]:
+    @staticmethod
+    def image_data_url(image_path: Path) -> str:
         mime_type = {
             ".png": "image/png",
             ".webp": "image/webp",
@@ -79,6 +96,10 @@ class JournalVisionClient:
             ".tiff": "image/tiff",
         }.get(image_path.suffix.lower(), "image/jpeg")
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _build_payload(self, image_path: Path, machine_codes: list[str]) -> dict[str, Any]:
         catalog = ", ".join(machine_codes)
         instruction = (
             "Bạn là OCR vision chuyên đọc ảnh NHẬT TRÌNH HOẠT ĐỘNG THIẾT BỊ thi công viết tay. "
@@ -114,7 +135,7 @@ class JournalVisionClient:
                     {"type": "text", "text": instruction},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                        "image_url": {"url": self.image_data_url(image_path)},
                     },
                 ],
             }],
