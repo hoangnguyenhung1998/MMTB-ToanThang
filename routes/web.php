@@ -235,6 +235,8 @@ Route::middleware('auth')->group(function () {
         ->name('ocr-reviews.bulk');
     Route::post('/ocr-reviews/ai-rescue/preview', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'preview'])
         ->name('ocr-reviews.ai-rescue.preview');
+    Route::post('/ocr-reviews/ai-rescue/selection-count', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'selectionCount'])
+        ->name('ocr-reviews.ai-rescue.selection-count');
     Route::post('/ocr-reviews/ai-rescue/execute', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'execute'])
         ->name('ocr-reviews.ai-rescue.execute');
     Route::post('/ocr-reviews/{ocrJob}/ai-rescue', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'requestSingle'])

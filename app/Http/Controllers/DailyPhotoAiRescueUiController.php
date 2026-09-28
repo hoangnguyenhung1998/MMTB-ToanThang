@@ -6,6 +6,7 @@ use App\Http\Requests\ExecuteDailyPhotoAiRescueRequest;
 use App\Http\Requests\PreviewDailyPhotoAiRescueRequest;
 use App\Models\OcrJob;
 use App\Services\DailyPhotoAiRescueBatchService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
 
@@ -27,6 +28,13 @@ class DailyPhotoAiRescueUiController extends Controller
     {
         return view('ocr-reviews.ai-rescue-preview', [
             'preview' => $this->service->preview($request->validated('reason_groups')),
+        ]);
+    }
+
+    public function selectionCount(PreviewDailyPhotoAiRescueRequest $request): JsonResponse
+    {
+        return response()->json([
+            'unique_photos' => $this->service->selectionCount($request->validated('reason_groups')),
         ]);
     }
 

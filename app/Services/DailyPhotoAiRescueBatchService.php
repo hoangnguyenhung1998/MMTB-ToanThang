@@ -8,6 +8,7 @@ use App\Models\OcrJob;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -30,63 +31,55 @@ class DailyPhotoAiRescueBatchService
     public function __construct(
         private readonly DailyPhotoBacklogService $backlog,
         private readonly DailyPhotoAiRescueService $rescue,
+        private readonly DailyPhotoExceptionReason $reasons,
     ) {}
 
     public function dashboard(): array
     {
-        $report = $this->backlog->report();
-        $rows = collect($report['rows']);
-        $reasonGroups = collect(DailyPhotoExceptionReason::LABELS)->map(function (string $label, string $reason) use ($rows): array {
-            $ids = $rows->filter(fn (array $row): bool => in_array($reason, $row['reasons'], true))
-                ->pluck('job.id')->map(fn ($id): int => (int) $id)->unique()->values()->all();
+        $manualQuery = OcrJob::query()->where('document_type', 'DAILY_TIMEMARK')->where('status', 'EXCEPTION');
+        $manualTotal = (clone $manualQuery)->count();
+        $neverAttempted = (clone $manualQuery)->whereDoesntHave('aiRescueAttempts')->count();
+        $reasonCounts = $this->reasons->counts(clone $manualQuery);
+        $reasonGroups = collect(DailyPhotoExceptionReason::LABELS)->map(
+            fn (string $label, string $reason): array => [
+                'code' => $reason,
+                'label' => $label,
+                'count' => $reasonCounts[$reason] ?? 0,
+            ]
+        )->filter(fn (array $group): bool => $group['count'] > 0)->values();
 
-            return ['code' => $reason, 'label' => $label, 'count' => count($ids), 'job_ids' => $ids];
-        })->filter(fn (array $group): bool => $group['count'] > 0)->values();
+        $latestIds = DailyPhotoAiRescueAttempt::query()->selectRaw('MAX(id)')->groupBy('ocr_job_id');
+        $latest = DB::table('daily_photo_ai_rescue_attempts')->whereIn('id', $latestIds)
+            ->selectRaw("SUM(CASE WHEN active_key = 'ACTIVE' AND status IN ('PENDING','RETRY','PROCESSING') THEN 1 ELSE 0 END) queued_processing")
+            ->selectRaw("SUM(CASE WHEN final_resolution = 'RESOLVED' THEN 1 ELSE 0 END) resolved")
+            ->selectRaw("SUM(CASE WHEN final_resolution = 'NON_DAILY' THEN 1 ELSE 0 END) non_daily")
+            ->selectRaw("SUM(CASE WHEN final_resolution = 'HUMAN_REQUIRED' THEN 1 ELSE 0 END) human_required")
+            ->selectRaw("SUM(CASE WHEN final_resolution = 'FAILED' THEN 1 ELSE 0 END) failed")
+            ->selectRaw("SUM(CASE WHEN final_resolution LIKE 'SKIPPED%' THEN 1 ELSE 0 END) skipped")
+            ->selectRaw('COALESCE(SUM(prompt_tokens), 0) prompt_tokens')
+            ->selectRaw('COALESCE(SUM(completion_tokens), 0) completion_tokens')
+            ->selectRaw('COALESCE(SUM(total_tokens), 0) total_tokens')
+            ->first();
 
-        $latest = $this->latestAttempts();
-        $metrics = [
-            'never_attempted' => 0,
-            'queued_processing' => 0,
-            'resolved' => 0,
-            'non_daily' => 0,
-            'human_required' => 0,
-            'failed' => 0,
-            'skipped' => 0,
-            'prompt_tokens' => 0,
-            'completion_tokens' => 0,
-            'total_tokens' => 0,
-        ];
-        foreach ($latest as $attempt) {
-            $metrics['prompt_tokens'] += (int) ($attempt->prompt_tokens ?? 0);
-            $metrics['completion_tokens'] += (int) ($attempt->completion_tokens ?? 0);
-            $metrics['total_tokens'] += (int) ($attempt->total_tokens ?? 0);
-            if ($attempt->active_key === DailyPhotoAiRescueService::ACTIVE_KEY) {
-                $metrics['queued_processing']++;
-            } elseif ($attempt->final_resolution === 'RESOLVED') {
-                $metrics['resolved']++;
-            } elseif ($attempt->final_resolution === 'NON_DAILY') {
-                $metrics['non_daily']++;
-            } elseif ($attempt->final_resolution === 'HUMAN_REQUIRED') {
-                $metrics['human_required']++;
-            } elseif ($attempt->final_resolution === 'FAILED') {
-                $metrics['failed']++;
-            } elseif (str_starts_with((string) $attempt->final_resolution, 'SKIPPED')) {
-                $metrics['skipped']++;
-            }
-        }
-        $latestByJob = $latest->keyBy('ocr_job_id');
-        foreach ($rows as $row) {
-            $job = $row['job'];
-            if (! $latestByJob->has($job->id) && $this->category($job, $row, null) === 'eligible') {
-                $metrics['never_attempted']++;
-            }
+        $metrics = ['never_attempted' => $neverAttempted];
+        foreach (['queued_processing', 'resolved', 'non_daily', 'human_required', 'failed', 'skipped', 'prompt_tokens', 'completion_tokens', 'total_tokens'] as $key) {
+            $metrics[$key] = (int) ($latest->{$key} ?? 0);
         }
 
         return [
             'reason_groups' => $reasonGroups,
-            'manual_unique_photos' => $rows->pluck('job.id')->unique()->count(),
+            'manual_unique_photos' => $manualTotal,
             'metrics' => $metrics,
         ];
+    }
+
+    public function selectionCount(array $reasonGroups): int
+    {
+        $reasonGroups = $this->normalizeReasons($reasonGroups);
+
+        return collect($this->backlog->report()['rows'])
+            ->filter(fn (array $row): bool => collect($row['reasons'])->intersect($reasonGroups)->isNotEmpty())
+            ->pluck('job.id')->unique()->count();
     }
 
     public function preview(array $reasonGroups): array
@@ -259,12 +252,12 @@ class DailyPhotoAiRescueBatchService
 
     private function latestAttempts(array $jobIds = []): Collection
     {
-        $query = DailyPhotoAiRescueAttempt::query()->orderByDesc('id');
+        $latestIds = DailyPhotoAiRescueAttempt::query()->selectRaw('MAX(id)')->groupBy('ocr_job_id');
         if ($jobIds !== []) {
-            $query->whereIn('ocr_job_id', $jobIds);
+            $latestIds->whereIn('ocr_job_id', $jobIds);
         }
 
-        return $query->get()->unique('ocr_job_id')->values();
+        return DailyPhotoAiRescueAttempt::query()->whereIn('id', $latestIds)->orderByDesc('id')->get();
     }
 
     private function normalizeReasons(array $reasons): array
