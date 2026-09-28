@@ -13,6 +13,8 @@
         'UNKNOWN' => 'Chưa phân loại',
         'DAILY_TIMEMARK' => 'Ảnh hằng ngày',
         'WEEKLY_JOURNAL' => 'Nhật trình tuần',
+        'IGNORED_HOUR_METER' => 'Ảnh công-tơ giờ',
+        'IGNORED_NON_DAILY_PHOTO' => 'Ảnh không phải Daily',
     ];
     $aiStatusLabels = [
         'PENDING' => 'Đang chờ',
@@ -21,6 +23,37 @@
         'COMPLETED' => 'Đã xử lý',
         'FAILED' => 'Thất bại',
         'SKIPPED' => 'Bỏ qua',
+    ];
+    $aiResolutionLabels = [
+        'RESOLVED' => 'Đã giải quyết',
+        'HUMAN_REQUIRED' => 'Cần kiểm tra',
+        'NON_DAILY' => 'Không phải Daily',
+        'FAILED' => 'Thất bại',
+        'SKIPPED_PROTECTED' => 'Bỏ qua · protected',
+        'SKIPPED_STALE' => 'Bỏ qua · stale',
+    ];
+    $workflowLabels = [
+        'manual' => 'Manual / cần xử lý',
+        'canonical' => 'Đã vào Canonical',
+        'protected' => 'Được bảo vệ',
+        'reviewed' => 'Đã hậu kiểm',
+    ];
+    $ocrSourceLabels = [
+        'rapidocr' => 'OCR chính / chưa AI',
+        'ai_attempted' => 'Đã từng chạy AI',
+        'never_ai' => 'Chưa từng chạy AI',
+    ];
+    $aiFilterLabels = [
+        'never' => 'Chưa chạy AI',
+        'queued' => 'AI đang chờ',
+        'processing' => 'AI đang xử lý',
+        'active' => 'AI chờ / đang xử lý',
+        'resolved' => 'AI đã giải quyết',
+        'human_required' => 'AI cần kiểm tra',
+        'non_daily' => 'AI xác định không phải Daily',
+        'failed' => 'AI thất bại',
+        'skipped' => 'AI bỏ qua / stale',
+        'failed_or_skipped' => 'AI thất bại / bỏ qua',
     ];
 @endphp
 
@@ -48,23 +81,22 @@
             <span class="ai-manual-total">{{ number_format($aiRescueDashboard['manual_unique_photos']) }} ảnh Manual</span>
         </div>
         <div class="ai-metrics-grid">
-            <div><span>Chưa chạy AI</span><strong>{{ number_format($aiRescueDashboard['metrics']['never_attempted']) }}</strong></div>
-            <div><span>Chờ / đang xử lý</span><strong>{{ number_format($aiRescueDashboard['metrics']['queued_processing']) }}</strong></div>
-            <div><span>Đã giải quyết</span><strong>{{ number_format($aiRescueDashboard['metrics']['resolved']) }}</strong></div>
-            <div><span>Không phải Daily</span><strong>{{ number_format($aiRescueDashboard['metrics']['non_daily']) }}</strong></div>
-            <div><span>Cần kiểm tra</span><strong>{{ number_format($aiRescueDashboard['metrics']['human_required']) }}</strong></div>
-            <div><span>Thất bại / bỏ qua</span><strong>{{ number_format($aiRescueDashboard['metrics']['failed'] + $aiRescueDashboard['metrics']['skipped']) }}</strong></div>
+            <a href="{{ route('ocr-reviews.index', ['workflow' => 'manual', 'ai_status' => 'never']) }}"><span>Chưa chạy AI</span><strong>{{ number_format($aiRescueDashboard['metrics']['never_attempted']) }}</strong></a>
+            <a href="{{ route('ocr-reviews.index', ['ai_status' => 'active']) }}"><span>Chờ / đang xử lý</span><strong>{{ number_format($aiRescueDashboard['metrics']['queued_processing']) }}</strong></a>
+            <a href="{{ route('ocr-reviews.index', ['ai_status' => 'resolved']) }}"><span>Đã giải quyết</span><strong>{{ number_format($aiRescueDashboard['metrics']['resolved']) }}</strong></a>
+            <a href="{{ route('ocr-reviews.index', ['ai_status' => 'non_daily']) }}"><span>Không phải Daily</span><strong>{{ number_format($aiRescueDashboard['metrics']['non_daily']) }}</strong></a>
+            <a href="{{ route('ocr-reviews.index', ['ai_status' => 'human_required']) }}"><span>Cần kiểm tra</span><strong>{{ number_format($aiRescueDashboard['metrics']['human_required']) }}</strong></a>
+            <a href="{{ route('ocr-reviews.index', ['ai_status' => 'failed_or_skipped']) }}"><span>Thất bại / bỏ qua</span><strong>{{ number_format($aiRescueDashboard['metrics']['failed'] + $aiRescueDashboard['metrics']['skipped']) }}</strong></a>
         </div>
         <div class="ai-token-summary">Usage đã ghi nhận: {{ number_format($aiRescueDashboard['metrics']['total_tokens']) }} token tổng · {{ number_format($aiRescueDashboard['metrics']['prompt_tokens']) }} input · {{ number_format($aiRescueDashboard['metrics']['completion_tokens']) }} output</div>
         <form method="POST" action="{{ route('ocr-reviews.ai-rescue.preview') }}" id="aiRescuePreviewForm" class="ai-reason-form">
             @csrf
             <div class="ai-reason-grid">
                 @forelse($aiRescueDashboard['reason_groups'] as $group)
-                    <label>
-                        <input class="ai-reason-checkbox" type="checkbox" name="reason_groups[]" value="{{ $group['code'] }}" data-job-ids='@json($group['job_ids'])'>
-                        <span>{{ $group['label'] }}</span>
-                        <strong>{{ number_format($group['count']) }}</strong>
-                    </label>
+                    <div class="ai-reason-option">
+                        <label><input class="ai-reason-checkbox" type="checkbox" name="reason_groups[]" value="{{ $group['code'] }}"> <span>{{ $group['label'] }}</span></label>
+                        <a href="{{ route('ocr-reviews.index', ['workflow' => 'manual', 'reason' => $group['code']]) }}" title="Xem các ảnh thuộc nhóm này">{{ number_format($group['count']) }}</a>
+                    </div>
                 @empty
                     <p class="ai-empty-reasons">Hiện không có nhóm lỗi Manual để chạy AI Rescue.</p>
                 @endforelse
@@ -90,37 +122,75 @@
 
     @endunless
     <form method="GET" action="{{ route('ocr-reviews.index') }}" class="app-card ocr-filter-card">
+        <div class="ocr-filter-heading">
+            <div><strong>Bộ lọc Hậu kiểm OCR</strong><span>Các điều kiện kết hợp trên cùng tập ảnh và được giữ trong URL.</span></div>
+            @if(collect($filters)->except('overview_date')->filter(fn($value) => filled($value))->isNotEmpty())
+                <span class="active-filter-badge">Đang áp dụng bộ lọc</span>
+            @endif
+        </div>
         <div class="ocr-filter-grid">
-            <input name="q" value="{{ $filters['q'] ?? '' }}" placeholder="Mã máy, người gửi hoặc mã tin nhắn">
+            <label><span>Tìm kiếm</span><input name="q" value="{{ $filters['q'] ?? '' }}" placeholder="Job ID, mã máy hoặc mã tin nhắn"></label>
 
-            @unless(config('daily_photos.enabled'))<select name="review_status">
+            @if(config('daily_photos.enabled'))
+            <label><span>Trạng thái nghiệp vụ</span><select name="workflow">
+                <option value="">Tất cả</option>
+                @foreach($workflowLabels as $value => $label)
+                    <option value="{{ $value }}" @selected(($filters['workflow'] ?? '') === $value)>{{ $label }}</option>
+                @endforeach
+            </select></label>
+
+            <label><span>Nguồn / lịch sử OCR</span><select name="ocr_source">
+                <option value="">Tất cả</option>
+                @foreach($ocrSourceLabels as $value => $label)
+                    <option value="{{ $value }}" @selected(($filters['ocr_source'] ?? '') === $value)>{{ $label }}</option>
+                @endforeach
+            </select></label>
+
+            <label><span>AI Rescue</span><select name="ai_status">
+                <option value="">Tất cả</option>
+                @foreach($aiFilterLabels as $value => $label)
+                    <option value="{{ $value }}" @selected(($filters['ai_status'] ?? '') === $value)>{{ $label }}</option>
+                @endforeach
+            </select></label>
+
+            <label><span>Nhóm ngoại lệ</span><select name="reason">
+                <option value="">Tất cả</option>
+                @foreach($exceptionReasonLabels as $value => $label)
+                    <option value="{{ $value }}" @selected(($filters['reason'] ?? '') === $value)>{{ $label }}</option>
+                @endforeach
+            </select></label>
+
+            <label><span>Sender ID / tên</span><input name="sender" value="{{ $filters['sender'] ?? '' }}" placeholder="Sender chính xác hoặc tên"></label>
+            @endif
+
+            @unless(config('daily_photos.enabled'))<label><span>Trạng thái hậu kiểm</span><select name="review_status">
                 <option value="">Tất cả trạng thái hậu kiểm</option>
                 @foreach ($reviewLabels as $status => $label)
                     <option value="{{ $status }}" @selected(($filters['review_status'] ?? '') === $status)>{{ $label }}</option>
                 @endforeach
-            </select>
+            </select></label>
 
             @endunless
-            <select name="document_type">
+            <label><span>Loại ảnh</span><select name="document_type">
                 <option value="">Tất cả loại ảnh</option>
                 @foreach ($typeLabels as $type => $label)
                     <option value="{{ $type }}" @selected(($filters['document_type'] ?? '') === $type)>{{ $label }}</option>
                 @endforeach
-            </select>
+            </select></label>
 
-            <select name="machine_id">
+            <label><span>Mã máy</span><select name="machine_id">
                 <option value="">Tất cả thiết bị</option>
                 @foreach ($machines as $machine)
                     <option value="{{ $machine->id }}" @selected((string) ($filters['machine_id'] ?? '') === (string) $machine->id)>{{ $machine->asset_code }}</option>
                 @endforeach
-            </select>
+            </select></label>
 
-            <input type="date" name="date_from" value="{{ $filters['date_from'] ?? '' }}" title="Từ ngày gửi">
-            <input type="date" name="date_to" value="{{ $filters['date_to'] ?? '' }}" title="Đến ngày gửi">
+            <label><span>Ngày gửi Zalo từ</span><input type="date" name="date_from" value="{{ $filters['date_from'] ?? '' }}"></label>
+            <label><span>Ngày gửi Zalo đến</span><input type="date" name="date_to" value="{{ $filters['date_to'] ?? '' }}"></label>
         </div>
         <div class="ocr-filter-actions">
             <button class="btn btn-primary" type="submit">Áp dụng</button>
-            <a class="btn btn-outline-secondary" href="{{ route('ocr-reviews.index') }}">Xóa lọc</a>
+            <a class="btn btn-outline-secondary" href="{{ route('ocr-reviews.index') }}">Xóa bộ lọc</a>
         </div>
     </form>
 
@@ -202,17 +272,17 @@
                             @if(config('daily_photos.enabled'))
                             <td>
                                 @if($job->latestAiRescueAttempt)
-                                    <span class="ai-inline-status ai-{{ strtolower($job->latestAiRescueAttempt->status) }}">{{ $aiStatusLabels[$job->latestAiRescueAttempt->status] ?? $job->latestAiRescueAttempt->status }}</span>
-                                    <small>{{ $job->latestAiRescueAttempt->final_resolution ?: $job->latestAiRescueAttempt->classification }}</small>
+                                    <span class="ai-inline-status ai-{{ strtolower($job->latestAiRescueAttempt->status) }}">AI · {{ $aiResolutionLabels[$job->latestAiRescueAttempt->final_resolution] ?? $aiStatusLabels[$job->latestAiRescueAttempt->status] ?? $job->latestAiRescueAttempt->status }}</span>
+                                    <small>{{ $job->latestAiRescueAttempt->processed_at?->format('d/m H:i') ?: $job->latestAiRescueAttempt->requested_at?->format('d/m H:i') }}</small>
                                 @else
-                                    <span class="text-muted">Chưa chạy</span>
+                                    <span class="text-muted">Chưa AI</span>
                                 @endif
                             </td>
                             @endif
                             <td class="sticky-action"><a class="btn btn-sm btn-outline-primary" href="{{ route('ocr-reviews.show', $job) }}">{{ $job->document_type === 'DAILY_TIMEMARK' ? 'Sửa dữ liệu' : 'Xem' }}</a></td>
                         </tr>
                     @empty
-                        <tr><td colspan="{{ config('daily_photos.enabled') ? 11 : 10 }}" class="ocr-empty">Không có kết quả OCR phù hợp.</td></tr>
+                        <tr><td colspan="{{ config('daily_photos.enabled') ? 11 : 10 }}" class="ocr-empty">Không có ảnh phù hợp với bộ lọc hiện tại. <a href="{{ route('ocr-reviews.index') }}">Xóa bộ lọc</a></td></tr>
                     @endforelse
                     </tbody>
                 </table>
@@ -229,7 +299,7 @@
 .ocr-review-stat{display:flex;align-items:center;justify-content:space-between;padding:15px 17px;border:1px solid var(--border);border-radius:15px;background:#fff;color:#475569;text-decoration:none;box-shadow:var(--shadow-sm)}
 .ocr-review-stat span{font-size:12px;font-weight:700}.ocr-review-stat strong{font-size:22px;color:#0f172a}
 .ocr-review-stat.status-pending{border-color:#f7d58b;background:#fffaf0}
-.ocr-filter-card{padding:14px;margin-bottom:16px}.ocr-filter-grid{display:grid;grid-template-columns:1.6fr repeat(3,1fr) repeat(2,.85fr);gap:10px}
+.ocr-filter-card{padding:14px;margin-bottom:16px}.ocr-filter-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ocr-filter-heading span{display:block;margin-top:3px;color:#64748b;font-size:10px}.active-filter-badge{padding:6px 9px;border-radius:999px;background:#eef4ff;color:#2558c7!important;font-weight:800}.ocr-filter-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.ocr-filter-grid label{display:flex;min-width:0;flex-direction:column;gap:5px}.ocr-filter-grid label>span{color:#64748b;font-size:10px;font-weight:700}
 .ocr-filter-actions{display:flex;gap:8px;margin-top:10px}.ocr-overview-card{margin-bottom:16px;overflow:hidden}
 .ocr-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
 .ocr-section-head span{display:block;margin-top:3px;color:#64748b;font-size:11px}
@@ -242,7 +312,7 @@
 .review-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:10px;font-weight:800}
 .review-pending{background:#fff0d8;color:#a05200}.review-auto_approved{background:#e9f8f1;color:#13734d}.review-approved{background:#def7ec;color:#087047}.review-corrected{background:#e8efff;color:#2558c7}.review-rejected{background:#fff0f1;color:#b42332}
 .row-pending{background:#fffdf7}.ocr-empty{padding:45px!important;color:#94a3b8!important;text-align:center}.ocr-pagination{margin-top:16px}
-.ai-rescue-dashboard{margin-bottom:16px;overflow:hidden}.ai-manual-total{padding:7px 10px;border-radius:999px;background:#eef4ff;color:#2558c7;font-size:11px;font-weight:800}.ai-metrics-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--border)}.ai-metrics-grid div{display:flex;min-height:78px;flex-direction:column;gap:6px;padding:13px;background:#fff}.ai-metrics-grid span{color:#64748b;font-size:10px}.ai-metrics-grid strong{font-size:20px}.ai-token-summary{padding:8px 14px;border-top:1px solid var(--border);background:#f8fafc;color:#64748b;font-size:10px;text-align:right}.ai-reason-form{padding:14px}.ai-reason-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.ai-reason-grid label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;padding:10px 12px;border:1px solid #dbe4ef;border-radius:10px;background:#f8fafc;cursor:pointer}.ai-reason-grid label:has(input:checked){border-color:#7ba6f8;background:#eef4ff}.ai-reason-grid span{font-size:11px;font-weight:700}.ai-reason-grid strong{color:#2558c7}.ai-empty-reasons{grid-column:1/-1;margin:0;color:#64748b}.ai-reason-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px}.ai-reason-actions span{margin-right:auto;color:#64748b;font-size:11px}.ai-inline-status{display:inline-flex;padding:4px 7px;border-radius:999px;background:#eef2f7;font-size:9px;font-weight:800}.ai-processing{background:#e8efff;color:#2558c7}.ai-completed{background:#e9f8f1;color:#13734d}.ai-failed{background:#fff0f1;color:#b42332}
+.ai-rescue-dashboard{margin-bottom:16px;overflow:hidden}.ai-manual-total{padding:7px 10px;border-radius:999px;background:#eef4ff;color:#2558c7;font-size:11px;font-weight:800}.ai-metrics-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--border)}.ai-metrics-grid>a{display:flex;min-height:78px;flex-direction:column;gap:6px;padding:13px;background:#fff;color:inherit;text-decoration:none}.ai-metrics-grid>a:hover{background:#f8fbff}.ai-metrics-grid span{color:#64748b;font-size:10px}.ai-metrics-grid strong{font-size:20px}.ai-token-summary{padding:8px 14px;border-top:1px solid var(--border);background:#f8fafc;color:#64748b;font-size:10px;text-align:right}.ai-reason-form{padding:14px}.ai-reason-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.ai-reason-option{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:9px;padding:10px 12px;border:1px solid #dbe4ef;border-radius:10px;background:#f8fafc}.ai-reason-option:has(input:checked){border-color:#7ba6f8;background:#eef4ff}.ai-reason-option label{display:flex;align-items:center;gap:9px;cursor:pointer}.ai-reason-option span{font-size:11px;font-weight:700}.ai-reason-option>a{color:#2558c7;font-weight:800;text-decoration:none}.ai-empty-reasons{grid-column:1/-1;margin:0;color:#64748b}.ai-reason-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px}.ai-reason-actions span{margin-right:auto;color:#64748b;font-size:11px}.ai-inline-status{display:inline-flex;padding:4px 7px;border-radius:999px;background:#eef2f7;font-size:9px;font-weight:800}.ai-processing{background:#e8efff;color:#2558c7}.ai-completed{background:#e9f8f1;color:#13734d}.ai-failed{background:#fff0f1;color:#b42332}
 @media(max-width:1100px){.ocr-filter-grid{grid-template-columns:repeat(3,1fr)}.ocr-machine-groups{grid-template-columns:repeat(2,1fr)}.ocr-bulk-bar{grid-template-columns:1fr 1fr}}
 @media(max-width:1100px){.ai-metrics-grid{grid-template-columns:repeat(3,1fr)}.ai-reason-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:700px){.ocr-review-stats,.ocr-filter-grid,.ocr-machine-groups,.ai-reason-grid{grid-template-columns:1fr 1fr}}
@@ -286,12 +356,39 @@ document.addEventListener('DOMContentLoaded', function () {
     const button = document.getElementById('aiPreviewButton');
     const selection = document.getElementById('aiReasonSelection');
     if (!form || !button || !selection) return;
+    let updateTimer;
+    let requestVersion = 0;
     const update = () => {
         const selected = checkboxes.filter(checkbox => checkbox.checked);
-        const ids = new Set(selected.flatMap(checkbox => JSON.parse(checkbox.dataset.jobIds || '[]')));
         button.disabled = selected.length === 0;
-        button.textContent = `OCR lại bằng AI (${ids.size} ảnh)`;
-        selection.textContent = selected.length ? `${selected.length} nhóm · ${ids.size} ảnh unique` : 'Chưa chọn nhóm lỗi';
+        if (!selected.length) {
+            button.textContent = 'OCR lại bằng AI (0 ảnh)';
+            selection.textContent = 'Chưa chọn nhóm lỗi';
+            return;
+        }
+        button.textContent = 'Đang tính ảnh unique...';
+        selection.textContent = `${selected.length} nhóm đã chọn`;
+        clearTimeout(updateTimer);
+        const version = ++requestVersion;
+        updateTimer = setTimeout(async () => {
+            const payload = new FormData();
+            payload.append('_token', form.querySelector('input[name="_token"]').value);
+            selected.forEach(checkbox => payload.append('reason_groups[]', checkbox.value));
+            try {
+                const response = await fetch('{{ route('ocr-reviews.ai-rescue.selection-count') }}', {
+                    method: 'POST', body: payload, headers: {'Accept': 'application/json'},
+                });
+                if (!response.ok) throw new Error('count failed');
+                const result = await response.json();
+                if (version !== requestVersion) return;
+                button.textContent = `OCR lại bằng AI (${result.unique_photos} ảnh)`;
+                selection.textContent = `${selected.length} nhóm · ${result.unique_photos} ảnh unique`;
+            } catch (error) {
+                if (version !== requestVersion) return;
+                button.textContent = 'Tiếp tục đến Preview';
+                selection.textContent = `${selected.length} nhóm · server sẽ tính lại ở Preview`;
+            }
+        }, 180);
     };
     checkboxes.forEach(checkbox => checkbox.addEventListener('change', update));
     form.addEventListener('submit', () => {

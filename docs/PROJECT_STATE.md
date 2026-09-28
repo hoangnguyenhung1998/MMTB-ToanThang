@@ -1,26 +1,27 @@
 # Project State
 
 - Updated: 2026-09-28
-- Current Phase: 16.11.2 — Complete AI Rescue OCR + Manual Dashboard UI.
-- Status: COMPLETED locally — implementation and all required local checks PASS; not published or deployed.
+- Current Phase: 16.11.3 — Tối ưu Hậu kiểm OCR + Bộ lọc thống nhất.
+- Status: COMPLETED locally — implementation, BEFORE/AFTER benchmark and all required local checks PASS; not committed, published or deployed.
 - Branch: `phase16-11-1-ai-rescue-foundation`.
-- Verified base: `44c785a` — production merge of Phase 16.10.10.1.
+- Working HEAD: `92b0190` — Phase 16.11.2 commit; Phase 16.11.3 remains uncommitted.
+- Verified production baseline: `e3f46d88e135f1aea476ad8b22ba29653a9d2d52` — production merge of Phase 16.11.2.
 - Push / PR / merge / deploy / production command / production re-OCR / runtime restart: NOT PERFORMED and NOT AUTHORIZED.
 
 ## Current result
 
-- Phase 16.11.1 foundation remains intact: separate durable attempt history, original-image-only worker input, strict versioned schema, fenced lease/retry and authoritative Laravel validation/materialization.
-- Added deliberate single-photo AI Rescue and reason-group bulk operation to the existing Manual OCR dashboard.
-- Bulk always uses a server-generated preview, unique-photo deduplication, encrypted expiring token and confirmation-time eligibility recheck.
-- Added safe status/history UI and aggregate resolution/token metrics without rendering secrets or raw provider responses.
-- Single/bulk overlap, duplicate requests and duplicate callbacks are idempotent; HUMAN/review/canonical protections remain fail-safe.
-- Journal worker reuses the existing `JOURNAL_VISION_*` OpenAI-compatible configuration and gives weekly/handover/intake queues a priority check after a bounded rescue streak.
-- Collector, OpenClaw and reconciliation-worker are unchanged. No automatic mass enqueue exists.
+- Removed full Manual backlog hydration and per-photo AI eligibility from OCR Review page open.
+- AI resolution/token metrics and Manual/reason counts now use database aggregates over latest attempts/persisted read facts.
+- Added one SQL-composed, backend-paginated filter model for workflow, AI history/status, exception reason, machine, sender, Zalo sent date and search.
+- AI metric/reason cards are clickable and row badges expose the latest AI outcome without loading history.
+- Bulk reason selection stays independent from list filters; server Preview and Confirm revalidation remain authoritative and unchanged.
+- Representative 500-job/420-Manual benchmark improved from 745.31 ms to 121.19 ms; page hydration fell from 460 to 30 OcrJobs; eligibility/report calls fell from 419/1 to 0/0.
+- No migration, provider/model/prompt/worker/Collector/reconciliation or production/runtime change was made.
 
 ## Verified checks
 
-- Full Laravel suite: PASS — 339 tests / 1,912 assertions.
-- AI Rescue Laravel suite: PASS — 19 tests / 199 assertions.
+- Focused OCR Review + AI Rescue UI: PASS — 29 tests / 170 assertions.
+- Full Laravel suite: PASS — 346 tests / 1,967 assertions.
 - RapidOCR worker suite: PASS — 65 tests.
 - Journal/AI Vision worker suite: PASS — 42 tests.
 - PHP syntax, scoped Pint and `git diff --check`: PASS.
@@ -28,7 +29,7 @@
 
 ## NEXT ACTION
 
-Review the final local diff. With explicit approval only: commit/push through the normal Git flow, deploy the exact approved commit, run the additive migration, update/restart only the Journal worker, verify UI/health, then run one separately authorized photo end to end. Do not execute automatic or broad backlog AI OCR.
+Review the Phase 16.11.3 local diff and benchmark document. With explicit approval only, commit and push this branch through the normal Git flow. Do not merge or deploy yet. If deployment is later approved, deploy the exact reviewed commit, run no new migration for this phase, clear Laravel caches as required, and verify default/combined filters plus clickable card populations before any separately authorized AI operation.
 
 ## Still prohibited
 

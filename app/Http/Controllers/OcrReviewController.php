@@ -8,6 +8,7 @@ use App\Http\Requests\UpdateOcrReviewRequest;
 use App\Http\Requests\UpdateWeeklyJournalRequest;
 use App\Models\OcrJob;
 use App\Services\DailyPhotoAiRescueBatchService;
+use App\Services\DailyPhotoExceptionReason;
 use App\Services\OcrReviewService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Storage;
@@ -24,8 +25,18 @@ class OcrReviewController extends Controller
     public function index(IndexOcrReviewsRequest $r): View
     {
         $f = $r->validated();
+        $dailyPhotos = (bool) config('daily_photos.enabled');
 
-        return view('ocr-reviews.index', ['jobs' => $this->service->paginate($f), 'statusCounts' => $this->service->statusCounts(), 'reviewStatusCounts' => $this->service->reviewStatusCounts(), 'dailyOverview' => $this->service->dailyOverview($f['overview_date'] ?? now()->toDateString()), 'machines' => $this->service->machineOptions(), 'filters' => $f, 'aiRescueDashboard' => config('daily_photos.enabled') ? $this->aiRescue->dashboard() : null]);
+        return view('ocr-reviews.index', [
+            'jobs' => $this->service->paginate($f),
+            'statusCounts' => $dailyPhotos ? collect() : $this->service->statusCounts(),
+            'reviewStatusCounts' => $dailyPhotos ? collect() : $this->service->reviewStatusCounts(),
+            'dailyOverview' => $this->service->dailyOverview($f['overview_date'] ?? now()->toDateString()),
+            'machines' => $this->service->machineOptions(),
+            'filters' => $f,
+            'exceptionReasonLabels' => DailyPhotoExceptionReason::LABELS,
+            'aiRescueDashboard' => $dailyPhotos ? $this->aiRescue->dashboard() : null,
+        ]);
     }
 
     public function show(OcrJob $ocrJob): View

@@ -8,6 +8,7 @@ use App\Models\OcrJob;
 use App\Models\ReconciliationPeriod;
 use App\Models\User;
 use App\Services\Reconciliation\ReconciliationEvidenceSyncService;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -21,34 +22,126 @@ class OcrReviewService
         private readonly ReconciliationEvidenceSyncService $evidenceSync,
         private readonly DailyPhotoCaseService $dailyPhotoCases,
         private readonly OcrRegressionCaseService $regressionCases,
+        private readonly DailyPhotoExceptionReason $dailyPhotoReasons,
     ) {}
 
     public function paginate(array $filters): LengthAwarePaginator
     {
-        return OcrJob::query()
-            ->when(config('daily_photos.enabled') && empty($filters['document_type']), fn ($q) => $q->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']))
+        return $this->filteredQuery($filters)
             ->with(['machine:id,asset_code', 'attachment.message', 'latestAiRescueAttempt'])
-            ->when($filters['q'] ?? null, function (Builder $query, string $value): void {
-                $search = '%'.trim($value).'%';
-                $query->where(function (Builder $nested) use ($search): void {
-                    $nested->where('asset_code', 'like', $search)
-                        ->orWhereHas('attachment.message', fn (Builder $message) => $message
-                            ->where('message_id', 'like', $search)
-                            ->orWhere('sender_name', 'like', $search));
-                });
-            })
-            ->when($filters['status'] ?? null, fn (Builder $query, string $value) => $query->where('status', $value))
-            ->when($filters['review_status'] ?? null, fn (Builder $query, string $value) => $query->where('review_status', $value))
-            ->when($filters['document_type'] ?? null, fn (Builder $query, string $value) => $query->where('document_type', $value))
-            ->when($filters['machine_id'] ?? null, fn (Builder $query, int|string $value) => $query->where('machine_id', $value))
-            ->when($filters['date_from'] ?? null, fn (Builder $query, string $date) => $query
-                ->whereHas('attachment.message', fn (Builder $message) => $message->whereDate('sent_at', '>=', $date)))
-            ->when($filters['date_to'] ?? null, fn (Builder $query, string $date) => $query
-                ->whereHas('attachment.message', fn (Builder $message) => $message->whereDate('sent_at', '<=', $date)))
             ->orderByRaw("CASE review_status WHEN 'PENDING' THEN 0 WHEN 'REJECTED' THEN 1 ELSE 2 END")
             ->latest('id')
             ->paginate(30)
             ->withQueryString();
+    }
+
+    public function filteredQuery(array $filters): Builder
+    {
+        $query = OcrJob::query()
+            ->when(config('daily_photos.enabled') && empty($filters['document_type']), function (Builder $builder) use ($filters): void {
+                $documentTypes = ['UNKNOWN', 'DAILY_TIMEMARK'];
+                if (filled($filters['ai_status'] ?? null) || ($filters['ocr_source'] ?? null) === 'ai_attempted') {
+                    array_push($documentTypes, 'IGNORED_HOUR_METER', 'IGNORED_NON_DAILY_PHOTO');
+                }
+                $builder->whereIn('document_type', $documentTypes);
+            })
+            ->when($filters['q'] ?? null, function (Builder $builder, string $value): void {
+                $value = trim($value);
+                $search = '%'.$value.'%';
+                $builder->where(function (Builder $nested) use ($search, $value): void {
+                    if (ctype_digit($value)) {
+                        $nested->orWhere($nested->getModel()->getQualifiedKeyName(), (int) $value);
+                    }
+                    $nested->orWhere('asset_code', 'like', $search)
+                        ->orWhere('observed_asset_code', 'like', $search)
+                        ->orWhereHas('attachment.message', fn (Builder $message) => $message
+                            ->where('message_id', 'like', $search)
+                            ->orWhere('sender_id', 'like', $search)
+                            ->orWhere('sender_name', 'like', $search));
+                });
+            })
+            ->when($filters['status'] ?? null, fn (Builder $builder, string $value) => $builder->where('status', $value))
+            ->when($filters['review_status'] ?? null, fn (Builder $builder, string $value) => $builder->where('review_status', $value))
+            ->when($filters['document_type'] ?? null, fn (Builder $builder, string $value) => $builder->where('document_type', $value))
+            ->when($filters['machine_id'] ?? null, fn (Builder $builder, int|string $value) => $builder->where('machine_id', $value))
+            ->when($filters['sender'] ?? null, function (Builder $builder, string $sender): void {
+                $search = '%'.trim($sender).'%';
+                $builder->whereHas('attachment.message', fn (Builder $message) => $message
+                    ->where('sender_id', trim($sender))->orWhere('sender_name', 'like', $search));
+            })
+            ->when($filters['date_from'] ?? null, fn (Builder $builder, string $date) => $builder
+                ->whereHas('attachment.message', fn (Builder $message) => $message
+                    ->where('sent_at', '>=', CarbonImmutable::parse($date)->startOfDay())))
+            ->when($filters['date_to'] ?? null, fn (Builder $builder, string $date) => $builder
+                ->whereHas('attachment.message', fn (Builder $message) => $message
+                    ->where('sent_at', '<=', CarbonImmutable::parse($date)->endOfDay())));
+
+        $this->applyWorkflowFilter($query, $filters['workflow'] ?? null);
+        $this->applyOcrSourceFilter($query, $filters['ocr_source'] ?? null);
+        $this->applyAiStatusFilter($query, $filters['ai_status'] ?? null);
+        if (filled($filters['reason'] ?? null)) {
+            $this->dailyPhotoReasons->applyToQuery($query, $filters['reason']);
+        }
+
+        return $query;
+    }
+
+    private function applyWorkflowFilter(Builder $query, ?string $workflow): void
+    {
+        match ($workflow) {
+            'manual' => $query->where('document_type', 'DAILY_TIMEMARK')->where('status', 'EXCEPTION'),
+            'canonical' => $query->where(function (Builder $builder): void {
+                $builder->whereNotNull('daily_photo_case_id')->orWhereHas('dailyPhotoCaseEvidence');
+            }),
+            'protected' => $query->where(function (Builder $builder): void {
+                $builder->whereNotNull('reviewed_at')
+                    ->orWhereIn('review_status', ['APPROVED', 'CORRECTED', 'REJECTED'])
+                    ->orWhere('machine_resolution_method', DailyPhotoMachineResolutionService::HUMAN);
+            }),
+            'reviewed' => $query->where(function (Builder $builder): void {
+                $builder->whereNotNull('reviewed_at')
+                    ->orWhereIn('review_status', ['APPROVED', 'CORRECTED', 'REJECTED']);
+            }),
+            default => null,
+        };
+    }
+
+    private function applyOcrSourceFilter(Builder $query, ?string $source): void
+    {
+        match ($source) {
+            'rapidocr', 'never_ai' => $query->whereDoesntHave('aiRescueAttempts'),
+            'ai_attempted' => $query->whereHas('aiRescueAttempts'),
+            default => null,
+        };
+    }
+
+    private function applyAiStatusFilter(Builder $query, ?string $status): void
+    {
+        if ($status === 'never') {
+            $query->whereDoesntHave('aiRescueAttempts');
+
+            return;
+        }
+        if (! $status) {
+            return;
+        }
+
+        $query->whereHas('latestAiRescueAttempt', function (Builder $attempt) use ($status): void {
+            match ($status) {
+                'queued' => $attempt->where('active_key', DailyPhotoAiRescueService::ACTIVE_KEY)->whereIn('status', ['PENDING', 'RETRY']),
+                'processing' => $attempt->where('active_key', DailyPhotoAiRescueService::ACTIVE_KEY)->where('status', 'PROCESSING'),
+                'active' => $attempt->where('active_key', DailyPhotoAiRescueService::ACTIVE_KEY)->whereIn('status', ['PENDING', 'RETRY', 'PROCESSING']),
+                'resolved' => $attempt->where('final_resolution', 'RESOLVED'),
+                'human_required' => $attempt->where('final_resolution', 'HUMAN_REQUIRED'),
+                'non_daily' => $attempt->where('final_resolution', 'NON_DAILY'),
+                'failed' => $attempt->where('final_resolution', 'FAILED'),
+                'skipped' => $attempt->where('final_resolution', 'like', 'SKIPPED%'),
+                'failed_or_skipped' => $attempt->where(function (Builder $nested): void {
+                    $nested->where('final_resolution', 'FAILED')->orWhere('final_resolution', 'like', 'SKIPPED%');
+                }),
+                default => null,
+            };
+        });
     }
 
     public function statusCounts(): Collection
@@ -63,26 +156,27 @@ class OcrReviewService
 
     public function dailyOverview(string $date): Collection
     {
-        return OcrJob::query()
-            ->with('machine:id,asset_code')
+        return DB::table('ocr_jobs')
+            ->leftJoin('machines', 'machines.id', '=', 'ocr_jobs.machine_id')
             ->where('document_type', 'DAILY_TIMEMARK')
             ->whereDate('extracted_date', $date)
+            ->selectRaw('ocr_jobs.machine_id, ocr_jobs.extracted_date')
+            ->selectRaw('MAX(machines.asset_code) machine_asset_code, MAX(ocr_jobs.asset_code) observed_asset_code')
+            ->selectRaw('COUNT(*) total')
+            ->selectRaw("SUM(CASE WHEN review_status = 'PENDING' THEN 1 ELSE 0 END) pending")
+            ->selectRaw("SUM(CASE WHEN ocr_jobs.status = 'EXCEPTION' THEN 1 ELSE 0 END) exceptions")
+            ->selectRaw("SUM(CASE WHEN review_status IN ('AUTO_APPROVED','APPROVED','CORRECTED') THEN 1 ELSE 0 END) completed")
+            ->groupBy('ocr_jobs.machine_id', 'ocr_jobs.extracted_date')
+            ->orderByDesc('pending')
             ->get()
-            ->groupBy(fn (OcrJob $job) => ($job->machine_id ?: 'unknown').'|'.$job->extracted_date?->format('Y-m-d'))
-            ->map(function (Collection $jobs): array {
-                $job = $jobs->first();
-
-                return [
-                    'machine' => $job->machine?->asset_code ?: $job->asset_code ?: 'Chưa xác định',
-                    'date' => $job->extracted_date?->format('d/m/Y'),
-                    'total' => $jobs->count(),
-                    'pending' => $jobs->where('review_status', 'PENDING')->count(),
-                    'exceptions' => $jobs->where('status', 'EXCEPTION')->count(),
-                    'completed' => $jobs->whereIn('review_status', ['AUTO_APPROVED', 'APPROVED', 'CORRECTED'])->count(),
-                ];
-            })
-            ->sortByDesc('pending')
-            ->values();
+            ->map(fn (object $row): array => [
+                'machine' => $row->machine_asset_code ?: $row->observed_asset_code ?: 'Chưa xác định',
+                'date' => $row->extracted_date ? CarbonImmutable::parse($row->extracted_date)->format('d/m/Y') : null,
+                'total' => (int) $row->total,
+                'pending' => (int) $row->pending,
+                'exceptions' => (int) $row->exceptions,
+                'completed' => (int) $row->completed,
+            ]);
     }
 
     public function machineOptions(): Collection
