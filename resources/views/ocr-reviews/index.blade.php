@@ -14,6 +14,14 @@
         'DAILY_TIMEMARK' => 'Ảnh hằng ngày',
         'WEEKLY_JOURNAL' => 'Nhật trình tuần',
     ];
+    $aiStatusLabels = [
+        'PENDING' => 'Đang chờ',
+        'RETRY' => 'Đang chờ thử lại',
+        'PROCESSING' => 'Đang xử lý',
+        'COMPLETED' => 'Đã xử lý',
+        'FAILED' => 'Thất bại',
+        'SKIPPED' => 'Bỏ qua',
+    ];
 @endphp
 
 <div class="page-shell ocr-review-dashboard">
@@ -28,6 +36,45 @@
 
     @if (session('success'))
         <div class="alert alert-success">{{ session('success') }}</div>
+    @endif
+
+    @if(config('daily_photos.enabled') && $aiRescueDashboard)
+    <section class="app-card ai-rescue-dashboard">
+        <div class="ocr-section-head">
+            <div>
+                <strong>AI Rescue cho ảnh Manual</strong>
+                <span>Chỉ xử lý ảnh được operator chọn. Preview không tạo job và mỗi ảnh chỉ được xếp hàng một lần.</span>
+            </div>
+            <span class="ai-manual-total">{{ number_format($aiRescueDashboard['manual_unique_photos']) }} ảnh Manual</span>
+        </div>
+        <div class="ai-metrics-grid">
+            <div><span>Chưa chạy AI</span><strong>{{ number_format($aiRescueDashboard['metrics']['never_attempted']) }}</strong></div>
+            <div><span>Chờ / đang xử lý</span><strong>{{ number_format($aiRescueDashboard['metrics']['queued_processing']) }}</strong></div>
+            <div><span>Đã giải quyết</span><strong>{{ number_format($aiRescueDashboard['metrics']['resolved']) }}</strong></div>
+            <div><span>Không phải Daily</span><strong>{{ number_format($aiRescueDashboard['metrics']['non_daily']) }}</strong></div>
+            <div><span>Cần kiểm tra</span><strong>{{ number_format($aiRescueDashboard['metrics']['human_required']) }}</strong></div>
+            <div><span>Thất bại / bỏ qua</span><strong>{{ number_format($aiRescueDashboard['metrics']['failed'] + $aiRescueDashboard['metrics']['skipped']) }}</strong></div>
+        </div>
+        <div class="ai-token-summary">Usage đã ghi nhận: {{ number_format($aiRescueDashboard['metrics']['total_tokens']) }} token tổng · {{ number_format($aiRescueDashboard['metrics']['prompt_tokens']) }} input · {{ number_format($aiRescueDashboard['metrics']['completion_tokens']) }} output</div>
+        <form method="POST" action="{{ route('ocr-reviews.ai-rescue.preview') }}" id="aiRescuePreviewForm" class="ai-reason-form">
+            @csrf
+            <div class="ai-reason-grid">
+                @forelse($aiRescueDashboard['reason_groups'] as $group)
+                    <label>
+                        <input class="ai-reason-checkbox" type="checkbox" name="reason_groups[]" value="{{ $group['code'] }}" data-job-ids='@json($group['job_ids'])'>
+                        <span>{{ $group['label'] }}</span>
+                        <strong>{{ number_format($group['count']) }}</strong>
+                    </label>
+                @empty
+                    <p class="ai-empty-reasons">Hiện không có nhóm lỗi Manual để chạy AI Rescue.</p>
+                @endforelse
+            </div>
+            <div class="ai-reason-actions">
+                <span id="aiReasonSelection">Chưa chọn nhóm lỗi</span>
+                <button class="btn btn-primary" type="submit" id="aiPreviewButton" disabled>OCR lại bằng AI (0 ảnh)</button>
+            </div>
+        </form>
+    </section>
     @endif
 
     @unless(config('daily_photos.enabled'))
@@ -131,6 +178,7 @@
                         <th>Ngày / giờ</th>
                         <th>Người gửi</th>
                         <th>Độ tin cậy</th>
+                        @if(config('daily_photos.enabled'))<th>AI Rescue</th>@endif
                         <th class="sticky-action">Thao tác</th>
                     </tr>
                     </thead>
@@ -151,10 +199,20 @@
                             </td>
                             <td>{{ $job->attachment?->message?->sender_name ?: '—' }}</td>
                             <td>{{ $job->confidence !== null ? number_format((float) $job->confidence * 100, 0).'%' : '—' }}</td>
+                            @if(config('daily_photos.enabled'))
+                            <td>
+                                @if($job->latestAiRescueAttempt)
+                                    <span class="ai-inline-status ai-{{ strtolower($job->latestAiRescueAttempt->status) }}">{{ $aiStatusLabels[$job->latestAiRescueAttempt->status] ?? $job->latestAiRescueAttempt->status }}</span>
+                                    <small>{{ $job->latestAiRescueAttempt->final_resolution ?: $job->latestAiRescueAttempt->classification }}</small>
+                                @else
+                                    <span class="text-muted">Chưa chạy</span>
+                                @endif
+                            </td>
+                            @endif
                             <td class="sticky-action"><a class="btn btn-sm btn-outline-primary" href="{{ route('ocr-reviews.show', $job) }}">{{ $job->document_type === 'DAILY_TIMEMARK' ? 'Sửa dữ liệu' : 'Xem' }}</a></td>
                         </tr>
                     @empty
-                        <tr><td colspan="10" class="ocr-empty">Không có kết quả OCR phù hợp.</td></tr>
+                        <tr><td colspan="{{ config('daily_photos.enabled') ? 11 : 10 }}" class="ocr-empty">Không có kết quả OCR phù hợp.</td></tr>
                     @endforelse
                     </tbody>
                 </table>
@@ -184,9 +242,11 @@
 .review-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:10px;font-weight:800}
 .review-pending{background:#fff0d8;color:#a05200}.review-auto_approved{background:#e9f8f1;color:#13734d}.review-approved{background:#def7ec;color:#087047}.review-corrected{background:#e8efff;color:#2558c7}.review-rejected{background:#fff0f1;color:#b42332}
 .row-pending{background:#fffdf7}.ocr-empty{padding:45px!important;color:#94a3b8!important;text-align:center}.ocr-pagination{margin-top:16px}
+.ai-rescue-dashboard{margin-bottom:16px;overflow:hidden}.ai-manual-total{padding:7px 10px;border-radius:999px;background:#eef4ff;color:#2558c7;font-size:11px;font-weight:800}.ai-metrics-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--border)}.ai-metrics-grid div{display:flex;min-height:78px;flex-direction:column;gap:6px;padding:13px;background:#fff}.ai-metrics-grid span{color:#64748b;font-size:10px}.ai-metrics-grid strong{font-size:20px}.ai-token-summary{padding:8px 14px;border-top:1px solid var(--border);background:#f8fafc;color:#64748b;font-size:10px;text-align:right}.ai-reason-form{padding:14px}.ai-reason-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.ai-reason-grid label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;padding:10px 12px;border:1px solid #dbe4ef;border-radius:10px;background:#f8fafc;cursor:pointer}.ai-reason-grid label:has(input:checked){border-color:#7ba6f8;background:#eef4ff}.ai-reason-grid span{font-size:11px;font-weight:700}.ai-reason-grid strong{color:#2558c7}.ai-empty-reasons{grid-column:1/-1;margin:0;color:#64748b}.ai-reason-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px}.ai-reason-actions span{margin-right:auto;color:#64748b;font-size:11px}.ai-inline-status{display:inline-flex;padding:4px 7px;border-radius:999px;background:#eef2f7;font-size:9px;font-weight:800}.ai-processing{background:#e8efff;color:#2558c7}.ai-completed{background:#e9f8f1;color:#13734d}.ai-failed{background:#fff0f1;color:#b42332}
 @media(max-width:1100px){.ocr-filter-grid{grid-template-columns:repeat(3,1fr)}.ocr-machine-groups{grid-template-columns:repeat(2,1fr)}.ocr-bulk-bar{grid-template-columns:1fr 1fr}}
-@media(max-width:700px){.ocr-review-stats,.ocr-filter-grid,.ocr-machine-groups{grid-template-columns:1fr 1fr}}
-@media(max-width:480px){.ocr-review-stats,.ocr-filter-grid,.ocr-machine-groups{grid-template-columns:1fr}}
+@media(max-width:1100px){.ai-metrics-grid{grid-template-columns:repeat(3,1fr)}.ai-reason-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){.ocr-review-stats,.ocr-filter-grid,.ocr-machine-groups,.ai-reason-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.ocr-review-stats,.ocr-filter-grid,.ocr-machine-groups,.ai-reason-grid,.ai-metrics-grid{grid-template-columns:1fr}.ai-reason-actions{align-items:stretch;flex-direction:column}.ai-reason-actions span{margin:0}.ai-reason-actions button{width:100%}}
 </style>
 
 <script>
@@ -217,4 +277,29 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+@if(config('daily_photos.enabled') && $aiRescueDashboard)
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const form = document.getElementById('aiRescuePreviewForm');
+    const checkboxes = [...document.querySelectorAll('.ai-reason-checkbox')];
+    const button = document.getElementById('aiPreviewButton');
+    const selection = document.getElementById('aiReasonSelection');
+    if (!form || !button || !selection) return;
+    const update = () => {
+        const selected = checkboxes.filter(checkbox => checkbox.checked);
+        const ids = new Set(selected.flatMap(checkbox => JSON.parse(checkbox.dataset.jobIds || '[]')));
+        button.disabled = selected.length === 0;
+        button.textContent = `OCR lại bằng AI (${ids.size} ảnh)`;
+        selection.textContent = selected.length ? `${selected.length} nhóm · ${ids.size} ảnh unique` : 'Chưa chọn nhóm lỗi';
+    };
+    checkboxes.forEach(checkbox => checkbox.addEventListener('change', update));
+    form.addEventListener('submit', () => {
+        button.disabled = true;
+        button.textContent = 'Đang tạo preview...';
+    });
+    update();
+});
+</script>
+@endif
 @endsection

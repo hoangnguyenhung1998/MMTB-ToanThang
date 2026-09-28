@@ -8,6 +8,7 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from .config import Settings
+from .daily_photo_rescue_vision_client import DailyPhotoRescueVisionClient
 from .laravel_client import LaravelJournalClient, WorkerApiError
 from .process_lock import ProcessLock
 from .vision_client import JournalVisionClient, VisionError
@@ -46,22 +47,52 @@ class JournalWorker:
             model=settings.vision_model,
             timeout_seconds=settings.vision_timeout_seconds,
         )
+        self.daily_rescue_vision = DailyPhotoRescueVisionClient(self.vision)
         self.intake_vision = MachineIntakeVisionClient(settings.vision_api_base_url, settings.vision_api_key, settings.vision_model, settings.vision_timeout_seconds)
         self.handover_vision = MachineHandoverVisionClient(settings.vision_api_base_url, settings.vision_api_key, settings.vision_model, settings.vision_timeout_seconds)
         self.machine_codes: list[str] = []
         self.machine_catalog_loaded_at = 0.0
+        self.daily_rescue_streak = 0
         self.health = WorkerHealth(settings.data_dir / "health.json")
         self.health.job_finished()
 
     def step(self) -> bool:
+        journal_enabled = os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() in {'0', 'false', 'no'}
+        rescue_streak = getattr(self, "daily_rescue_streak", 0)
+        if rescue_streak >= self.settings.daily_rescue_max_consecutive:
+            if journal_enabled:
+                self._refresh_machine_catalog()
+                journal_job = self.laravel.claim()
+                if journal_job is not None:
+                    self.daily_rescue_streak = 0
+                    return self._process_journal(journal_job)
+            handover_job = self.laravel.claim_handover()
+            if handover_job is not None:
+                self.daily_rescue_streak = 0
+                return self._process_handover(handover_job)
+            intake_job = self.laravel.claim_intake()
+            if intake_job is not None:
+                self.daily_rescue_streak = 0
+                return self._process_intake(intake_job)
+            self.daily_rescue_streak = 0
+
+        job = self.laravel.claim_daily_rescue()
+        if job is not None:
+            self.daily_rescue_streak = getattr(self, "daily_rescue_streak", 0) + 1
+            return self._process_daily_rescue(job)
         self._refresh_machine_catalog()
-        job = self.laravel.claim() if os.environ.get('DAILY_PHOTOS_ONLY', 'true').lower() in {'0', 'false', 'no'} else None
+        job = self.laravel.claim() if journal_enabled else None
         if job is None:
             job = self.laravel.claim_handover()
             if job is not None: return self._process_handover(job)
             job = self.laravel.claim_intake()
             if job is not None: return self._process_intake(job)
             self.health.api_success(); return False
+
+        self.daily_rescue_streak = 0
+        return self._process_journal(job)
+
+    def _process_journal(self, job: dict) -> bool:
 
         self.health.api_success()
         self.health.job_started(job["id"])
@@ -98,6 +129,59 @@ class JournalWorker:
             if image_path is not None:
                 image_path.unlink(missing_ok=True)
         return True
+
+    def _process_daily_rescue(self, job: dict) -> bool:
+        self.health.api_success()
+        self.health.job_started(job["id"])
+        image_path: Path | None = None
+        attempt = int(job["attempt"])
+        try:
+            image_path = self.laravel.download_image(job["image_url"], int(job["id"]))
+            result = self.daily_rescue_vision.extract(image_path)
+            saved = self.laravel.complete_daily_rescue(
+                int(job["id"]),
+                attempt,
+                result.api_payload(self.settings.vision_provider, self.settings.vision_model),
+            )
+            self.health.job_succeeded()
+            LOGGER.info(
+                "Completed Daily Photo AI Rescue attempt %s: classification=%s resolution=%s",
+                job["id"],
+                result.extraction.classification,
+                saved.get("final_resolution", "?"),
+            )
+        except WorkerApiError:
+            raise
+        except VisionError as exc:
+            LOGGER.warning("Daily Photo AI Rescue attempt %s failed: %s", job["id"], exc)
+            self._report_daily_rescue_failure(job, str(exc), exc.retryable)
+        except Exception as exc:
+            LOGGER.exception("Daily Photo AI Rescue attempt %s failed locally", job["id"])
+            self._report_daily_rescue_failure(job, str(exc), attempt < int(job.get("max_attempts", 3)))
+        finally:
+            self.health.job_finished()
+            if image_path is not None:
+                image_path.unlink(missing_ok=True)
+        return True
+
+    def _report_daily_rescue_failure(self, job: dict, error: str, retryable: bool) -> None:
+        attempt = int(job["attempt"])
+        should_retry = retryable and attempt < int(job.get("max_attempts", 3))
+        try:
+            self.laravel.fail_daily_rescue(
+                int(job["id"]),
+                attempt,
+                error,
+                should_retry,
+                self.settings.vision_provider,
+                self.settings.vision_model,
+            )
+        except WorkerApiError as report_error:
+            LOGGER.error(
+                "Could not report failure for Daily Photo AI Rescue attempt %s: %s",
+                job["id"],
+                report_error,
+            )
 
     def _process_intake(self, job: dict) -> bool:
         self.health.api_success(); self.health.job_started(job["id"]); image_path: Path | None = None

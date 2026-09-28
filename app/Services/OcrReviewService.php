@@ -27,7 +27,7 @@ class OcrReviewService
     {
         return OcrJob::query()
             ->when(config('daily_photos.enabled') && empty($filters['document_type']), fn ($q) => $q->whereIn('document_type', ['UNKNOWN', 'DAILY_TIMEMARK']))
-            ->with(['machine:id,asset_code', 'attachment.message'])
+            ->with(['machine:id,asset_code', 'attachment.message', 'latestAiRescueAttempt'])
             ->when($filters['q'] ?? null, function (Builder $query, string $value): void {
                 $search = '%'.trim($value).'%';
                 $query->where(function (Builder $nested) use ($search): void {
@@ -92,7 +92,7 @@ class OcrReviewService
 
     public function detail(OcrJob $job): OcrJob
     {
-        return $job->load(['machine', 'attachment.message', 'journalDocument.rows', 'reviewer:id,name', 'activities.user:id,name']);
+        return $job->load(['machine', 'attachment.message', 'journalDocument.rows', 'reviewer:id,name', 'activities.user:id,name', 'aiRescueAttempts']);
     }
 
     public function imageExists(OcrJob $job): bool

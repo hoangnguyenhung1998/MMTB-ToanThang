@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AiReconciliationController;
 use App\Http\Controllers\Api\AutomationHeartbeatController;
 use App\Http\Controllers\Api\AutomationOperationalCommandController;
+use App\Http\Controllers\Api\DailyPhotoAiRescueController;
 use App\Http\Controllers\Api\MachineIntakeEmailReplyController;
 use App\Http\Controllers\Api\MachineIntakeOcrController;
 use App\Http\Controllers\Api\OcrJobController;
@@ -77,6 +78,14 @@ Route::prefix('ocr/v1')
             ->name('api.ocr.jobs.complete-journal');
         Route::post('/jobs/{ocrJob}/fail', [OcrJobController::class, 'fail'])
             ->name('api.ocr.jobs.fail');
+        Route::post('/daily-ai-rescue/jobs/claim', [DailyPhotoAiRescueController::class, 'claim'])
+            ->name('api.ocr.daily-ai-rescue.claim');
+        Route::get('/daily-ai-rescue/jobs/{dailyPhotoAiRescueAttempt}/image', [DailyPhotoAiRescueController::class, 'image'])
+            ->name('api.ocr.daily-ai-rescue.image');
+        Route::post('/daily-ai-rescue/jobs/{dailyPhotoAiRescueAttempt}/complete', [DailyPhotoAiRescueController::class, 'complete'])
+            ->name('api.ocr.daily-ai-rescue.complete');
+        Route::post('/daily-ai-rescue/jobs/{dailyPhotoAiRescueAttempt}/fail', [DailyPhotoAiRescueController::class, 'fail'])
+            ->name('api.ocr.daily-ai-rescue.fail');
         Route::post('/intake/jobs/claim', [MachineIntakeOcrController::class, 'claim'])->name('api.ocr.intake.claim');
         Route::get('/intake/jobs/{machineIntakeOcrJob}/image', [MachineIntakeOcrController::class, 'image'])->name('api.ocr.intake.image');
         Route::post('/intake/jobs/{machineIntakeOcrJob}/complete', [MachineIntakeOcrController::class, 'complete'])->name('api.ocr.intake.complete');

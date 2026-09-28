@@ -157,4 +157,20 @@ class OcrJob extends Model
     {
         return $this->hasMany(OcrRegressionCase::class, 'source_ocr_job_id');
     }
+
+    public function aiRescueAttempts(): HasMany
+    {
+        return $this->hasMany(DailyPhotoAiRescueAttempt::class);
+    }
+
+    public function activeAiRescueAttempt(): HasOne
+    {
+        return $this->hasOne(DailyPhotoAiRescueAttempt::class)
+            ->where('active_key', 'ACTIVE');
+    }
+
+    public function latestAiRescueAttempt(): HasOne
+    {
+        return $this->hasOne(DailyPhotoAiRescueAttempt::class)->latestOfMany();
+    }
 }

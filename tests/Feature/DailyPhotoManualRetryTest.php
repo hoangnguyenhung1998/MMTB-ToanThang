@@ -221,6 +221,46 @@ class DailyPhotoManualRetryTest extends TestCase
         $this->assertSame('EXCEPTION', $job->fresh()->status);
     }
 
+    public function test_full_manual_reocr_does_not_reuse_the_previous_attempt_machine_decision(): void
+    {
+        $job = $this->manualJob('fresh-decision-scope');
+        $oldMachine = $this->machine('T-OLD0717');
+        $job->update([
+            'machine_id' => $oldMachine->id,
+            'asset_code' => $oldMachine->asset_code,
+            'observed_asset_code' => $oldMachine->asset_code,
+            'machine_resolution_method' => 'IMAGE_ASSET',
+            'machine_resolution_metadata' => ['image_asset_resolved_machine_id' => $oldMachine->id],
+        ]);
+
+        app(DailyPhotoManualRetryService::class)->execute(20, null, '16.10.10');
+        $claimed = app(OcrJobService::class)->claim('fresh-scope-worker', ['DAILY_TIMEMARK']);
+        $completed = app(OcrJobService::class)->complete($claimed, [
+            'worker_id' => 'fresh-scope-worker',
+            'attempt' => $claimed->attempts,
+            'date' => '2026-09-22',
+            'time' => '07:15:00',
+            'confidence' => 0.95,
+            'raw_text' => 'fresh attempt has date and time but no machine',
+            'candidate_metadata' => [
+                'date_candidates' => ['2026-09-22'],
+                'time_candidates' => ['07:15:00'],
+                'machine_candidates' => [],
+                'conflicts' => [],
+            ],
+        ]);
+
+        $this->assertSame('EXCEPTION', $completed->status);
+        $this->assertNull($completed->machine_id);
+        $this->assertNull($completed->machine_resolution_method);
+        $this->assertContains('SENDER_MAPPING_MISSING', $completed->exceptions);
+        $this->assertSame([], data_get($completed->daily_metadata, 'ocr_candidate_summary.machine_candidates'));
+        $this->assertSame(
+            'legacy raw OCR',
+            $completed->daily_metadata['manual_reocr']['version_attempts']['16.10.10']['previous_state']['raw_text'],
+        );
+    }
+
     public function test_execute_twice_does_not_requeue_the_same_batch(): void
     {
         $job = $this->manualJob('twice');

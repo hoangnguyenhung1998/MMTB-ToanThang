@@ -20,8 +20,14 @@ class DailyPhotoMachineResolutionService
         private readonly AssetCodeResolver $assetCodes,
     ) {}
 
-    public function resolve(OcrJob $job, mixed $assetCode, ?string $date, ?string $time, bool $learn = false): array
-    {
+    public function resolve(
+        OcrJob $job,
+        mixed $assetCode,
+        ?string $date,
+        ?string $time,
+        bool $learn = false,
+        bool $preservePersistedResolution = true,
+    ): array {
         $asset = $this->assetCodes->resolve($assetCode);
         $observed = $asset['observed'];
         $imageMachine = $asset['machine'];
@@ -42,7 +48,7 @@ class DailyPhotoMachineResolutionService
             $mapping = null;
         }
         // Persisted evidence resolution survives OCR retries and later mapping edits.
-        $frozen = $job->machine_resolution_method && $job->machine_id
+        $frozen = $preservePersistedResolution && $job->machine_resolution_method && $job->machine_id
             ? Machine::find($job->machine_id) : null;
         if ($frozen && ($job->machine_resolution_method === self::HUMAN || ! $imageMachine)) {
             return [

@@ -35,10 +35,12 @@ class Settings:
     vision_api_base_url: str
     vision_api_key: str
     vision_model: str
+    vision_provider: str = "9router-openai-compatible"
     poll_seconds: int = 15
     request_timeout_seconds: int = 30
     vision_timeout_seconds: int = 180
     machine_refresh_seconds: int = 3600
+    daily_rescue_max_consecutive: int = 3
     data_dir: Path = Path("data")
 
     @classmethod
@@ -64,5 +66,10 @@ class Settings:
             request_timeout_seconds=_positive_int("JOURNAL_REQUEST_TIMEOUT_SECONDS", 30),
             vision_timeout_seconds=_positive_int("JOURNAL_VISION_TIMEOUT_SECONDS", 180),
             machine_refresh_seconds=_positive_int("JOURNAL_MACHINE_REFRESH_SECONDS", 3600),
+            daily_rescue_max_consecutive=_positive_int("DAILY_PHOTO_AI_RESCUE_MAX_CONSECUTIVE", 3),
             data_dir=root / "data",
+            vision_provider=os.environ.get(
+                "JOURNAL_VISION_PROVIDER",
+                "9router-openai-compatible",
+            ).strip() or "9router-openai-compatible",
         )
