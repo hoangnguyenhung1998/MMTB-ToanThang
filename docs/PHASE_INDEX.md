@@ -4,6 +4,8 @@
 
 | Phase | Purpose | Status | Dependencies | Related | Git reference | Documentation path |
 |---|---|---|---|---|---|---|
+| 11 | Original reconciliation repair-links | VERIFIED in Git at `6d4c2a4`; later stale/evidence/historical-BCH hotfixes retained | Existing assignment timeline | Phase 15; 16.9; 16.10.1–16.10.4 | `6d4c2a4`, `4daf630`, `e7bd82e`, `afae749`, `80a14fc`, `dd843065` | `docs/phase-11.md` |
+| 11.1 | Repair-links timeout and effective-date BCH reassignment hotfix | COMPLETED locally — 363 Laravel tests / 2,157 assertions PASS; production NOT VERIFIED | Phase 11 repair; existing segmented assignment identity | 16.9; 16.10.1–16.10.4; 16.11.1–16.11.3 | Base `a3937b0`; local uncommitted changes | `docs/phases/PHASE-11.1.md` |
 | 16.10.1 | Canonical Daily Photo Foundation | VERIFIED | Production base `9f8fe11` | Phase 16.9 | `af417bb` | `docs/phases/PHASE-16.10.1.md` |
 | 16.10.2 | Deterministic Daily Photo Pairing | VERIFIED | Phase 16.10.1 | Phase 16.9 | `c8e3796` | `docs/phases/PHASE-16.10.2.md` |
 | 16.10.3 | Canonical Daily Photo Downstream Integration | VERIFIED in Git at task start | Phase 16.10.1; Phase 16.10.2 | Phase 16.9 | `d36cfc1` | `docs/phases/PHASE-16.10.3.md` |
@@ -18,7 +20,7 @@
 | 16.10.10.1 | Versioned Manual Daily Photo Re-OCR Hotfix | COMPLETED locally — 319 Laravel tests / 1,707 assertions PASS | Phase 16.10.9.1; Phase 16.10.10 | OcrJob claim/lease; legacy manual re-OCR backlog | Base `cdbab09`; branch `hotfix/versioned-manual-daily-reocr`; final local checkpoint at current branch HEAD | `docs/phases/PHASE-16.10.10.1.md` |
 | 16.11.1 | AI Rescue OCR Foundation for Manual Daily Photos | COMPLETED locally — 330 Laravel / 65 RapidOCR worker / 40 Journal worker tests PASS | Phase 16.10.10; Phase 16.10.10.1 | Journal Vision worker; OcrJob claim/lease; canonical Daily Photo materialization | Production base `44c785a`; branch `phase16-11-1-ai-rescue-foundation`; uncommitted local result | `docs/phases/PHASE-16.11.1.md` |
 | 16.11.2 | Complete AI Rescue OCR + Manual Dashboard UI | COMPLETED locally — 339 Laravel / 65 RapidOCR worker / 42 Journal worker tests PASS | Phase 16.11.1 | Manual OCR dashboard; Journal Vision worker; canonical Daily Photo materialization | Production base `44c785a`; branch `phase16-11-1-ai-rescue-foundation`; uncommitted local result | `docs/phases/PHASE-16.11.2.md` |
-| 16.11.3 | OCR Review performance + unified filters | COMPLETED locally — 346 Laravel / 65 RapidOCR worker / 42 Journal worker tests PASS | Phase 16.11.1; Phase 16.11.2 | OCR Review read path; Manual reason dashboard; latest AI attempt observability | Production baseline `e3f46d8`; working HEAD `92b0190`; Phase changes uncommitted | `docs/phases/PHASE-16.11.3.md` |
+| 16.11.3 | OCR Review performance + unified filters | COMPLETED locally — 346 Laravel / 65 RapidOCR worker / 42 Journal worker tests PASS | Phase 16.11.1; Phase 16.11.2 | OCR Review read path; Manual reason dashboard; latest AI attempt observability | Commit `a3937b0` verified on 2026-10-06; current production state NOT VERIFIED | `docs/phases/PHASE-16.11.3.md` |
 
 ## Relationship
 
