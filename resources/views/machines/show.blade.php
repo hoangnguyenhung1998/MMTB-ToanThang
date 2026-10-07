@@ -62,6 +62,28 @@
         @if (session('success'))
             <div class="alert alert-success mt-3">{{ session('success') }}</div>
         @endif
+        @if ($propagation = session('transfer_propagation'))
+            <div class="alert alert-info mt-3">
+                Kết quả cập nhật liên kết theo lịch hiệu lực:
+                <ul class="mb-0">
+                    @foreach ($propagation['periods'] ?? [] as $periodId => $result)
+                        <li><a href="{{ route('reconciliation-periods.show', $periodId) }}">Kỳ #{{ $periodId }}</a>:
+                            {{ $result['repaired'] }} dòng được sửa, {{ $result['removed'] }} duplicate được dọn,
+                            {{ $result['unresolved'] }} dòng cần kiểm tra thủ công.
+                            @foreach ($result['diagnostics']['reasons'] as $reason => $count)
+                                {{ $reason }}: {{ $count }}.
+                            @endforeach
+                        </li>
+                    @endforeach
+                    @foreach ($propagation['protected_periods'] ?? [] as $locked)
+                        <li>Kỳ #{{ $locked['period_id'] }} đã khóa, giữ nguyên dữ liệu; cần kiểm tra lịch sử.</li>
+                    @endforeach
+                    @foreach ($propagation['canonical_review'] ?? [] as $review)
+                        <li>Canonical #{{ $review['case_id'] }} cần kiểm tra: {{ $review['reason'] }}.</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
 
         @if ($errors->any())
             <div class="alert alert-danger mt-3">
@@ -255,7 +277,25 @@
                                             <strong>{{ $assignment['project']['name'] ?? '-' }}</strong>
                                             <small>{{ $assignment['command_center']['name'] ?? 'Chưa có BCH' }}</small>
                                         </td>
-                                        <td>{{ $assignment['time_in'] }}</td>
+                                        <td>{{ $assignment['time_in'] }}
+                                            @if (collect($events)->contains(fn ($event) => $event['type'] === 'TRANSFER' && $event['occurred_at']->eq($assignment['time_in'])))
+                                                @php
+                                                    $previous = collect($assignments)->filter(fn ($source) => $source['id'] !== $assignment['id'] && $source['time_out'] && $source['time_out']->lte($assignment['time_in']))->sortByDesc('time_out')->first();
+                                                @endphp
+                                                @if ($previous)
+                                                    <details class="mt-2">
+                                                        <summary>Sửa mốc điều chuyển hồi tố</summary>
+                                                        <form method="POST" action="{{ route('ops.transfer.revise', [$machine, $assignment['id']]) }}" onsubmit="return confirm('Sửa lịch hiệu lực và phục hồi liên kết các kỳ lịch sử bị ảnh hưởng? Dữ liệu có xung đột hoặc đã khóa sẽ được giữ lại để kiểm tra.')">
+                                                            @csrf
+                                                            @method('PATCH')
+                                                            <label>Giờ ra BCH nguồn <input class="form-control" type="datetime-local" name="time_out" step="1" value="{{ $previous['time_out']->format('Y-m-d\TH:i:s') }}" required></label>
+                                                            <label>Giờ vào BCH đích <input class="form-control" type="datetime-local" name="time_in" step="1" value="{{ $assignment['time_in']->format('Y-m-d\TH:i:s') }}" required></label>
+                                                            <button class="btn btn-sm btn-outline-primary mt-2" type="submit">Lưu mốc điều chuyển</button>
+                                                        </form>
+                                                    </details>
+                                                @endif
+                                            @endif
+                                        </td>
                                         <td>{{ $assignment['time_out'] ?? 'Đang hoạt động' }}</td>
                                     </tr>
                                 @empty

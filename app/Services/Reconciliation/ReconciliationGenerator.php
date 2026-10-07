@@ -39,8 +39,14 @@ class ReconciliationGenerator
                 || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
                 throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
             }
-            $existing = $appendOnly ? $period->rows()->get(['machine_id', 'work_date', 'machine_assignment_id'])
-                ->mapWithKeys(fn ($row) => [implode('|', [$row->machine_id, $row->work_date->format('Y-m-d'), $row->machine_assignment_id]) => true]) : collect();
+            if ($appendOnly) {
+                app(ReconciliationLinkRepairService::class)->repair($period, auth()->id());
+            }
+            $existingRows = $appendOnly ? DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
+                ->get(['machine_id', 'work_date', 'machine_assignment_id', 'segment_start', 'segment_end'])
+                ->groupBy(fn ($r) => $r->machine_id.'|'.substr($r->work_date, 0, 10)) : collect();
+            $existing = $existingRows->flatten(1)
+                ->mapWithKeys(fn ($row) => [implode('|', [$row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id]) => true]);
             if (!$appendOnly) {
                 $period->rows()->delete();
             }
@@ -141,6 +147,9 @@ class ReconciliationGenerator
                         continue;
                     }
                     $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);
+                    if (ReconciliationIdentityGuard::occupied($existingRows->get($assignment->machine_id.'|'.$date->toDateString(), collect())->all(), $assignment->id, $segmentStart, $segmentEnd)) {
+                        continue;
+                    }
                     $sourceRows = collect($journalRows->get(
                         $assignment->machine_id.'|'.$date->toDateString(),
                         []

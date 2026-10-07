@@ -55,7 +55,7 @@ class MachineService
                 throw new BusinessRuleException('Bắt buộc có file chứng từ bàn giao.');
             }
 
-            $machine = Machine::findOrFail($machineId);
+            $machine = Machine::query()->lockForUpdate()->findOrFail($machineId);
             Project::findOrFail($projectId);
             CommandCenter::findOrFail($commandCenterId);
             $date = Carbon::parse($handoverDate)->toDateString();
@@ -65,6 +65,7 @@ class MachineService
             }
 
             // Tạo assignment mới.
+            app(MachineAssignmentTimelineService::class)->assertInterval($machine->id, Carbon::parse($date)->startOfDay(), null);
             MachineAssignment::create([
                 'machine_id' => $machine->id,
                 'project_id' => $projectId,
@@ -87,9 +88,11 @@ class MachineService
             ]);
 
             $machine->update(['status' => 'HANDED_OVER']);
+            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+                ->propagate($machine->id, $date, null, auth()->id());
 
             return $machine->refresh();
-        });
+        }, 3);
     }
 
     /**
@@ -134,9 +137,24 @@ class MachineService
         ?string $proofFilePath
     ): Machine {
         return DB::transaction(function () use ($machineId, $fromProjectId, $fromCommandCenterId, $toProjectId, $toCommandCenterId, $timeOut, $timeIn, $proofFilePath) {
-            $machine = Machine::findOrFail($machineId);
+            $machine = Machine::query()->lockForUpdate()->findOrFail($machineId);
             Project::findOrFail($toProjectId);
             CommandCenter::findOrFail($toCommandCenterId);
+            $out = Carbon::parse($timeOut);
+            $in = Carbon::parse($timeIn);
+            if ($out->gt($in)) {
+                throw new BusinessRuleException('Giờ ra nguồn không được sau giờ vào đích.');
+            }
+            // Exact repeat of a completed transfer must not create another event/assignment.
+            if (MachineAssignment::where('machine_id', $machineId)->where('time_in', $in)
+                ->where('project_id', $toProjectId)->where('command_center_id', $toCommandCenterId)->exists()
+                && MachineAssignment::where('machine_id', $machineId)->where('time_out', $out)
+                    ->where('project_id', $fromProjectId)->where('command_center_id', $fromCommandCenterId)->exists()
+                && MachineEvent::where('machine_id', $machineId)->where('type', 'TRANSFER')->where('occurred_at', $in)
+                    ->where('from_project_id', $fromProjectId)->where('from_command_center_id', $fromCommandCenterId)
+                    ->where('to_project_id', $toProjectId)->where('to_command_center_id', $toCommandCenterId)->exists()) {
+                return $machine;
+            }
 
             $openAssignment = MachineAssignment::where('machine_id', $machine->id)
                 ->whereNull('time_out')
@@ -164,6 +182,9 @@ class MachineService
             }
 
             // Đóng assignment hiện tại.
+            $timeline = app(MachineAssignmentTimelineService::class);
+            $timeline->assertInterval($machineId, $openAssignment->time_in, $out, [$openAssignment->id]);
+            $timeline->assertInterval($machineId, $in, null, [$openAssignment->id]);
             $openAssignment->update(['time_out' => Carbon::parse($timeOut)]);
 
             // Tạo assignment mới.
@@ -187,9 +208,11 @@ class MachineService
                 'from_command_center_id' => $currentCommandCenterId,
                 'to_command_center_id' => $toCommandCenterId,
             ]);
+            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+                ->propagate($machine->id, $out->toDateTimeString(), null, auth()->id());
 
             return $machine->refresh();
-        });
+        }, 3);
     }
 
     /**
@@ -208,20 +231,21 @@ class MachineService
                 throw new BusinessRuleException('Bắt buộc có file chứng từ trả máy.');
             }
 
-            $machine = Machine::findOrFail($machineId);
+            $machine = Machine::query()->lockForUpdate()->findOrFail($machineId);
 
             if (!in_array($machine->status, ['HANDED_OVER', 'ACTIVE'], true)) {
                 throw new BusinessRuleException('Chỉ được trả máy khi đang bàn giao hoặc hoạt động.');
             }
 
             $openAssignment = MachineAssignment::where('machine_id', $machine->id)
-                ->whereNull('time_out')
+                ->whereNull('time_out')->lockForUpdate()
                 ->first();
 
             $fromProjectId = $openAssignment?->project_id;
             $fromCommandCenterId = $openAssignment?->command_center_id;
 
             if ($openAssignment) {
+                app(MachineAssignmentTimelineService::class)->assertInterval($machineId, $openAssignment->time_in, Carbon::parse($timeOut), [$openAssignment->id]);
                 $openAssignment->update(['time_out' => Carbon::parse($timeOut)]);
             }
 
@@ -249,9 +273,11 @@ class MachineService
                 'current_driver_id' => null,
                 'returned_to_app' => $appReturnConfirmed,
             ]);
+            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+                ->propagate($machine->id, $timeOut, null, auth()->id());
 
             return $machine->refresh();
-        });
+        }, 3);
     }
 
     /**
@@ -339,6 +365,7 @@ class MachineService
             ->orderByDesc('time_in')
             ->get()
             ->map(fn (MachineAssignment $assignment) => [
+                'id' => $assignment->id,
                 'project' => $assignment->project
                     ? ['id' => $assignment->project->id, 'name' => $assignment->project->name]
                     : null,
