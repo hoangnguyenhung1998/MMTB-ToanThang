@@ -17,6 +17,8 @@ class ReconciliationLinkRepairService
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể sửa liên kết.');
             }
             $result = ['repaired' => 0, 'removed' => 0, 'unresolved' => 0];
+            $result['diagnostics'] = ['total_inspected' => 0, 'already_correct' => 0, 'repairable_stale_links' => 0,
+                'reasons' => [], 'rows' => []];
             // Keep all siblings of each machine together, including stale rows.
             $machineIds = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
                 ->distinct()->orderBy('machine_id')->pluck('machine_id')->all();
@@ -42,6 +44,14 @@ class ReconciliationLinkRepairService
                             });
                     })
                     ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->lockForUpdate()->get()->keyBy('id');
+                // Canonical membership is scoped by assignment, not by reconciliation row.
+                // Moving that identity needs a separate canonical migration, outside link repair.
+                $canonicalScopes = DB::table('daily_photo_cases as c')->whereIn('c.machine_id', $ids)
+                    ->whereBetween('c.work_date', [$rows->min('work_date'), $rows->max('work_date').' 23:59:59'])
+                    ->whereExists(fn ($query) => $query->selectRaw('1')->from('daily_photo_case_evidence as e')
+                        ->whereColumn('e.daily_photo_case_id', 'c.id'))
+                    ->select(['c.machine_id', 'c.work_date', 'c.machine_assignment_id'])->lockForUpdate()->get()
+                    ->mapWithKeys(fn ($case) => [$case->machine_id.'|'.substr($case->work_date, 0, 10).'|'.$case->machine_assignment_id => true])->all();
                 $byMachine = $assignments->groupBy('machine_id');
                 $effective = [];
                 $targets = [];
@@ -56,7 +66,7 @@ class ReconciliationLinkRepairService
                             }
                         }
                     }
-                    $targets[$key.'|'.$row->machine_assignment_id] = $row->id;
+                    $targets[$key.'|'.$row->machine_assignment_id][$row->id] = true;
                     $source = $assignments->get($row->machine_assignment_id);
                     if ($source && (int) $source->machine_id === (int) $row->machine_id
                         && $this->usable($source) && $this->onDate($source, $row->work_date)
@@ -69,49 +79,89 @@ class ReconciliationLinkRepairService
                 $deletes = [];
                 $logs = [];
                 $now = now()->toDateTimeString();
-                foreach ($rows as $row) {
+                [$orderedRows, $writeLevels] = $this->orderByDependencies($rows->all(), $assignments, $effective, $targets);
+                foreach ($orderedRows as $row) {
+                    $result['diagnostics']['total_inspected']++;
                     $source = $assignments->get($row->machine_assignment_id);
                     $key = $row->machine_id.'|'.$row->work_date;
                     $exact = $source && (int) $source->machine_id === (int) $row->machine_id
-                        && $this->onDate($source, $row->work_date);
+                        && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
                     $protected = $this->protected($row);
                     $human = $row->manually_edited_at !== null;
-                    if (! $exact) {
-                        if ($protected || $human) {
-                            $result['unresolved']++;
+                    if ($source && ! AssignmentInterval::valid($source)) {
+                        $this->unresolved($result, $row, 'INVALID_TIMELINE');
 
-                            continue;
-                        }
-                        $candidates = $effective[$key];
-                        if (count($candidates) > 1) {
-                            $result['unresolved']++;
-
-                            continue;
-                        }
-                        // Reassign only an empty draft. Evidence/canonical identity remains
-                        // with its source unless an identical valid sibling preserves it.
-                        $candidate = count($candidates) === 1 ? $candidates[0] : null;
-                        if ($candidate && $this->usable($candidate) && ! $this->hasData($row)
-                            && ! isset($targets[$key.'|'.$candidate->id])) {
-                            $source = $candidate;
-                        } elseif ($source && (int) $source->machine_id === (int) $row->machine_id
-                            && ! $this->onDate($source, $row->work_date)
-                            && ((! $candidate && ! $this->hasData($row)) || isset($duplicates[$this->payloadKey($row)]))) {
-                            $deletes[] = $row->id;
-                            $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
-                                'Xóa dòng nháp nằm ngoài thời gian của phân công nguồn.',
-                                ['row' => array_intersect_key((array) $row, array_flip(['id', 'work_date', 'project_id', 'command_center_id', 'machine_assignment_id']))], $now);
-                            $result['removed']++;
-
-                            continue;
-                        } else {
-                            $result['unresolved']++;
-
-                            continue;
-                        }
+                        continue;
                     }
-                    if (! $this->usable($source) || $this->ambiguous($source, $row, $effective[$key])) {
-                        $result['unresolved']++;
+                    if (($row->segment_start && $row->segment_end && $row->segment_start >= $row->segment_end)
+                        || ((! $row->segment_start || ! $row->segment_end) && $this->hasData($row))) {
+                        $this->unresolved($result, $row, 'INVALID_SEGMENT');
+
+                        continue;
+                    }
+                    // A same-date source can also be stale after a time-level transfer.
+                    // Empty drafts retain the existing exact-source boundary narrowing rule.
+                    $needsTarget = ! $exact || (! $this->withinSegment($source, $row)
+                        && ($human || $this->hasData($row) || $this->containedCandidates($row, $effective[$key])));
+                    if ($needsTarget) {
+                        if ($protected) {
+                            $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP');
+
+                            continue;
+                        }
+                        if (isset($canonicalScopes[$key.'|'.$row->machine_assignment_id]) || $this->hasCanonicalReference($row)) {
+                            $this->unresolved($result, $row, 'CANONICAL_RELATIONSHIP');
+
+                            continue;
+                        }
+                        $candidates = $this->containedCandidates($row, $effective[$key]);
+                        // Legacy empty all-day drafts can be narrowed only to a sole date candidate.
+                        if (! $candidates && ! $human && ! $this->hasData($row) && count($effective[$key]) === 1) {
+                            $candidates = $effective[$key];
+                        }
+                        $candidate = count($candidates) === 1 ? $candidates[0] : null;
+                        if (! $candidate) {
+                            // Preserve the proven full-payload deduplication/expired-empty cleanup.
+                            if (! $exact && $source && (int) $source->machine_id === (int) $row->machine_id
+                                && ! $this->onDate($source, $row->work_date) && ! $human
+                                && ((! $effective[$key] && ! $this->hasData($row)) || isset($duplicates[$this->payloadKey($row)]))) {
+                                $deletes[] = $row->id;
+                                unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                                $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
+                                    'Xóa dòng nháp nằm ngoài thời gian của phân công nguồn.',
+                                    ['row' => array_intersect_key((array) $row, array_flip(['id', 'work_date', 'project_id', 'command_center_id', 'machine_assignment_id']))], $now);
+                                $result['removed']++;
+
+                                continue;
+                            }
+                            $reason = count($candidates) > 1 ? 'TRUE_ASSIGNMENT_OVERLAP'
+                                : (! $effective[$key] ? 'NO_EFFECTIVE_ASSIGNMENT' : 'SEGMENT_AMBIGUITY');
+                            if (collect($effective[$key])->contains(fn ($a) => ! AssignmentInterval::valid($a))) {
+                                $reason = 'INVALID_TIMELINE';
+                            }
+                            $this->unresolved($result, $row, $reason);
+
+                            continue;
+                        }
+                        $source = $candidate;
+                    }
+                    if (! AssignmentInterval::valid($source)) {
+                        $this->unresolved($result, $row, 'INVALID_TIMELINE');
+
+                        continue;
+                    }
+                    if (! $this->usable($source)) {
+                        $this->unresolved($result, $row, $source->source_project_id === null ? 'NO_PROJECT_RESOLUTION' : 'NO_BCH_RESOLUTION');
+
+                        continue;
+                    }
+                    if (collect($effective[$key])->contains(fn ($candidate) => ! AssignmentInterval::valid($candidate))) {
+                        $this->unresolved($result, $row, 'INVALID_TIMELINE');
+
+                        continue;
+                    }
+                    if ($this->ambiguous($source, $row, $effective[$key])) {
+                        $this->unresolved($result, $row, 'TRUE_ASSIGNMENT_OVERLAP');
 
                         continue;
                     }
@@ -125,7 +175,7 @@ class ReconciliationLinkRepairService
                     }
                     if (! $this->withinSegment($source, $row)) {
                         if ($human || $this->hasData($row)) {
-                            $result['unresolved']++;
+                            $this->unresolved($result, $row, 'SEGMENT_AMBIGUITY');
 
                             continue;
                         }
@@ -133,28 +183,66 @@ class ReconciliationLinkRepairService
                         $changes['segment_start'] = max($row->segment_start ?: $start, $start);
                         $changes['segment_end'] = min($row->segment_end ?: $end, $end);
                         if ($changes['segment_start'] >= $changes['segment_end']) {
-                            $result['unresolved']++;
+                            $this->unresolved($result, $row, 'INVALID_SEGMENT');
 
                             continue;
                         }
                     }
                     if (! $changes) {
+                        $result['diagnostics']['already_correct']++;
+
                         continue;
                     }
                     if ($protected) {
-                        $result['unresolved']++;
+                        $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP');
+
+                        continue;
+                    }
+                    if ((int) $row->machine_assignment_id !== (int) $source->id
+                        && (isset($canonicalScopes[$key.'|'.$row->machine_assignment_id])
+                            || $this->hasCanonicalReference($row))) {
+                        $this->unresolved($result, $row, 'CANONICAL_RELATIONSHIP');
+
+                        continue;
+                    }
+                    $occupants = $targets[$key.'|'.$source->id] ?? [];
+                    unset($occupants[$row->id]);
+                    if ($occupants) {
+                        // An identical donor already preserves every meaningful value.
+                        if (! $exact && ! $human && isset($duplicates[$this->payloadKey($row)])) {
+                            $deletes[] = $row->id;
+                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                            $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
+                                'Xóa dòng nháp trùng toàn bộ dữ liệu với dòng nguồn hợp lệ.', ['row_id' => $row->id], $now);
+                            $result['removed']++;
+                        } else {
+                            $this->unresolved($result, $row, 'TARGET_DUPLICATE');
+                        }
 
                         continue;
                     }
                     $old = array_intersect_key((array) $row, $changes);
                     $updates[$row->id] = $changes;
-                    $targets[$key.'|'.$source->id] = $row->id;
+                    unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                    $targets[$key.'|'.$source->id][$row->id] = true;
+                    if ((int) $row->machine_assignment_id !== (int) $source->id) {
+                        $result['diagnostics']['repairable_stale_links']++;
+                    }
                     $logs[] = $this->log($row, $userId, 'reconciliation.links_repaired',
                         'Khôi phục liên kết từ đúng phân công nguồn của dòng đối chiếu.',
                         ['old' => $old, 'new' => $changes, 'machine_assignment_id' => $source->id], $now);
                     $result['repaired']++;
                 }
-                $this->writeUpdates($period->id, $updates, $now);
+                // Release occupied identities before a dependent row claims them.
+                // CASE updates within each wave have no dependency on one another.
+                $waves = [];
+                foreach ($updates as $id => $changes) {
+                    $waves[$writeLevels[$id]][$id] = $changes;
+                }
+                ksort($waves);
+                foreach ($waves as $wave) {
+                    $this->writeUpdates($period->id, $wave, $now);
+                }
                 foreach (array_chunk($deletes, 250) as $chunk) {
                     DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)->whereIn('id', $chunk)->delete();
                 }
@@ -169,8 +257,7 @@ class ReconciliationLinkRepairService
 
     private function onDate(object $assignment, string $date): bool
     {
-        return substr($assignment->time_in, 0, 10) <= $date
-            && (! $assignment->time_out || substr($assignment->time_out, 0, 10) >= $date);
+        return AssignmentInterval::onDate($assignment, $date);
     }
 
     private function usable(object $assignment): bool
@@ -180,15 +267,12 @@ class ReconciliationLinkRepairService
 
     private function segment(object $assignment, string $date): array
     {
-        return [substr($assignment->time_in, 0, 10) === $date ? substr($assignment->time_in, 11, 8) : '00:00:00',
-            $assignment->time_out && substr($assignment->time_out, 0, 10) === $date ? substr($assignment->time_out, 11, 8) : '23:59:59'];
+        return AssignmentInterval::segment($assignment, $date);
     }
 
     private function withinSegment(object $assignment, object $row): bool
     {
-        [$start, $end] = $this->segment($assignment, $row->work_date);
-
-        return $row->segment_start && $row->segment_end && $row->segment_start >= $start && $row->segment_end <= $end;
+        return AssignmentInterval::contains($assignment, $row, $row->work_date);
     }
 
     private function ambiguous(object $source, object $row, array $candidates): bool
@@ -201,7 +285,7 @@ class ReconciliationLinkRepairService
                 continue;
             }
             [$otherStart, $otherEnd] = $this->segment($candidate, $row->work_date);
-            if ($start < $otherEnd && $otherStart < $end) {
+            if (! AssignmentInterval::valid($candidate) || AssignmentInterval::overlaps($start, $end, $otherStart, $otherEnd)) {
                 return true;
             }
         }
@@ -212,6 +296,83 @@ class ReconciliationLinkRepairService
     private function protected(object $row): bool
     {
         return $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null;
+    }
+
+    private function hasCanonicalReference(object $row): bool
+    {
+        foreach (json_decode($row->daily_intervals ?? '[]', true) ?? [] as $interval) {
+            if (! empty($interval['canonical_interval_id'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function orderByDependencies(array $rows, $assignments, array $effective, array $targets): array
+    {
+        $indexed = [];
+        $waiting = [];
+        $dependents = [];
+        $levels = [];
+        $queue = [];
+        foreach ($rows as $row) {
+            $indexed[$row->id] = $row;
+            $key = $row->machine_id.'|'.$row->work_date;
+            $source = $assignments->get($row->machine_assignment_id);
+            $exact = $source && (int) $source->machine_id === (int) $row->machine_id
+                && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
+            $targetId = $row->machine_assignment_id;
+            if (! $exact || (! $this->withinSegment($source, $row)
+                && ($row->manually_edited_at || $this->hasData($row) || $this->containedCandidates($row, $effective[$key])))) {
+                $candidates = $this->containedCandidates($row, $effective[$key]);
+                if (! $candidates && ! $row->manually_edited_at && ! $this->hasData($row) && count($effective[$key]) === 1) {
+                    $candidates = $effective[$key];
+                }
+                if (count($candidates) === 1) {
+                    $targetId = $candidates[0]->id;
+                }
+            }
+            $dependencies = (int) $targetId !== (int) $row->machine_assignment_id
+                ? ($targets[$key.'|'.$targetId] ?? []) : [];
+            unset($dependencies[$row->id]);
+            $waiting[$row->id] = count($dependencies);
+            $levels[$row->id] = 0;
+            foreach ($dependencies as $id => $_) {
+                $dependents[$id][] = $row->id;
+            }
+            if (! $dependencies) {
+                $queue[] = $row->id;
+            }
+        }
+        $ordered = [];
+        for ($head = 0; $head < count($queue); $head++) {
+            $id = $queue[$head];
+            $ordered[] = $indexed[$id];
+            foreach ($dependents[$id] ?? [] as $dependent) {
+                $levels[$dependent] = max($levels[$dependent], $levels[$id] + 1);
+                if (--$waiting[$dependent] === 0) {
+                    $queue[] = $dependent;
+                }
+            }
+            unset($indexed[$id]);
+        }
+
+        // Cycles cannot release an identity safely; occupancy checks fail closed.
+        return [array_merge($ordered, array_values($indexed)), $levels];
+    }
+
+    private function containedCandidates(object $row, array $candidates): array
+    {
+        return array_values(array_filter($candidates, fn ($candidate) => $this->withinSegment($candidate, $row)));
+    }
+
+    private function unresolved(array &$result, object $row, string $reason): void
+    {
+        $result['unresolved']++;
+        $result['diagnostics']['reasons'][$reason] = ($result['diagnostics']['reasons'][$reason] ?? 0) + 1;
+        $result['diagnostics']['rows'][] = ['row_id' => $row->id, 'machine_id' => $row->machine_id,
+            'work_date' => $row->work_date, 'reason' => $reason];
     }
 
     private function hasData(object $row): bool

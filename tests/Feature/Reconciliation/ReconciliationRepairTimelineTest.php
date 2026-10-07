@@ -167,19 +167,28 @@ class ReconciliationRepairTimelineTest extends TestCase
         }
     }
 
-    public function test_stale_manual_evidence_and_hours_are_not_reassigned_or_deleted(): void
+    public function test_stale_manual_evidence_and_hours_are_relinked_without_payload_changes(): void
     {
         $a = $this->assignment('2026-09-01', '2026-09-14 23:59:59');
-        $this->assignment('2026-09-15', null, 'BCH B');
+        $b = $this->assignment('2026-09-15', null, 'BCH B');
         $states = [['manually_edited_at' => now()], ['daily_ocr_job_ids' => [1]], ['regular_minutes' => 123],
             ['work_content' => 'HUMAN'], ['status' => 'REVIEWED']];
         foreach ($states as $i => $state) {
             $row = $this->row($a, 15 + $i, $state);
             $snapshots[] = [$row, $row->getAttributes()];
         }
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 5], $this->repair());
+        $this->assertSame(['repaired' => 4, 'removed' => 0, 'unresolved' => 1], $this->repair());
         foreach ($snapshots as [$row, $before]) {
-            $this->assertSame($before, $row->fresh()->getAttributes());
+            $after = $row->fresh()->getAttributes();
+            if ($row->status === 'REVIEWED') {
+                $this->assertSame($before, $after);
+            } else {
+                $this->assertSame($b->id, (int) $after['machine_assignment_id']);
+                foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'updated_at'] as $field) {
+                    unset($before[$field], $after[$field]);
+                }
+                $this->assertSame($before, $after);
+            }
         }
     }
 
@@ -264,6 +273,7 @@ class ReconciliationRepairTimelineTest extends TestCase
 
     private function repair(): array
     {
-        return app(ReconciliationLinkRepairService::class)->repair($this->period, null);
+        return array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($this->period, null),
+            array_flip(['repaired', 'removed', 'unresolved']));
     }
 }
