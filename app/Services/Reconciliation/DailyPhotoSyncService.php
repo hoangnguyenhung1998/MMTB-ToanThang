@@ -188,14 +188,22 @@ class DailyPhotoSyncService
             ->when($commandCenterId, fn ($q) => $q->whereHas('machineAssignment', fn ($q) => $q->where('command_center_id', $commandCenterId)))
             ->orderBy('id')->chunkById(self::BATCH_SIZE, function ($cases) use ($period): void {
                 DB::transaction(function () use ($cases, $period): void {
+                    $lockedPeriod = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
+                    abort_unless(in_array($lockedPeriod->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
+                    // Reload relationships after the period lock, rather than using a pre-transfer snapshot.
+                    $cases = DailyPhotoCase::query()->with('machineAssignment')->whereKey($cases->modelKeys())->get();
                     $machineIds = $cases->pluck('machine_id')->unique();
                     $workDates = $cases->map(fn (DailyPhotoCase $case) => $case->work_date->toDateString())->unique();
-                    $existing = $period->rows()->whereIn('machine_id', $machineIds)
-                        ->whereDate('work_date', '>=', $workDates->min())->whereDate('work_date', '<=', $workDates->max())
-                        ->get(['machine_id', 'machine_assignment_id', 'work_date'])
-                        ->mapWithKeys(fn (ReconciliationRow $row) => [
-                            $row->machine_id.'|'.$row->work_date->toDateString().'|'.($row->machine_assignment_id ?? '*') => true,
-                        ]);
+                    if ($cases->isEmpty()) {
+                        return;
+                    }
+                    $occupied = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
+                        ->whereIn('machine_id', $machineIds)->whereBetween('work_date', [$workDates->min(), $workDates->max().' 23:59:59'])
+                        ->get(['machine_id', 'machine_assignment_id', 'work_date', 'segment_start', 'segment_end'])
+                        ->groupBy(fn ($r) => $r->machine_id.'|'.substr($r->work_date, 0, 10));
+                    $existing = $occupied->flatten(1)->mapWithKeys(fn ($row) => [
+                        $row->machine_id.'|'.substr($row->work_date, 0, 10).'|'.($row->machine_assignment_id ?? '*') => true,
+                    ]);
                     $now = now();
                     $inserts = [];
 
@@ -204,6 +212,12 @@ class DailyPhotoSyncService
                         $key = $case->machine_id.'|'.$case->work_date->toDateString().'|';
                         $alreadyExists = $existing->has($key.$assignment?->id) || $existing->has($key.'*');
                         if (! $assignment || $alreadyExists) {
+                            continue;
+                        }
+                        $start = $assignment->time_in->isSameDay($case->work_date) ? $assignment->time_in->format('H:i:s') : '00:00:00';
+                        $end = $assignment->time_out?->isSameDay($case->work_date) ? $assignment->time_out->format('H:i:s') : '23:59:59';
+                        if (! AssignmentInterval::contains($assignment, (object) ['segment_start' => $start, 'segment_end' => $end], $case->work_date->toDateString())
+                            || ReconciliationIdentityGuard::occupied($occupied->get($case->machine_id.'|'.$case->work_date->toDateString(), collect())->all(), $assignment->id, $start, $end)) {
                             continue;
                         }
                         $inserts[] = [

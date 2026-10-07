@@ -146,7 +146,7 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $stale = $this->row($old, '2026-09-10', ['work_content' => 'Stale', 'regular_minutes' => 123]);
         $this->row($target, '2026-09-10', ['work_content' => 'Target', 'regular_minutes' => 321]);
         $before = $stale->getAttributes();
-        $this->assertSame(['TARGET_DUPLICATE' => 1], $this->repair()['diagnostics']['reasons']);
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 1], $this->repair()['diagnostics']['reasons']);
         $this->assertSame($before, $stale->fresh()->getAttributes());
         $this->assertSame(2, $this->period->rows()->count());
     }
@@ -158,7 +158,7 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->row(null, '2026-09-10', ['segment_start' => '13:00:00', 'segment_end' => '17:00:00', 'work_content' => 'Two']);
         $result = $this->repair();
         $this->assertSame(1, $result['repaired']);
-        $this->assertSame(['TARGET_DUPLICATE' => 1], $result['diagnostics']['reasons']);
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 1], $result['diagnostics']['reasons']);
         $this->assertSame(0, $this->repair()['repaired']);
     }
 
@@ -203,7 +203,7 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->assignment('2026-09-15');
         $row = $this->row($old, '2026-09-20', ['daily_intervals' => [['canonical_interval_id' => 99]], 'regular_minutes' => 321]);
         $before = $row->getAttributes();
-        $this->assertSame(['CANONICAL_RELATIONSHIP' => 1], $this->repair()['diagnostics']['reasons']);
+        $this->assertSame(['CANONICAL_CONFLICT' => 1], $this->repair()['diagnostics']['reasons']);
         $this->assertSame($before, $row->fresh()->getAttributes());
     }
 
@@ -228,17 +228,27 @@ class ReconciliationRepairStabilizationTest extends TestCase
             'start_evidence_id' => $members[0]->id, 'end_evidence_id' => $members[1]->id,
             'raw_start_at' => '2026-09-20 07:30:00', 'raw_end_at' => '2026-09-20 11:00:00',
             'raw_start_time' => '07:30:00', 'raw_end_time' => '11:00:00', 'pairing_policy_version' => 'v1']);
-        // Membership itself protects identity even if the row has no interval IDs yet.
+        // Membership protects content identity while a proven stale relationship may move.
         $row = $this->row($old, '2026-09-20', ['daily_ocr_job_ids' => array_map(fn ($member) => $member->ocr_job_id, $members)]);
         $old->update(['time_out' => '2026-09-14 23:59:59']);
-        $this->assignment('2026-09-15');
-        $tables = ['daily_photo_cases', 'daily_photo_case_evidence', 'daily_photo_intervals', 'ocr_jobs', 'zalo_attachments', 'zalo_messages'];
+        $target = $this->assignment('2026-09-15');
+        $caseBefore = (array) DB::table('daily_photo_cases')->find($case->id);
+        $tables = ['daily_photo_case_evidence', 'daily_photo_intervals', 'ocr_jobs', 'zalo_attachments', 'zalo_messages'];
         foreach ($tables as $table) {
             $snapshots[$table] = DB::table($table)->orderBy('id')->get()->toJson();
         }
         $before = $row->getAttributes();
-        $this->assertSame(['CANONICAL_RELATIONSHIP' => 1], $this->repair()['diagnostics']['reasons']);
-        $this->assertSame($before, $row->fresh()->getAttributes());
+        $result = $this->repair();
+        $this->assertSame(1, $result['repaired']);
+        $this->assertSame([], $result['diagnostics']['reasons']);
+        $after = $row->fresh()->getAttributes();
+        $this->assertSame($target->id, (int) $after['machine_assignment_id']);
+        unset($before['machine_assignment_id'], $before['updated_at'], $after['machine_assignment_id'], $after['updated_at']);
+        $this->assertSame($before, $after);
+        $caseAfter = (array) DB::table('daily_photo_cases')->find($case->id);
+        $this->assertSame($target->id, (int) $caseAfter['machine_assignment_id']);
+        unset($caseBefore['machine_assignment_id'], $caseBefore['scope_key'], $caseBefore['updated_at'], $caseAfter['machine_assignment_id'], $caseAfter['scope_key'], $caseAfter['updated_at']);
+        $this->assertSame($caseBefore, $caseAfter);
         foreach ($snapshots as $table => $snapshot) {
             $this->assertSame($snapshot, DB::table($table)->orderBy('id')->get()->toJson());
         }
@@ -347,7 +357,7 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $first = $this->row($a, '2026-09-15', ['segment_start' => '12:00:00', 'segment_end' => '17:00:00', 'work_content' => 'First']);
         $second = $this->row($b, '2026-09-15', ['segment_start' => '07:00:00', 'segment_end' => '12:00:00', 'work_content' => 'Second']);
         $before = [$first->getAttributes(), $second->getAttributes()];
-        $this->assertSame(['TARGET_DUPLICATE' => 2], $this->repair()['diagnostics']['reasons']);
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 2], $this->repair()['diagnostics']['reasons']);
         $this->assertSame($before, [$first->fresh()->getAttributes(), $second->fresh()->getAttributes()]);
     }
 

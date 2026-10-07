@@ -9,9 +9,9 @@ use RuntimeException;
 
 class ReconciliationLinkRepairService
 {
-    public function repair(ReconciliationPeriod $period, ?int $userId): array
+    public function repair(ReconciliationPeriod $period, ?int $userId, ?int $machineId = null, ?string $from = null, ?string $to = null): array
     {
-        return DB::transaction(function () use ($period, $userId) {
+        return DB::transaction(function () use ($period, $userId, $machineId, $from, $to) {
             $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
             if (! in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true)) {
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể sửa liên kết.');
@@ -21,6 +21,7 @@ class ReconciliationLinkRepairService
                 'reasons' => [], 'rows' => []];
             // Keep all siblings of each machine together, including stale rows.
             $machineIds = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
+                ->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
                 ->distinct()->orderBy('machine_id')->pluck('machine_id')->all();
             foreach (array_chunk($machineIds, 100) as $ids) {
                 $rows = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
@@ -44,14 +45,7 @@ class ReconciliationLinkRepairService
                             });
                     })
                     ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->lockForUpdate()->get()->keyBy('id');
-                // Canonical membership is scoped by assignment, not by reconciliation row.
-                // Moving that identity needs a separate canonical migration, outside link repair.
-                $canonicalScopes = DB::table('daily_photo_cases as c')->whereIn('c.machine_id', $ids)
-                    ->whereBetween('c.work_date', [$rows->min('work_date'), $rows->max('work_date').' 23:59:59'])
-                    ->whereExists(fn ($query) => $query->selectRaw('1')->from('daily_photo_case_evidence as e')
-                        ->whereColumn('e.daily_photo_case_id', 'c.id'))
-                    ->select(['c.machine_id', 'c.work_date', 'c.machine_assignment_id'])->lockForUpdate()->get()
-                    ->mapWithKeys(fn ($case) => [$case->machine_id.'|'.substr($case->work_date, 0, 10).'|'.$case->machine_assignment_id => true])->all();
+                $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'));
                 $byMachine = $assignments->groupBy('machine_id');
                 $effective = [];
                 $targets = [];
@@ -79,8 +73,14 @@ class ReconciliationLinkRepairService
                 $deletes = [];
                 $logs = [];
                 $now = now()->toDateTimeString();
-                [$orderedRows, $writeLevels] = $this->orderByDependencies($rows->all(), $assignments, $effective, $targets);
+                $rowIndex = $rows->keyBy('id');
+                [$orderedRows, $writeLevels] = $this->orderByDependencies($rows->all(), $assignments, $effective, $targets, $canonical);
                 foreach ($orderedRows as $row) {
+                    if (isset($deletes[$row->id]) || ($from && $row->work_date < substr($from, 0, 10)) || ($to && $row->work_date > substr($to, 0, 10))
+                        || ($from && strlen($from) > 10 && $row->segment_end && $row->work_date.' '.$row->segment_end <= $from)
+                        || ($to && strlen($to) > 10 && $row->segment_start && $row->work_date.' '.$row->segment_start >= $to)) {
+                        continue;
+                    }
                     $result['diagnostics']['total_inspected']++;
                     $source = $assignments->get($row->machine_assignment_id);
                     $key = $row->machine_id.'|'.$row->work_date;
@@ -102,30 +102,25 @@ class ReconciliationLinkRepairService
                     // A same-date source can also be stale after a time-level transfer.
                     // Empty drafts retain the existing exact-source boundary narrowing rule.
                     $needsTarget = ! $exact || (! $this->withinSegment($source, $row)
-                        && ($human || $this->hasData($row) || $this->containedCandidates($row, $effective[$key])));
+                        && ($human || $this->hasData($row) || $canonical->hasContent($row) || $this->containedCandidates($row, $effective[$key])));
                     if ($needsTarget) {
                         if ($protected) {
                             $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP');
 
                             continue;
                         }
-                        if (isset($canonicalScopes[$key.'|'.$row->machine_assignment_id]) || $this->hasCanonicalReference($row)) {
-                            $this->unresolved($result, $row, 'CANONICAL_RELATIONSHIP');
-
-                            continue;
-                        }
                         $candidates = $this->containedCandidates($row, $effective[$key]);
                         // Legacy empty all-day drafts can be narrowed only to a sole date candidate.
-                        if (! $candidates && ! $human && ! $this->hasData($row) && count($effective[$key]) === 1) {
+                        if (! $candidates && ! $human && ! $this->hasData($row) && ! $canonical->hasContent($row) && count($effective[$key]) === 1) {
                             $candidates = $effective[$key];
                         }
                         $candidate = count($candidates) === 1 ? $candidates[0] : null;
                         if (! $candidate) {
                             // Preserve the proven full-payload deduplication/expired-empty cleanup.
                             if (! $exact && $source && (int) $source->machine_id === (int) $row->machine_id
-                                && ! $this->onDate($source, $row->work_date) && ! $human
+                                && ! $this->onDate($source, $row->work_date) && ! $human && ! $canonical->hasContent($row) && ! $this->hasCanonicalReference($row)
                                 && ((! $effective[$key] && ! $this->hasData($row)) || isset($duplicates[$this->payloadKey($row)]))) {
-                                $deletes[] = $row->id;
+                                $deletes[$row->id] = $row->id;
                                 unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
                                 $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
                                     'Xóa dòng nháp nằm ngoài thời gian của phân công nguồn.',
@@ -174,7 +169,7 @@ class ReconciliationLinkRepairService
                         }
                     }
                     if (! $this->withinSegment($source, $row)) {
-                        if ($human || $this->hasData($row)) {
+                        if ($human || $this->hasData($row) || $canonical->hasContent($row)) {
                             $this->unresolved($result, $row, 'SEGMENT_AMBIGUITY');
 
                             continue;
@@ -198,29 +193,45 @@ class ReconciliationLinkRepairService
 
                         continue;
                     }
-                    if ((int) $row->machine_assignment_id !== (int) $source->id
-                        && (isset($canonicalScopes[$key.'|'.$row->machine_assignment_id])
-                            || $this->hasCanonicalReference($row))) {
-                        $this->unresolved($result, $row, 'CANONICAL_RELATIONSHIP');
+                    $canonicalReason = (int) $row->machine_assignment_id !== (int) $source->id ? $canonical->reason($row, $source) : null;
+                    if ($canonicalReason) {
+                        $this->unresolved($result, $row, $canonicalReason);
 
                         continue;
                     }
                     $occupants = $targets[$key.'|'.$source->id] ?? [];
                     unset($occupants[$row->id]);
                     if ($occupants) {
-                        // An identical donor already preserves every meaningful value.
-                        if (! $exact && ! $human && isset($duplicates[$this->payloadKey($row)])) {
-                            $deletes[] = $row->id;
-                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
-                            $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
-                                'Xóa dòng nháp trùng toàn bộ dữ liệu với dòng nguồn hợp lệ.', ['row_id' => $row->id], $now);
-                            $result['removed']++;
-                        } else {
-                            $this->unresolved($result, $row, 'TARGET_DUPLICATE');
-                        }
+                        $targetRow = count($occupants) === 1 ? $rowIndex->get(array_key_first($occupants)) : null;
+                        $sourceEmpty = ! $human && ! $this->hasData($row) && ! $canonical->hasContent($row);
+                        $targetEmpty = $targetRow && ! $this->protected($targetRow) && ! $targetRow->manually_edited_at
+                            && ! $this->hasData($targetRow) && ! $canonical->hasContent($targetRow);
+                        if ($targetRow && $this->protected($targetRow)) {
+                            $this->unresolved($result, $row, 'PROTECTED_DUPLICATE');
 
-                        continue;
+                            continue;
+                        }
+                        if ($targetEmpty && ! $sourceEmpty) {
+                            $deletes[$targetRow->id] = $targetRow->id;
+                            $logs[] = $this->mergeLog($row, $targetRow, $row, $source, $userId, 'EMPTY_TARGET', $now);
+                            unset($targets[$key.'|'.$source->id][$targetRow->id]);
+                            $result['removed']++;
+                            $result['diagnostics']['total_inspected']++;
+                        } elseif ($targetRow && ($sourceEmpty || $this->payloadKey($row) === $this->payloadKey($targetRow))) {
+                            $canonical->plan($row, $source, $userId, $now);
+                            $deletes[$row->id] = $row->id;
+                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                            $logs[] = $this->mergeLog($row, $targetRow, $targetRow, $source, $userId, $sourceEmpty ? 'EMPTY_SOURCE' : 'IDENTICAL_PAYLOAD', $now);
+                            $result['removed']++;
+
+                            continue;
+                        } else {
+                            $this->unresolved($result, $row, $targetRow ? 'DUPLICATE_PAYLOAD_CONFLICT' : 'TARGET_DUPLICATE');
+
+                            continue;
+                        }
                     }
+                    $canonical->plan($row, $source, $userId, $now);
                     $old = array_intersect_key((array) $row, $changes);
                     $updates[$row->id] = $changes;
                     unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
@@ -233,6 +244,11 @@ class ReconciliationLinkRepairService
                         ['old' => $old, 'new' => $changes, 'machine_assignment_id' => $source->id], $now);
                     $result['repaired']++;
                 }
+                // Delete proven empty/identical duplicates before claiming their unique identity.
+                foreach (array_chunk(array_values($deletes), 250) as $chunk) {
+                    DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)->whereIn('id', $chunk)->delete();
+                }
+                $canonical->flush($now);
                 // Release occupied identities before a dependent row claims them.
                 // CASE updates within each wave have no dependency on one another.
                 $waves = [];
@@ -243,13 +259,12 @@ class ReconciliationLinkRepairService
                 foreach ($waves as $wave) {
                     $this->writeUpdates($period->id, $wave, $now);
                 }
-                foreach (array_chunk($deletes, 250) as $chunk) {
-                    DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)->whereIn('id', $chunk)->delete();
-                }
                 foreach (array_chunk($logs, 100) as $chunk) {
                     DB::table('activity_logs')->insert($chunk);
                 }
             }
+
+            $this->describeMissingAssignments($result);
 
             return $result;
         });
@@ -309,13 +324,20 @@ class ReconciliationLinkRepairService
         return false;
     }
 
-    private function orderByDependencies(array $rows, $assignments, array $effective, array $targets): array
+    private function orderByDependencies(array $rows, $assignments, array $effective, array $targets, CanonicalAssignmentRelinker $canonical): array
     {
         $indexed = [];
         $waiting = [];
         $dependents = [];
         $levels = [];
         $queue = [];
+        $rich = [];
+        $empty = [];
+        foreach ($rows as $row) {
+            $rich[$row->id] = $this->hasData($row) || $canonical->hasContent($row);
+            $empty[$row->id] = ! $rich[$row->id] && ! $this->protected($row) && ! $row->manually_edited_at;
+        }
+        usort($rows, fn ($a, $b) => ($rich[$b->id] <=> $rich[$a->id]) ?: ($a->id <=> $b->id));
         foreach ($rows as $row) {
             $indexed[$row->id] = $row;
             $key = $row->machine_id.'|'.$row->work_date;
@@ -324,9 +346,9 @@ class ReconciliationLinkRepairService
                 && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
             $targetId = $row->machine_assignment_id;
             if (! $exact || (! $this->withinSegment($source, $row)
-                && ($row->manually_edited_at || $this->hasData($row) || $this->containedCandidates($row, $effective[$key])))) {
+                && ($row->manually_edited_at || $rich[$row->id] || $this->containedCandidates($row, $effective[$key])))) {
                 $candidates = $this->containedCandidates($row, $effective[$key]);
-                if (! $candidates && ! $row->manually_edited_at && ! $this->hasData($row) && count($effective[$key]) === 1) {
+                if (! $candidates && ! $row->manually_edited_at && ! $rich[$row->id] && count($effective[$key]) === 1) {
                     $candidates = $effective[$key];
                 }
                 if (count($candidates) === 1) {
@@ -336,6 +358,10 @@ class ReconciliationLinkRepairService
             $dependencies = (int) $targetId !== (int) $row->machine_assignment_id
                 ? ($targets[$key.'|'.$targetId] ?? []) : [];
             unset($dependencies[$row->id]);
+            // A rich source can remove an empty draft target, so it need not wait for it.
+            if ($rich[$row->id]) {
+                $dependencies = array_filter($dependencies, fn ($_, $id) => ! $empty[$id], ARRAY_FILTER_USE_BOTH);
+            }
             $waiting[$row->id] = count($dependencies);
             $levels[$row->id] = 0;
             foreach ($dependencies as $id => $_) {
@@ -373,6 +399,37 @@ class ReconciliationLinkRepairService
         $result['diagnostics']['reasons'][$reason] = ($result['diagnostics']['reasons'][$reason] ?? 0) + 1;
         $result['diagnostics']['rows'][] = ['row_id' => $row->id, 'machine_id' => $row->machine_id,
             'work_date' => $row->work_date, 'reason' => $reason];
+    }
+
+    private function describeMissingAssignments(array &$result): void
+    {
+        $missing = array_filter($result['diagnostics']['rows'], fn ($row) => $row['reason'] === 'NO_EFFECTIVE_ASSIGNMENT');
+        if (! $missing) {
+            return;
+        }
+        $ids = array_values(array_unique(array_column($missing, 'machine_id')));
+        $history = DB::table('machine_assignments')->whereIn('machine_id', $ids)->orderBy('time_in')
+            ->get(['machine_id', 'time_in', 'time_out'])->groupBy('machine_id');
+        $events = DB::table('machine_events')->whereIn('machine_id', $ids)->whereIn('type', ['HANDOVER', 'TRANSFER', 'RETURN'])
+            ->orderBy('occurred_at')->get(['machine_id', 'type', 'occurred_at'])->groupBy('machine_id');
+        $contexts = [];
+        foreach ($missing as $index => $row) {
+            $key = $row['machine_id'].'|'.$row['work_date'];
+            if (! isset($contexts[$key])) {
+                $assignments = $history->get($row['machine_id'], collect());
+                $lastEvent = $events->get($row['machine_id'], collect())->last(fn ($e) => $e->occurred_at <= $row['work_date'].' 23:59:59');
+                $context = $assignments->isEmpty() ? 'ASSIGNMENT_HISTORY_MISSING'
+                    : ($row['work_date'] < substr($assignments->first()->time_in, 0, 10) ? 'BEFORE_FIRST_HANDOVER' : 'TIMELINE_GAP');
+                if ($lastEvent?->type === 'RETURN') {
+                    $context = 'AFTER_RETURN';
+                } elseif ($assignments->isNotEmpty() && $assignments->every(fn ($a) => $a->time_out !== null && substr($a->time_out, 0, 10) < $row['work_date'])) {
+                    $context = 'AFTER_LAST_ASSIGNMENT';
+                }
+                $contexts[$key] = ['timeline_context' => $context, 'last_lifecycle_event' => $lastEvent?->type,
+                    'last_lifecycle_at' => $lastEvent?->occurred_at];
+            }
+            $result['diagnostics']['rows'][$index] += $contexts[$key];
+        }
     }
 
     private function hasData(object $row): bool
@@ -413,33 +470,17 @@ class ReconciliationLinkRepairService
             'properties' => json_encode($properties, JSON_THROW_ON_ERROR), 'occurred_at' => $now, 'created_at' => $now, 'updated_at' => $now];
     }
 
+    private function mergeLog(object $sourceRow, object $targetRow, object $survivor, object $assignment, ?int $actor, string $reason, string $now): array
+    {
+        return $this->log($survivor, $actor, $survivor->id === $targetRow->id ? 'reconciliation.stale_row_removed' : 'reconciliation.rows_merged',
+            'Dọn duplicate an toàn; giữ identity chứa dữ liệu và lịch sử trước merge.',
+            ['action' => $reason, 'source' => (array) $sourceRow, 'target' => (array) $targetRow,
+                'survivor_row_id' => $survivor->id, 'target_assignment_id' => $assignment->id,
+                'target_command_center_id' => $assignment->source_bch_id, 'work_date' => $sourceRow->work_date], $now);
+    }
+
     private function writeUpdates(int $periodId, array $updates, string $now): void
     {
-        // No row/audit observer or mutator is registered. Keep the explicit domain
-        // audit in the same transaction without per-row saves.
-        $grammar = DB::connection()->getQueryGrammar();
-        foreach (array_chunk($updates, 50, true) as $chunk) {
-            $columns = array_unique(array_merge(...array_map('array_keys', $chunk)));
-            $sets = [];
-            $bindings = [];
-            foreach ($columns as $column) {
-                $wrapped = $grammar->wrap($column);
-                $case = "$wrapped = CASE ".$grammar->wrap('id');
-                foreach ($chunk as $id => $changes) {
-                    if (array_key_exists($column, $changes)) {
-                        $case .= ' WHEN ? THEN ?';
-                        array_push($bindings, $id, $changes[$column]);
-                    }
-                }
-                $sets[] = $case." ELSE $wrapped END";
-            }
-            $sets[] = $grammar->wrap('updated_at').' = ?';
-            $bindings[] = $now;
-            $bindings[] = $periodId;
-            array_push($bindings, ...array_keys($chunk));
-            DB::update('UPDATE '.$grammar->wrapTable('reconciliation_rows').' SET '.implode(', ', $sets)
-                .' WHERE '.$grammar->wrap('reconciliation_period_id').' = ? AND '.$grammar->wrap('id')
-                .' IN ('.implode(',', array_fill(0, count($chunk), '?')).')', $bindings);
-        }
+        RelationshipBatchWriter::update('reconciliation_rows', $updates, $now, ['reconciliation_period_id' => $periodId]);
     }
 }

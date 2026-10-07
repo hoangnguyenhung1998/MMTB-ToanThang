@@ -168,6 +168,20 @@ class MachineOpsController extends Controller
             ->with('success', 'Điều chuyển máy thành công.');
     }
 
+    public function reviseTransfer(Request $request, Machine $machine, MachineAssignment $assignment): RedirectResponse
+    {
+        abort_unless($assignment->machine_id === $machine->id, 404);
+        $data = $request->validate(['time_out' => ['required', 'date'], 'time_in' => ['required', 'date']]);
+        try {
+            $result = app(\App\Services\MachineAssignmentTimelineService::class)
+                ->reviseTransfer($machine->id, $assignment->id, $data['time_out'], $data['time_in'], $request->user()->id);
+            return back()->with('success', $result['changed'] ? 'Đã sửa mốc điều chuyển và phục hồi relationship các kỳ bị ảnh hưởng. Các trường hợp không an toàn được giữ lại để kiểm tra.' : 'Mốc điều chuyển đã đúng; không thay đổi dữ liệu.')
+                ->with('transfer_propagation', $result['propagation']);
+        } catch (BusinessRuleException $exception) {
+            return back()->withErrors(['error' => $exception->getMessage()])->withInput();
+        }
+    }
+
     public function returnForm(Machine $machine): View
     {
         return view('ops.return', [

@@ -3,10 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Exports\MachinesExport;
+use App\Exceptions\BusinessRuleException;
 use App\Models\Machine;
 use App\Models\MachineAssignment;
 use App\Models\MachineEvent;
 use App\Services\MachineService;
+use App\Services\MachineAssignmentTimelineService;
+use App\Services\Reconciliation\AssignmentRelationshipPropagation;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -59,32 +62,42 @@ class MachineBatchController extends Controller
             ]);
         }
 
-        DB::transaction(function () use ($machines, $validated) {
-            foreach ($machines as $machine) {
-                MachineAssignment::create([
-                    'machine_id' => $machine->id,
-                    'project_id' => (int) $validated['project_id'],
-                    'command_center_id' => (int) $validated['command_center_id'],
-                    'time_in' => Carbon::parse($validated['time_in']),
-                    'time_out' => null,
-                    'proof_file_path' => null,
-                ]);
+        try {
+            DB::transaction(function () use ($machines, $validated) {
+                $machines = Machine::query()->whereKey($machines->modelKeys())->orderBy('id')->lockForUpdate()->get();
+                foreach ($machines as $machine) {
+                    if (!in_array($machine->status, ['WAIT_HANDOVER', 'RETURNED'], true)) {
+                        throw new BusinessRuleException('Trạng thái máy đã thay đổi, vui lòng kiểm tra lại.');
+                    }
+                    app(MachineAssignmentTimelineService::class)->assertInterval($machine->id, Carbon::parse($validated['time_in']), null);
+                    MachineAssignment::create([
+                        'machine_id' => $machine->id,
+                        'project_id' => (int) $validated['project_id'],
+                        'command_center_id' => (int) $validated['command_center_id'],
+                        'time_in' => Carbon::parse($validated['time_in']),
+                        'time_out' => null,
+                        'proof_file_path' => null,
+                    ]);
 
-                MachineEvent::create([
-                    'machine_id' => $machine->id,
-                    'project_id' => (int) $validated['project_id'],
-                    'type' => 'HANDOVER',
-                    'occurred_at' => Carbon::parse($validated['time_in']),
-                    'proof_file_path' => null,
-                    'note' => $validated['note'] ?? null,
-                    'to_project_id' => (int) $validated['project_id'],
-                    'to_command_center_id' => (int) $validated['command_center_id'],
-                    'missing_proof' => 1,
-                ]);
+                    MachineEvent::create([
+                        'machine_id' => $machine->id,
+                        'project_id' => (int) $validated['project_id'],
+                        'type' => 'HANDOVER',
+                        'occurred_at' => Carbon::parse($validated['time_in']),
+                        'proof_file_path' => null,
+                        'note' => $validated['note'] ?? null,
+                        'to_project_id' => (int) $validated['project_id'],
+                        'to_command_center_id' => (int) $validated['command_center_id'],
+                        'missing_proof' => 1,
+                    ]);
 
-                $machine->update(['status' => 'HANDED_OVER']);
-            }
-        });
+                    $machine->update(['status' => 'HANDED_OVER']);
+                    app(AssignmentRelationshipPropagation::class)->propagate($machine->id, $validated['time_in'], null, auth()->id());
+                }
+            }, 3);
+        } catch (BusinessRuleException $exception) {
+            return back()->withErrors(['error' => $exception->getMessage()])->withInput();
+        }
 
         return back()->with('success', 'Đã bàn giao ' . $machines->count() . ' máy (không biên bản).');
     }

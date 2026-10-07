@@ -155,6 +155,8 @@ Route::middleware('auth')->group(function () {
         ->name('ops.transfer.form');
     Route::post('/machines/{machine}/transfer', [App\Http\Controllers\MachineOpsController::class, 'transferSubmit'])
         ->name('ops.transfer.submit');
+    Route::patch('/machines/{machine}/assignments/{assignment}/transfer-boundary', [App\Http\Controllers\MachineOpsController::class, 'reviseTransfer'])
+        ->name('ops.transfer.revise');
 
     Route::get('/machines/{machine}/return', [App\Http\Controllers\MachineOpsController::class, 'returnForm'])
         ->name('ops.return.form');

@@ -12,12 +12,18 @@
                     $repairReasons = [
                         'PROTECTED_RELATIONSHIP' => 'Dòng đã duyệt/xác nhận hoặc bị khóa',
                         'CANONICAL_RELATIONSHIP' => 'Identity canonical cần được kiểm tra riêng',
+                        'CANONICAL_CONFLICT' => 'Canonical đích có dữ liệu hoặc dependency không khớp',
+                        'PROTECTED_CANONICAL_RELATIONSHIP' => 'Canonical được dùng bởi dòng/kỳ đã khóa',
+                        'CANONICAL_TIME_AMBIGUITY' => 'Ảnh thiếu thời điểm để chọn segment duy nhất',
+                        'CANONICAL_TIME_CONFLICT' => 'Thời điểm ảnh/pairing nằm ngoài phân công đích',
                         'NO_EFFECTIVE_ASSIGNMENT' => 'Không có phân công có hiệu lực',
                         'TRUE_ASSIGNMENT_OVERLAP' => 'Phân công thực sự chồng lấn',
                         'SEGMENT_AMBIGUITY' => 'Không có phân công duy nhất chứa trọn khoảng giờ',
                         'NO_BCH_RESOLUTION' => 'Phân công thiếu BCH lịch sử',
                         'NO_PROJECT_RESOLUTION' => 'Phân công thiếu dự án',
                         'TARGET_DUPLICATE' => 'Đã có dòng tại phân công đích',
+                        'DUPLICATE_PAYLOAD_CONFLICT' => 'Hai dòng có dữ liệu khác nhau; cần kiểm tra thủ công',
+                        'PROTECTED_DUPLICATE' => 'Dòng đích đã duyệt/xác nhận; không tự merge',
                         'INVALID_TIMELINE' => 'Lịch phân công không hợp lệ',
                         'INVALID_SEGMENT' => 'Khoảng giờ thiếu hoặc không hợp lệ',
                     ];
@@ -33,7 +39,14 @@
                         @foreach ($diagnostics['rows'] as $diagnostic)
                             <li><a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $diagnostic['row_id']]) }}">Dòng #{{ $diagnostic['row_id'] }}</a>
                                 · Máy #{{ $diagnostic['machine_id'] }} · {{ $diagnostic['work_date'] }}:
-                                {{ $repairReasons[$diagnostic['reason']] ?? $diagnostic['reason'] }}</li>
+                                {{ $repairReasons[$diagnostic['reason']] ?? $diagnostic['reason'] }}
+                                @if (isset($diagnostic['timeline_context']))
+                                    · {{ $diagnostic['timeline_context'] }}
+                                    @if ($diagnostic['last_lifecycle_event'])
+                                        · {{ $diagnostic['last_lifecycle_event'] }}: {{ $diagnostic['last_lifecycle_at'] }}
+                                    @endif
+                                @endif
+                            </li>
                         @endforeach
                     </ul>
                 </details>
