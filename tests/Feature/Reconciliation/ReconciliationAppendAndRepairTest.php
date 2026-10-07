@@ -56,12 +56,12 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $service->syncMonthly($period);
         $row = $period->rows()->first();
         $row->update(['command_center_id' => null, 'regular_minutes' => 321, 'manually_edited_at' => now()]);
-        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $result = array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved']));
         $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], $result);
         $this->assertEquals(321, $row->fresh()->regular_minutes);
         $this->assertEquals($assignment->command_center_id, $row->fresh()->command_center_id);
         $this->assertSame(1, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
     }
 
     public function test_missing_bch_in_source_assignment_is_not_guessed(): void
@@ -71,7 +71,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $service = app(ReconciliationPeriodService::class);
         $period = $service->ensureMonthly('2026-09');
         $service->syncMonthly($period);
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertNull($period->rows()->first()->command_center_id);
     }
 
@@ -110,7 +110,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $service->syncMonthly($period);
         $row = $period->rows()->first();
         $row->update(['command_center_id' => null, 'status' => 'REVIEWED']);
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertNull($row->fresh()->command_center_id);
     }
 
@@ -130,7 +130,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
             'manually_edited_at' => now(),
         ]);
 
-        $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertSame($assignment->project_id, $row->fresh()->project_id);
         $this->assertSame($assignment->command_center_id, $row->fresh()->command_center_id);
         $this->assertEquals(321, $row->fresh()->regular_minutes);
@@ -152,7 +152,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
             'status' => 'DRAFT',
         ])->id;
 
-        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertDatabaseMissing('reconciliation_rows', ['id' => $staleId]);
         $this->assertSame(1, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
     }
@@ -189,7 +189,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
             'command_center_id' => $current->command_center_id,
         ]);
 
-        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 1, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertNull($stale->fresh());
         $this->assertNotNull($currentRow->fresh());
         $this->assertSame([12, 13], $currentRow->fresh()->daily_ocr_job_ids);

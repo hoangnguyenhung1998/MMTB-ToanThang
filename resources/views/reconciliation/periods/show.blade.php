@@ -2,6 +2,44 @@
 
 @section('content')
 <div class="container-fluid">
+    @if ($diagnostics = session('repair_diagnostics'))
+        <div class="alert alert-info">
+            Đã kiểm tra {{ $diagnostics['total_inspected'] }} dòng;
+            {{ $diagnostics['already_correct'] }} dòng có liên kết đúng;
+            {{ $diagnostics['repairable_stale_links'] }} dòng stale được chuyển sang phân công đúng.
+            @if ($diagnostics['reasons'])
+                @php
+                    $repairReasons = [
+                        'PROTECTED_RELATIONSHIP' => 'Dòng đã duyệt/xác nhận hoặc bị khóa',
+                        'CANONICAL_RELATIONSHIP' => 'Identity canonical cần được kiểm tra riêng',
+                        'NO_EFFECTIVE_ASSIGNMENT' => 'Không có phân công có hiệu lực',
+                        'TRUE_ASSIGNMENT_OVERLAP' => 'Phân công thực sự chồng lấn',
+                        'SEGMENT_AMBIGUITY' => 'Không có phân công duy nhất chứa trọn khoảng giờ',
+                        'NO_BCH_RESOLUTION' => 'Phân công thiếu BCH lịch sử',
+                        'NO_PROJECT_RESOLUTION' => 'Phân công thiếu dự án',
+                        'TARGET_DUPLICATE' => 'Đã có dòng tại phân công đích',
+                        'INVALID_TIMELINE' => 'Lịch phân công không hợp lệ',
+                        'INVALID_SEGMENT' => 'Khoảng giờ thiếu hoặc không hợp lệ',
+                    ];
+                @endphp
+                <ul class="mb-0 mt-2">
+                    @foreach ($diagnostics['reasons'] as $reason => $count)
+                        <li>{{ $repairReasons[$reason] ?? $reason }}: {{ $count }} dòng ({{ $reason }})</li>
+                    @endforeach
+                </ul>
+                <details class="mt-2">
+                    <summary>Các dòng cần kiểm tra</summary>
+                    <ul>
+                        @foreach ($diagnostics['rows'] as $diagnostic)
+                            <li><a href="{{ route('reconciliation-rows.show', [$reconciliationPeriod, $diagnostic['row_id']]) }}">Dòng #{{ $diagnostic['row_id'] }}</a>
+                                · Máy #{{ $diagnostic['machine_id'] }} · {{ $diagnostic['work_date'] }}:
+                                {{ $repairReasons[$diagnostic['reason']] ?? $diagnostic['reason'] }}</li>
+                        @endforeach
+                    </ul>
+                </details>
+            @endif
+        </div>
+    @endif
     @php
         $statusLabels = [
             'DRAFT' => ['Nháp', 'secondary'],

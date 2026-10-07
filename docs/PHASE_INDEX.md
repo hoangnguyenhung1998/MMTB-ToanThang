@@ -4,8 +4,10 @@
 
 | Phase | Purpose | Status | Dependencies | Related | Git reference | Documentation path |
 |---|---|---|---|---|---|---|
+| 17 | Production Stabilization & Bugfix umbrella | ACTIVE — independent bug groups tracked as 17.x | Current verified repository | 17.1 | No independent code change | `docs/phases/PHASE-17.1.md` |
+| 17.1 | Reconciliation Repair Links Production Stabilization | COMPLETED locally — 391 tests / 2525 assertions, performance/lint/diff PASS; production NOT VERIFIED | Phase 11 / 11.1; assignment segments | 16.9; 16.10.1–16.10.4; 16.11.1–16.11.3 | Base `9d46e71`; branch `phase16-11-1-ai-rescue-foundation`; 12 local uncommitted files | `docs/phases/PHASE-17.1.md` |
 | 11 | Original reconciliation repair-links | VERIFIED in Git at `6d4c2a4`; later stale/evidence/historical-BCH hotfixes retained | Existing assignment timeline | Phase 15; 16.9; 16.10.1–16.10.4 | `6d4c2a4`, `4daf630`, `e7bd82e`, `afae749`, `80a14fc`, `dd843065` | `docs/phase-11.md` |
-| 11.1 | Repair-links timeout and effective-date BCH reassignment hotfix | COMPLETED locally — 363 Laravel tests / 2,157 assertions PASS; production NOT VERIFIED | Phase 11 repair; existing segmented assignment identity | 16.9; 16.10.1–16.10.4; 16.11.1–16.11.3 | Base `a3937b0`; local uncommitted changes | `docs/phases/PHASE-11.1.md` |
+| 11.1 | Repair-links timeout and effective-date BCH reassignment hotfix | Code commit VERIFIED at `9d46e71`; prior 363-test PASS checkpoint; user reports production merge `0001dca`, runtime NOT independently VERIFIED | Phase 11 repair; existing segmented assignment identity | Phase 17.1 correctness follow-up; 16.9; 16.10.1–16.10.4; 16.11.1–16.11.3 | `9d46e71`; historical Phase document records its original session | `docs/phases/PHASE-11.1.md` |
 | 16.10.1 | Canonical Daily Photo Foundation | VERIFIED | Production base `9f8fe11` | Phase 16.9 | `af417bb` | `docs/phases/PHASE-16.10.1.md` |
 | 16.10.2 | Deterministic Daily Photo Pairing | VERIFIED | Phase 16.10.1 | Phase 16.9 | `c8e3796` | `docs/phases/PHASE-16.10.2.md` |
 | 16.10.3 | Canonical Daily Photo Downstream Integration | VERIFIED in Git at task start | Phase 16.10.1; Phase 16.10.2 | Phase 16.9 | `d36cfc1` | `docs/phases/PHASE-16.10.3.md` |

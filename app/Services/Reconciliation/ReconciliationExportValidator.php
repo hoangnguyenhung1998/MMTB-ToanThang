@@ -5,6 +5,7 @@ namespace App\Services\Reconciliation;
 use App\Models\Machine;
 use App\Models\ReconciliationPeriod;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class ReconciliationExportValidator
 {
@@ -19,6 +20,12 @@ class ReconciliationExportValidator
 
         $blocking = collect();
         $warnings = collect();
+        $timeline = $rows->isEmpty() ? collect() : DB::table('machine_assignments')
+            ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
+            ->where('time_in', '<=', $rows->max('work_date')->format('Y-m-d').' 23:59:59')
+            ->where(fn ($query) => $query->whereNull('time_out')
+                ->orWhere('time_out', '>=', $rows->min('work_date')->format('Y-m-d').' 00:00:00'))
+            ->get(['id', 'machine_id', 'time_in', 'time_out'])->groupBy('machine_id');
 
         if ($rows->isEmpty() && in_array($period->status, ['CONFIRMED', 'EXPORTED'], true)) {
             $blocking->push('Kỳ đối chiếu chưa có dòng dữ liệu để xuất.');
@@ -52,15 +59,25 @@ class ReconciliationExportValidator
             if ($assignment = $row->assignment) {
                 $sourceBchId = $assignment->command_center_id ?: $assignment->bchResolution?->command_center_id;
                 $date = $row->work_date;
-                $outsideAssignment = $assignment->time_in->copy()->startOfDay()->gt($date)
-                    || ($assignment->time_out && $assignment->time_out->copy()->endOfDay()->lt($date));
-                $outsideSegment = ($date->isSameDay($assignment->time_in) && $row->segment_start < $assignment->time_in->format('H:i:s'))
-                    || ($assignment->time_out && $date->isSameDay($assignment->time_out) && $row->segment_end > $assignment->time_out->format('H:i:s'));
-                if ($outsideAssignment || $outsideSegment
+                if (! AssignmentInterval::contains($assignment, $row, $date->toDateString())
                     || (int) $row->machine_id !== $assignment->machine_id
                     || (int) $row->project_id !== (int) $assignment->project_id
                     || (int) $row->command_center_id !== (int) $sourceBchId) {
                     $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn; cần kiểm tra lịch điều chuyển/trả máy.');
+                }
+                foreach ($timeline->get($row->machine_id, collect()) as $candidate) {
+                    if ((int) $candidate->id === (int) $assignment->id || ! AssignmentInterval::onDate($candidate, $date->toDateString())) {
+                        continue;
+                    }
+                    if (! AssignmentInterval::valid($candidate)) {
+                        $blocking->push($label.': lịch phân công nguồn không hợp lệ.');
+                        continue;
+                    }
+                    [$start, $end] = AssignmentInterval::segment($assignment, $date->toDateString());
+                    [$otherStart, $otherEnd] = AssignmentInterval::segment($candidate, $date->toDateString());
+                    if (AssignmentInterval::overlaps(max($start, $row->segment_start ?: $start), min($end, $row->segment_end ?: $end), $otherStart, $otherEnd)) {
+                        $warnings->push($label.': phân công nguồn thực sự chồng lấn, cần kiểm tra.');
+                    }
                 }
             }
 
@@ -144,7 +161,7 @@ class ReconciliationExportValidator
 
     private function overlaps(string $firstStart, string $firstEnd, string $secondStart, string $secondEnd): bool
     {
-        return $firstStart < $secondEnd && $secondStart < $firstEnd;
+        return AssignmentInterval::overlaps($firstStart, $firstEnd, $secondStart, $secondEnd);
     }
 
     private function rowLabel($row): string

@@ -17,6 +17,49 @@ class ReconciliationRepairPerformanceTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_large_content_reassignment_uses_batched_queries_and_preserves_payload(): void
+    {
+        $project = Project::create(['name' => 'Content benchmark']);
+        $bch = CommandCenter::create(['name' => 'Content benchmark']);
+        $period = app(ReconciliationPeriodService::class)->ensureMonthly('2026-09');
+        $seed = [];
+        foreach (range(1, 40) as $number) {
+            $machine = Machine::create(['asset_code' => 'CONTENT-'.$number, 'chassis_no' => 'CONTENT-'.$number, 'company' => 'SGC', 'status' => 'ACTIVE']);
+            $base = ['machine_id' => $machine->id, 'project_id' => $project->id, 'command_center_id' => $bch->id];
+            $old = MachineAssignment::create($base + ['time_in' => '2026-08-01', 'time_out' => '2026-08-31 23:59:59']);
+            MachineAssignment::create($base + ['time_in' => '2026-09-01']);
+            foreach (range(1, 30) as $day) {
+                $seed[] = $base + ['reconciliation_period_id' => $period->id, 'machine_assignment_id' => $old->id,
+                    'work_date' => sprintf('2026-09-%02d', $day), 'segment_start' => '00:00:00', 'segment_end' => '23:59:59',
+                    'status' => 'DRAFT', 'regular_minutes' => 321, 'work_content' => 'HUMAN', 'daily_ocr_job_ids' => '[12,13]',
+                    'manually_edited_at' => '2026-09-30 12:00:00'];
+            }
+        }
+        foreach (array_chunk($seed, 100) as $chunk) {
+            DB::table('reconciliation_rows')->insert($chunk);
+        }
+        $hydrated = 0;
+        \App\Models\ReconciliationRow::retrieved(function () use (&$hydrated) {
+            $hydrated++;
+        });
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $start = hrtime(true);
+        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $elapsed = (hrtime(true) - $start) / 1e6;
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        fwrite(STDERR, sprintf("\nContent reassignment benchmark: 1200 rows; %.2f ms; %d queries; %d row models\n", $elapsed, count($queries), $hydrated));
+        $this->assertSame(1200, $result['repaired']);
+        $this->assertSame(0, $result['unresolved']);
+        $this->assertLessThan(100, count($queries));
+        $this->assertSame(0, $hydrated);
+        $this->assertCount(1, array_filter($queries, fn ($query) => str_contains($query['query'], 'from "machine_assignments"')));
+        $this->assertSame(1200, $period->rows()->where('regular_minutes', 321)->where('work_content', 'HUMAN')->where('daily_ocr_job_ids', '[12,13]')->count());
+        $this->assertSame(1200, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
+        $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
+    }
+
     public function test_large_catalog_repair_batches_updates_and_audits_across_machine_batches(): void
     {
         $project = Project::create(['name' => 'Batch repair']);
@@ -40,7 +83,7 @@ class ReconciliationRepairPerformanceTest extends TestCase
         DB::enableQueryLog();
         DB::flushQueryLog();
         $start = hrtime(true);
-        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $result = array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved']));
         $elapsed = (hrtime(true) - $start) / 1e6;
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
@@ -57,7 +100,7 @@ class ReconciliationRepairPerformanceTest extends TestCase
         $this->assertSame(['command_center_id' => null], $log->properties['old']);
         $this->assertSame(['command_center_id' => $bch->id], $log->properties['new']);
         $logs = ActivityLog::count();
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
         $this->assertSame($logs, ActivityLog::count());
     }
 
@@ -90,7 +133,7 @@ class ReconciliationRepairPerformanceTest extends TestCase
         DB::enableQueryLog();
         DB::flushQueryLog();
         $start = hrtime(true);
-        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $result = array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved']));
         $elapsed = (hrtime(true) - $start) / 1e6;
         $queries = count(DB::getQueryLog());
         DB::disableQueryLog();
@@ -100,6 +143,6 @@ class ReconciliationRepairPerformanceTest extends TestCase
         $this->assertSame(1200, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
         $this->assertLessThan(100, $queries);
         $this->assertSame(0, $hydrated);
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], app(ReconciliationLinkRepairService::class)->repair($period, null));
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
     }
 }
