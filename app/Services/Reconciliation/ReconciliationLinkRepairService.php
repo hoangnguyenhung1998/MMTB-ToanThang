@@ -36,17 +36,15 @@ class ReconciliationLinkRepairService
                     ->leftJoin('projects as p', 'p.id', '=', 'a.project_id')
                     ->leftJoin('command_centers as b', 'b.id', '=', DB::raw('COALESCE(a.command_center_id, r.command_center_id)'))
                     ->whereIn('a.machine_id', $ids)
-                    ->where(function ($query) use ($rows) {
-                        $query->whereIn('a.id', $rows->pluck('machine_assignment_id')->filter()->unique())
-                            ->orWhere(function ($query) use ($rows) {
-                                $query->where('a.time_in', '<=', $rows->max('work_date').' 23:59:59')
-                                    ->where(fn ($query) => $query->whereNull('a.time_out')
-                                        ->orWhere('a.time_out', '>=', $rows->min('work_date').' 00:00:00'));
-                            });
-                    })
                     ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->lockForUpdate()->get()->keyBy('id');
                 $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'));
-                $byMachine = $assignments->groupBy('machine_id');
+                $firstDate = $rows->min('work_date');
+                $lastDate = $rows->max('work_date');
+                $byMachine = $assignments->filter(fn ($a) => (string) $a->time_in <= $lastDate.' 23:59:59'
+                    && (! $a->time_out || (string) $a->time_out >= $firstDate.' 00:00:00'))->groupBy('machine_id');
+                $timeline = new AssignmentTimelineState($assignments, DB::table('machine_events')
+                    ->whereIn('machine_id', $ids)->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])
+                    ->lockForUpdate()->get(['machine_id', 'type', 'occurred_at']));
                 $effective = [];
                 $targets = [];
                 $duplicates = [];
@@ -99,6 +97,32 @@ class ReconciliationLinkRepairService
 
                         continue;
                     }
+                    $context = $timeline->context((int) $row->machine_id,
+                        $row->work_date.' '.($row->segment_start ?: '00:00:00'),
+                        $row->work_date.' '.($row->segment_end ?: '23:59:59'));
+                    $state = $context['timeline_context'];
+                    if (in_array($state, ['LEGITIMATE_UNASSIGNED_GAP', 'AFTER_RETURN'], true)) {
+                        if ($protected || $human || $this->hasData($row) || $canonical->hasContent($row) || $this->hasCanonicalReference($row)) {
+                            $this->unresolved($result, $row, $protected ? 'PROTECTED_RELATIONSHIP'
+                                : ($state === 'LEGITIMATE_UNASSIGNED_GAP' ? 'UNASSIGNED_GAP_REQUIRES_REVIEW' : 'AFTER_RETURN_REQUIRES_REVIEW'), $context);
+                        } elseif ($source && (int) $source->machine_id === (int) $row->machine_id) {
+                            $deletes[$row->id] = $row->id;
+                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                            $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
+                                'Dọn nháp rỗng ngoài lịch hiệu lực; không lấp khoảng không BCH.',
+                                ['row' => (array) $row, 'timeline_context' => $state], $now);
+                            $result['removed']++;
+                        } else {
+                            $this->unresolved($result, $row, 'NO_EFFECTIVE_ASSIGNMENT', $context);
+                        }
+
+                        continue;
+                    }
+                    if (in_array($state, ['INVALID_TIMELINE', 'LIFECYCLE_AMBIGUITY'], true)) {
+                        $this->unresolved($result, $row, $state, $context);
+
+                        continue;
+                    }
                     // A same-date source can also be stale after a time-level transfer.
                     // Empty drafts retain the existing exact-source boundary narrowing rule.
                     $needsTarget = ! $exact || (! $this->withinSegment($source, $row)
@@ -134,7 +158,7 @@ class ReconciliationLinkRepairService
                             if (collect($effective[$key])->contains(fn ($a) => ! AssignmentInterval::valid($a))) {
                                 $reason = 'INVALID_TIMELINE';
                             }
-                            $this->unresolved($result, $row, $reason);
+                            $this->unresolved($result, $row, $reason, $context);
 
                             continue;
                         }
@@ -264,8 +288,6 @@ class ReconciliationLinkRepairService
                 }
             }
 
-            $this->describeMissingAssignments($result);
-
             return $result;
         });
     }
@@ -393,43 +415,12 @@ class ReconciliationLinkRepairService
         return array_values(array_filter($candidates, fn ($candidate) => $this->withinSegment($candidate, $row)));
     }
 
-    private function unresolved(array &$result, object $row, string $reason): void
+    private function unresolved(array &$result, object $row, string $reason, array $context = []): void
     {
         $result['unresolved']++;
         $result['diagnostics']['reasons'][$reason] = ($result['diagnostics']['reasons'][$reason] ?? 0) + 1;
         $result['diagnostics']['rows'][] = ['row_id' => $row->id, 'machine_id' => $row->machine_id,
-            'work_date' => $row->work_date, 'reason' => $reason];
-    }
-
-    private function describeMissingAssignments(array &$result): void
-    {
-        $missing = array_filter($result['diagnostics']['rows'], fn ($row) => $row['reason'] === 'NO_EFFECTIVE_ASSIGNMENT');
-        if (! $missing) {
-            return;
-        }
-        $ids = array_values(array_unique(array_column($missing, 'machine_id')));
-        $history = DB::table('machine_assignments')->whereIn('machine_id', $ids)->orderBy('time_in')
-            ->get(['machine_id', 'time_in', 'time_out'])->groupBy('machine_id');
-        $events = DB::table('machine_events')->whereIn('machine_id', $ids)->whereIn('type', ['HANDOVER', 'TRANSFER', 'RETURN'])
-            ->orderBy('occurred_at')->get(['machine_id', 'type', 'occurred_at'])->groupBy('machine_id');
-        $contexts = [];
-        foreach ($missing as $index => $row) {
-            $key = $row['machine_id'].'|'.$row['work_date'];
-            if (! isset($contexts[$key])) {
-                $assignments = $history->get($row['machine_id'], collect());
-                $lastEvent = $events->get($row['machine_id'], collect())->last(fn ($e) => $e->occurred_at <= $row['work_date'].' 23:59:59');
-                $context = $assignments->isEmpty() ? 'ASSIGNMENT_HISTORY_MISSING'
-                    : ($row['work_date'] < substr($assignments->first()->time_in, 0, 10) ? 'BEFORE_FIRST_HANDOVER' : 'TIMELINE_GAP');
-                if ($lastEvent?->type === 'RETURN') {
-                    $context = 'AFTER_RETURN';
-                } elseif ($assignments->isNotEmpty() && $assignments->every(fn ($a) => $a->time_out !== null && substr($a->time_out, 0, 10) < $row['work_date'])) {
-                    $context = 'AFTER_LAST_ASSIGNMENT';
-                }
-                $contexts[$key] = ['timeline_context' => $context, 'last_lifecycle_event' => $lastEvent?->type,
-                    'last_lifecycle_at' => $lastEvent?->occurred_at];
-            }
-            $result['diagnostics']['rows'][$index] += $contexts[$key];
-        }
+            'work_date' => $row->work_date, 'reason' => $reason] + $context;
     }
 
     private function hasData(object $row): bool

@@ -15,9 +15,7 @@ class ReconciliationGenerator
 {
     private const JOURNAL_REVIEW_STATUSES = ['APPROVED', 'CORRECTED'];
 
-    public function __construct(private readonly ReconciliationTimeAllocator $timeAllocator)
-    {
-    }
+    public function __construct(private readonly ReconciliationTimeAllocator $timeAllocator) {}
 
     public function generate(ReconciliationPeriod $period, bool $appendOnly = false): ReconciliationPeriod
     {
@@ -25,17 +23,17 @@ class ReconciliationGenerator
             throw new InvalidArgumentException('Ngày bắt đầu kỳ đối chiếu phải nhỏ hơn hoặc bằng ngày kết thúc.');
         }
 
-        if (!$appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
+        if (! $appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
             || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
             throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
         }
 
         return DB::transaction(function () use ($period, $appendOnly) {
             $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
-            if (!in_array($period->status, $appendOnly ? ['DRAFT', 'GENERATED', 'REVIEWING'] : ['DRAFT', 'GENERATED'], true)) {
+            if (! in_array($period->status, $appendOnly ? ['DRAFT', 'GENERATED', 'REVIEWING'] : ['DRAFT', 'GENERATED'], true)) {
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể bổ sung dữ liệu.');
             }
-            if (!$appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
+            if (! $appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
                 || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
                 throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
             }
@@ -47,7 +45,7 @@ class ReconciliationGenerator
                 ->groupBy(fn ($r) => $r->machine_id.'|'.substr($r->work_date, 0, 10)) : collect();
             $existing = $existingRows->flatten(1)
                 ->mapWithKeys(fn ($row) => [implode('|', [$row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id]) => true]);
-            if (!$appendOnly) {
+            if (! $appendOnly) {
                 $period->rows()->delete();
             }
 
@@ -103,6 +101,9 @@ class ReconciliationGenerator
             $now = now();
 
             foreach ($assignments as $assignment) {
+                if (! AssignmentInterval::valid($assignment)) {
+                    throw new RuntimeException('Lịch phân công nguồn không hợp lệ.');
+                }
                 $assignmentStart = Carbon::parse($assignment->time_in);
                 $assignmentEnd = $assignment->time_out
                     ? Carbon::parse($assignment->time_out)
@@ -147,6 +148,9 @@ class ReconciliationGenerator
                         continue;
                     }
                     $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);
+                    if ($segmentStart >= $segmentEnd) {
+                        continue;
+                    }
                     if (ReconciliationIdentityGuard::occupied($existingRows->get($assignment->machine_id.'|'.$date->toDateString(), collect())->all(), $assignment->id, $segmentStart, $segmentEnd)) {
                         continue;
                     }
@@ -194,7 +198,7 @@ class ReconciliationGenerator
 
     private function belongsToSegment(JournalRow $row, string $segmentStart, string $segmentEnd): bool
     {
-        if (!$row->start_time) {
+        if (! $row->start_time) {
             return false;
         }
 

@@ -20,18 +20,12 @@ class ReconciliationExportValidator
 
         $blocking = collect();
         $warnings = collect();
-        $timeline = $rows->isEmpty() ? collect() : DB::table('machine_assignments')
-            ->whereIn('machine_id', $rows->pluck('machine_id')->unique())
-            ->where('time_in', '<=', $rows->max('work_date')->format('Y-m-d').' 23:59:59')
-            ->where(fn ($query) => $query->whereNull('time_out')
-                ->orWhere('time_out', '>=', $rows->min('work_date')->format('Y-m-d').' 00:00:00'))
-            ->get(['id', 'machine_id', 'time_in', 'time_out'])->groupBy('machine_id');
 
         if ($rows->isEmpty() && in_array($period->status, ['CONFIRMED', 'EXPORTED'], true)) {
             $blocking->push('Kỳ đối chiếu chưa có dòng dữ liệu để xuất.');
         }
 
-        Machine::query()
+        $unassignedMachines = Machine::query()
             ->where('status', 'ACTIVE')
             ->where(function ($query) use ($period): void {
                 $query->whereNull('created_at')
@@ -45,15 +39,30 @@ class ReconciliationExportValidator
                     });
             })
             ->orderBy('asset_code')
-            ->pluck('asset_code')
-            ->each(fn (string $assetCode) => $blocking->push(
-                $assetCode.': đang hoạt động nhưng không có lịch phân BCH trong kỳ.'
-            ));
+            ->get(['id', 'asset_code']);
+        $ids = $unassignedMachines->pluck('id')->merge($rows->pluck('machine_id'))->unique();
+        $history = $ids->isEmpty() ? collect() : DB::table('machine_assignments')->whereIn('machine_id', $ids)->get();
+        $events = $ids->isEmpty() ? collect() : DB::table('machine_events')->whereIn('machine_id', $ids)
+            ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->get(['machine_id', 'type', 'occurred_at']);
+        $states = new AssignmentTimelineState($history, $events);
+        $timeline = $history->filter(fn ($a) => (string) $a->time_in <= $period->date_to->toDateString().' 23:59:59'
+            && (! $a->time_out || (string) $a->time_out >= $period->date_from->toDateString().' 00:00:00'))->groupBy('machine_id');
+        foreach ($unassignedMachines as $machine) {
+            $context = $states->context($machine->id, $period->date_from->toDateString().' 00:00:00', $period->date_to->toDateString().' 23:59:59');
+            if ($context['timeline_context'] !== 'LEGITIMATE_UNASSIGNED_GAP') {
+                $blocking->push($machine->asset_code.': đang hoạt động nhưng không có lịch phân BCH trong kỳ. ['.$context['timeline_context'].']');
+            }
+        }
 
         foreach ($rows as $row) {
             $label = $this->rowLabel($row);
+            $context = $states->context($row->machine_id, $row->work_date->toDateString().' '.($row->segment_start ?: '00:00:00'),
+                $row->work_date->toDateString().' '.($row->segment_end ?: '23:59:59'));
+            if (in_array($context['timeline_context'], ['LEGITIMATE_UNASSIGNED_GAP', 'AFTER_RETURN'], true)) {
+                $blocking->push($label.': dữ liệu ngoài lịch BCH có hiệu lực; giữ evidence để kiểm tra. ['.$context['timeline_context'].']');
+            }
 
-            if ($row->machine_assignment_id && !$row->assignment) {
+            if ($row->machine_assignment_id && ! $row->assignment) {
                 $blocking->push($label.': không tìm thấy phân công nguồn.');
             }
             if ($assignment = $row->assignment) {
@@ -66,11 +75,12 @@ class ReconciliationExportValidator
                     $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn; cần kiểm tra lịch điều chuyển/trả máy.');
                 }
                 foreach ($timeline->get($row->machine_id, collect()) as $candidate) {
-                    if ((int) $candidate->id === (int) $assignment->id || ! AssignmentInterval::onDate($candidate, $date->toDateString())) {
+                    if ((int) $candidate->id === (int) $assignment->id || ! AssignmentInterval::onDate($assignment, $date->toDateString()) || ! AssignmentInterval::onDate($candidate, $date->toDateString())) {
                         continue;
                     }
                     if (! AssignmentInterval::valid($candidate)) {
                         $blocking->push($label.': lịch phân công nguồn không hợp lệ.');
+
                         continue;
                     }
                     [$start, $end] = AssignmentInterval::segment($assignment, $date->toDateString());
@@ -81,15 +91,15 @@ class ReconciliationExportValidator
                 }
             }
 
-            if (!$row->command_center_id) {
+            if (! $row->command_center_id) {
                 $blocking->push($label.': chưa xác định BCH.');
             }
 
-            if (!$row->project_id) {
+            if (! $row->project_id) {
                 $blocking->push($label.': chưa xác định dự án.');
             }
 
-            if (!$row->segment_start || !$row->segment_end) {
+            if (! $row->segment_start || ! $row->segment_end) {
                 $blocking->push($label.': thiếu khoảng giờ thuộc BCH.');
             }
 
@@ -103,7 +113,7 @@ class ReconciliationExportValidator
                 || $row->overtime_lunch_start || $row->overtime_afternoon_start
                 || $row->overtime_evening_start;
 
-            if ($hasLogbookDuration && !$hasAllocatedTimes) {
+            if ($hasLogbookDuration && ! $hasAllocatedTimes) {
                 $blocking->push($label.': chưa phân bổ giờ nhật trình vào các cột hành chính/tăng ca.');
             }
         }
@@ -128,17 +138,18 @@ class ReconciliationExportValidator
                         [$firstStart, $firstEnd] = $this->effectiveRange($first);
                         [$secondStart, $secondEnd] = $this->effectiveRange($second);
 
-                        if (!$firstStart || !$firstEnd || !$secondStart || !$secondEnd) {
+                        if (! $firstStart || ! $firstEnd || ! $secondStart || ! $secondEnd) {
                             continue;
                         }
 
                         if ($firstStart === $secondStart && $firstEnd === $secondEnd) {
                             $blocking->push($pairLabel.': hai BCH có khoảng giờ giống hệt nhau.');
+
                             continue;
                         }
 
                         if ($this->overlaps($firstStart, $firstEnd, $secondStart, $secondEnd)) {
-                            $warnings->push($pairLabel.': hai khoảng giờ BCH chồng lấn, cần kiểm tra.');
+                            $warnings->push($pairLabel.': khoảng giờ các dòng đối chiếu chồng lấn; cần kiểm tra liên kết và dữ liệu.');
                         }
                     }
                 }
