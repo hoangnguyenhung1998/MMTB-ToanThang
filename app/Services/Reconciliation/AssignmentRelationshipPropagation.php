@@ -34,6 +34,8 @@ class AssignmentRelationshipPropagation
         // Canonical cases may exist before a reconciliation period is generated.
         $canonical = new CanonicalAssignmentRelinker([$machineId], $from, $to);
         $assignments = DB::table('machine_assignments')->where('machine_id', $machineId)->orderBy('id')->lockForUpdate()->get();
+        $timeline = new AssignmentTimelineState($assignments, DB::table('machine_events')->where('machine_id', $machineId)
+            ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->lockForUpdate()->get(['machine_id', 'type', 'occurred_at']));
         $now = now()->toDateTimeString();
         $days = [];
         foreach ($canonical->caseRows() as $case) {
@@ -58,7 +60,9 @@ class AssignmentRelationshipPropagation
                 $previousEnd = max($previousEnd ?? $end, $end);
             }
             if ($candidates->count() !== 1 || $overlap) {
-                $result['canonical_review'][] = ['case_id' => $case->id, 'reason' => $dayCandidates->isEmpty() ? 'NO_EFFECTIVE_ASSIGNMENT' : 'CANONICAL_CONFLICT'];
+                $context = $timeline->context($machineId, $case->work_date.' 00:00:00', $case->work_date.' 23:59:59');
+                $result['canonical_review'][] = ['case_id' => $case->id, 'reason' => $dayCandidates->isEmpty()
+                    ? ($context['timeline_context'] ?? 'NO_EFFECTIVE_ASSIGNMENT') : 'CANONICAL_CONFLICT'] + $context;
 
                 continue;
             }

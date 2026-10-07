@@ -1,20 +1,20 @@
 # Project State
 
-- Updated: 2026-10-07
-- Current Phase: 17.2 — Retroactive BCH Transfer, Relink & Safe Merge Stabilization.
-- Status: CODE COMPLETE / COMPLETED locally — awaiting user review; STOP.
-- Branch: phase16-11-1-ai-rescue-foundation. Verified base HEAD: db3f5c1, initial clean tree/cached upstream 0/0.
-- Phase 17.1 commit db3f5c1 VERIFIED; prior docs saying uncommitted were stale. User reports deployed diagnostics 6774 inspected / 5885 correct / 889 unresolved; production NOT independently VERIFIED.
-- Confirmed findings: transfer does close source, but has no relationship propagation/full timeline validation; materializers use assignment/day identity; canonical rematerialization deletes/recomputes intervals and is unsuitable for relationship-only repair.
-- Implementation: targeted propagation, historical transfer boundary edit, relationship-only canonical relinker, safe empty/identical duplicate recovery, overlapping-identity materialization guards.
-- Latest tests: full isolated SQLite suite `artisan test --compact`: 420 PASS / 2742 assertions (134.86 s); dependent suite 118 PASS / 1047 assertions. Final canonical merge benchmark 2400 rows / 1200 cases / 2400 photos: 633.50 ms, 146 queries, 0 hydrated models. Scoped Pint 9 files, syntax 15 PHP files and `git diff --check` PASS.
-- Final review: 20 scoped files (13 modified, 7 new); no migration/dependency/provider/prompt/worker/secret/runtime files. HEAD remains db3f5c1; cached upstream comparison 0/0. All changes uncommitted.
-- Blocker: none yet for local scope. Conflicting canonical/business data, locked periods and invalid lifecycle remain explicit manual review.
+- Updated: 2026-10-07.
+- Current Phase: 17.3 — Unassigned Gap Reconciliation Recovery & Residual Validation Stabilization.
+- Status: CODE COMPLETE / COMPLETED locally under the rich-data fail-safe policy — mandatory local checks PASS; awaiting review; STOP. Production NOT VERIFIED.
+- Verified branch: `phase17-3-unassigned-gap-reconciliation`; base HEAD `6bb75f267015c94cadfd93abffb3624b10072d45`; initial tree clean; branch has no upstream. No fetch/pull or Git mutation performed.
+- Documentation discrepancy: prior State/Index/17.2 checkpoint described an uncommitted 17.2 diff at db3f5c1. Current Git verifies 17.2 merged at 6bb75f2. Historical phase documents remain historical; production runtime/data NOT independently VERIFIED.
+- Confirmed: date-limited repair reads omit future assignment needed to prove cross-period gaps; ACTIVE validation requires any in-period assignment; validator clips a stale out-of-date source into a phantom daily interval before overlap checking.
+- Implementation milestone: read-only indexed timeline gaps from complete batched source history/lifecycle; safe empty-draft cleanup/audit; explicit preserved-data gap/return review; accurate source versus reconciliation overlap messages. No transfer redesign.
+- Latest tests: full `artisan test --compact` 434 PASS / 2866 assertions / 32.35 s; dependent scope 104 PASS / 946 assertions / 5.74 s; new gap suite 14 PASS / 124 assertions. SQLite :memory:, APP_ENV=testing. Scoped Pint 7 files / PHP syntax 7 files / whitespace and final 11-file diff review PASS.
+- Baseline benchmark (same machine): canonical 2400 rows / 1200 cases / 2400 photos 252.04 ms / 146 queries / 0 hydrated models. Final full after: 257.16 ms / 147 queries / 0 models. Long gap 1200 rows: 181.64 ms / 23 queries / 0 row models (independent dependent run 83.09 ms, same counts). Budgets PASS; timing diagnostic only.
+- Limitation: assignment-scoped canonical lookup and orphan/materialization protections make nullable relationship columns insufficient for safe automatic rich-row detachment. Gap/return business data remains unchanged with explicit blocking/manual diagnostic. No schema redesign or data merge.
 
 ## NEXT ACTION
 
-User reviews the 20-file local Phase 17.2 diff and `docs/phases/PHASE-17.2.md`. Local implementation is complete; STOP. A later session must verify Git again and obtain explicit authorization before commit/push/PR/merge/deploy or production repair. After separately approved deployment, follow the Phase 17.2 production checklist for period #8/T-XL0034; record before/after snapshots, validator/reason counts and safe second-run idempotency. Do not assume production verified or infer that all 889 unresolved must become zero.
+User reviews the 11-file local diff and docs/phases/PHASE-17.3.md. Prioritize AssignmentTimelineState cross-period proof, empty-draft before-snapshot audits, ACTIVE/source-overlap validator fix and explicit rich-row fail-safe limitation. HEAD remains 6bb75f267015c94cadfd93abffb3624b10072d45; 8 modified + 3 new files, uncommitted. SGC-T-3C0466 and VT-3C0664 production timelines, real MySQL contention and production counts/runtime remain NOT VERIFIED. Do not start an automatic detachment follow-up or next Phase. All requested local checks PASS; STOP and await review. Publication/production verification plan is recorded but requires separate authorization.
 
 ## Not authorized
 
-No commit, push, PR, merge, deploy, production migration/data repair/Repair Links, worker/service restart, secrets or OCR/provider changes.
+No commit, push, PR, merge, deploy, production Repair Links/batch/data repair/migration, worker/service restart or next Phase. No provider/model/prompt/schema/worker changes.
