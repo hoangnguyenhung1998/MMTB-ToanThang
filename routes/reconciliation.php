@@ -5,6 +5,12 @@ use App\Http\Controllers\ReconciliationRowController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth')->group(function () {
+    Route::get('/reconciliation-periods/repair-all/preview', [\App\Http\Controllers\ReconciliationRepairRunController::class, 'preview'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('reconciliation-periods.repair-all.preview');
+    Route::post('/reconciliation-periods/repair-all', [\App\Http\Controllers\ReconciliationRepairRunController::class, 'store'])
+        ->name('reconciliation-periods.repair-all.store');
+    Route::get('/reconciliation-periods/repair-all/runs/{repairRun}', [\App\Http\Controllers\ReconciliationRepairRunController::class, 'show'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('reconciliation-periods.repair-all.show');
     Route::post('/daily-photos/{ocrJob}/requeue', [\App\Http\Controllers\DailyPhotoController::class, 'requeue'])->name('daily-photos.requeue');
     Route::post('/daily-photos/rows/{reconciliationRow}/allocate', [\App\Http\Controllers\DailyPhotoController::class, 'allocate'])->name('daily-photos.allocate');
     Route::get('/daily-photos/settings', [\App\Http\Controllers\DailyPhotoController::class, 'settings'])->name('daily-photos.settings');

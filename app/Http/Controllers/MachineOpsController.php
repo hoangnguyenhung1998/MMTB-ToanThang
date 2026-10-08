@@ -51,7 +51,7 @@ class MachineOpsController extends Controller
         $path = $proofFile->storeAs("documents/machines/{$machine->asset_code}/proofs", $proofFilename, 'public');
 
         try {
-            $this->machineService->handoverToProject(
+            $operation = $this->machineService->handoverToProject(
                 $machine->id,
                 (int) $validated['project_id'],
                 (int) $validated['command_center_id'],
@@ -66,7 +66,8 @@ class MachineOpsController extends Controller
 
         return redirect()
             ->route('machines.show', $machine)
-            ->with('success', 'Bàn giao máy thành công.');
+            ->with('success', 'Bàn giao máy thành công.')
+            ->with('transfer_propagation', $operation->getRelations()['reconciliationPropagation'] ?? []);
     }
 
     public function activateSubmit(Request $request, Machine $machine): RedirectResponse
@@ -147,7 +148,7 @@ class MachineOpsController extends Controller
         }
 
         try {
-            $this->machineService->transferAssignment(
+            $operation = $this->machineService->transferAssignment(
                 $machine->id,
                 (int) $validated['from_project_id'],
                 (int) $validated['from_command_center_id'],
@@ -165,7 +166,8 @@ class MachineOpsController extends Controller
 
         return redirect()
             ->route('machines.show', $machine)
-            ->with('success', 'Điều chuyển máy thành công.');
+            ->with('success', 'Điều chuyển máy thành công; kiểm tra kết quả cập nhật các kỳ bên dưới.')
+            ->with('transfer_propagation', $operation->getRelations()['reconciliationPropagation'] ?? []);
     }
 
     public function reviseTransfer(Request $request, Machine $machine, MachineAssignment $assignment): RedirectResponse
@@ -207,7 +209,7 @@ class MachineOpsController extends Controller
         $path = $proofFile->storeAs("documents/machines/{$machine->asset_code}/proofs", $proofFilename, 'public');
 
         try {
-            $this->machineService->returnToCompany(
+            $operation = $this->machineService->returnToCompany(
                 $machine->id,
                 $validated['time_out'],
                 $path,
@@ -221,7 +223,8 @@ class MachineOpsController extends Controller
 
         return redirect()
             ->route('machines.show', $machine)
-            ->with('success', 'Đã trả máy về công ty.');
+            ->with('success', 'Đã trả máy về công ty.')
+            ->with('transfer_propagation', $operation->getRelations()['reconciliationPropagation'] ?? []);
     }
 
 

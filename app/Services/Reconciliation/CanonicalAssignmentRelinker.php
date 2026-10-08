@@ -27,6 +27,8 @@ class CanonicalAssignmentRelinker
 
     private array $blockedCases = [];
 
+    private array $protectedRows = [];
+
     private array $updates = [];
 
     private array $deletes = [];
@@ -35,7 +37,7 @@ class CanonicalAssignmentRelinker
 
     private array $logs = [];
 
-    public function __construct(array $machineIds, string $from, string $to, private readonly bool $lock = true, array $referenceJobIds = [])
+    public function __construct(array $machineIds, string $from, string $to, private readonly bool $lock = true, array $referenceJobIds = [], private readonly bool $planning = false)
     {
         $cases = DB::table('daily_photo_cases')->whereIn('machine_id', $machineIds)
             ->whereBetween('work_date', [$from, $to.' 23:59:59'])->orderBy('id')->when($lock, fn ($q) => $q->lockForUpdate())->get();
@@ -71,7 +73,8 @@ class CanonicalAssignmentRelinker
             ->whereIn('r.machine_id', $machineIds)->whereBetween('r.work_date', [$from, $to.' 23:59:59'])
             ->where(fn ($q) => $q->whereNotIn('p.status', ['DRAFT', 'GENERATED', 'REVIEWING'])
                 ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at')->orWhereNotNull('r.manually_edited_at')->orWhereNotNull('r.reviewed_by')->orWhereNotNull('r.confirmed_by'))
-            ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id', 'r.daily_ocr_job_ids', 'r.daily_intervals'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
+            ->select(['r.*', 'p.status as protection_period_status', 'p.updated_at as protection_period_updated_at'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
+        $this->protectedRows = $protected->keyBy('id')->all();
         foreach ($protected as $row) {
             $this->blocked[$this->key($row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id)] = true;
             // A protected row can itself have a stale assignment while referencing this case.
@@ -292,7 +295,7 @@ class CanonicalAssignmentRelinker
 
     public function plan(object $row, object $target, ?int $actor, string $now): void
     {
-        if (! $this->lock) {
+        if (! $this->lock && ! $this->planning) {
             throw new \LogicException('Read-only canonical snapshot cannot plan writes.');
         }
 
@@ -362,7 +365,7 @@ class CanonicalAssignmentRelinker
         $case->scope_key = $changes['scope_key'];
     }
 
-    public function flush(string $now): void
+    public function flush(string $now, ?string $runId = null): void
     {
         if (! $this->lock) {
             throw new \LogicException('Read-only canonical snapshot cannot flush writes.');
@@ -374,8 +377,113 @@ class CanonicalAssignmentRelinker
         RelationshipBatchWriter::update('daily_photo_cases', $this->updates, $now);
         RelationshipBatchWriter::update('ocr_jobs', $this->jobUpdates, $now);
         foreach (array_chunk($this->logs, 100) as $logs) {
+            if ($runId !== null) {
+                foreach ($logs as &$log) {
+                    $properties = json_decode($log['properties'], true, 512, JSON_THROW_ON_ERROR);
+                    $log['properties'] = json_encode($properties + ['repair_run_id' => $runId], JSON_THROW_ON_ERROR);
+                }
+                unset($log);
+            }
             DB::table('activity_logs')->insert($logs);
         }
+    }
+
+    public function snapshotFingerprint(): string
+    {
+        $data = [$this->cases, $this->members, $this->intervals, $this->jobsById, $this->blocked, $this->blockedCases, $this->protectedRows];
+
+        return ReconciliationRepairSnapshot::hash($data);
+    }
+
+    /** Prove actual source/pairing, never infer equivalence from hashes or job IDs alone. */
+    public function provesSameOcrSource(object $rich, object $shadow, object $owner): bool
+    {
+        if ($this->protectedEvidence($rich) || $this->protectedEvidence($shadow)
+            || $this->reason($rich, $owner) || $this->reason($shadow, $owner)) {
+            return false;
+        }
+        $ids = json_decode($rich->daily_ocr_job_ids ?? '[]', true) ?? [];
+        $other = json_decode($shadow->daily_ocr_job_ids ?? '[]', true) ?? [];
+        sort($ids);
+        sort($other);
+        if (! $ids || $ids !== $other || count($ids) !== count(array_unique($ids))) {
+            return false;
+        }
+        $caseIds = [];
+        foreach ($ids as $id) {
+            $job = $this->jobsById[$id] ?? null;
+            if (! $job || $job->status !== 'COMPLETED' || $job->document_type !== 'DAILY_TIMEMARK'
+                || (int) $job->machine_id !== (int) $rich->machine_id || $job->extracted_date === null
+                || substr($job->extracted_date, 0, 10) !== $rich->work_date || ! $job->daily_photo_case_id) {
+                return false;
+            }
+            $caseIds[$job->daily_photo_case_id] = true;
+        }
+        if (count($caseIds) !== 1) {
+            return false;
+        }
+        $caseId = array_key_first($caseIds);
+        $case = $this->cases[$caseId] ?? null;
+        if (! $case || isset($this->blockedCases[$caseId])
+            || isset($this->blocked[$this->key($rich->machine_id, $rich->work_date, $case->machine_assignment_id)])
+            || (int) $case->machine_id !== (int) $rich->machine_id || $case->work_date !== $rich->work_date) {
+            return false;
+        }
+        $members = [];
+        foreach ($this->members[$caseId] ?? [] as $member) {
+            $job = $this->jobsById[$member->ocr_job_id] ?? null;
+            if (! $job || ! $job->extracted_time || $member->capture_datetime !== $rich->work_date.' '.substr($job->extracted_time, 0, 8)) {
+                return false;
+            }
+            $members[$member->id] = $member;
+        }
+        $memberJobs = array_column($members, 'ocr_job_id');
+        sort($memberJobs);
+        if ($memberJobs !== $ids) {
+            return false;
+        }
+        $parts = json_decode($rich->daily_intervals ?? '[]', true) ?? [];
+        $selected = [];
+        $pairedJobs = [];
+        foreach ($parts as $part) {
+            $id = $part['canonical_interval_id'] ?? null;
+            $interval = $this->intervals[$id] ?? null;
+            $start = $interval ? ($members[$interval->start_evidence_id] ?? null) : null;
+            $end = $interval ? ($members[$interval->end_evidence_id] ?? null) : null;
+            if (! $interval || (int) $interval->daily_photo_case_id !== (int) $caseId || ! $start || ! $end
+                || ! $interval->raw_start_at || ! $interval->raw_end_at || $interval->raw_start_at >= $interval->raw_end_at
+                || $start->capture_datetime !== $interval->raw_start_at || $end->capture_datetime !== $interval->raw_end_at) {
+                return false;
+            }
+            foreach (['start_job_id' => $start->ocr_job_id, 'end_job_id' => $end->ocr_job_id] as $field => $expected) {
+                if (isset($part[$field]) && (int) $part[$field] !== (int) $expected) {
+                    return false;
+                }
+            }
+            foreach (['start' => $interval->raw_start_at, 'end' => $interval->raw_end_at] as $field => $stamp) {
+                foreach ([$field, $field.'_time'] as $timeField) {
+                    if (isset($part[$timeField]) && substr($part[$timeField].':00', 0, 8) !== substr($stamp, 11, 8)) {
+                        return false;
+                    }
+                }
+                if (isset($part[$field.'_date']) && $part[$field.'_date'] !== substr($stamp, 0, 10)) {
+                    return false;
+                }
+                if (isset($part['raw_'.$field.'_at']) && $part['raw_'.$field.'_at'] !== $stamp) {
+                    return false;
+                }
+            }
+            $selected[] = $id;
+            $pairedJobs[] = $start->ocr_job_id;
+            $pairedJobs[] = $end->ocr_job_id;
+        }
+        $all = array_column($this->caseIntervals[$caseId] ?? [], 'id');
+        sort($selected);
+        sort($all);
+        $pairedJobs = array_values(array_unique($pairedJobs));
+        sort($pairedJobs);
+
+        return $selected !== [] && $selected === $all && $pairedJobs === $ids;
     }
 
     public function caseRows(): array

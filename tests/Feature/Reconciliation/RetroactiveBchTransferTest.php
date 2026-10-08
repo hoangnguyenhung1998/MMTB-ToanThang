@@ -469,7 +469,9 @@ class RetroactiveBchTransferTest extends TestCase
         $this->post(route('machines.batch.handover'), $data)->assertSessionHasErrors('error');
         $this->assertSame(1, MachineAssignment::count());
         $data['time_in'] = '2026-09-19';
-        $this->post(route('machines.batch.handover'), $data)->assertSessionHas('success');
+        $this->post(route('machines.batch.handover'), $data)->assertSessionHas('success')
+            ->assertSessionHas('batch_propagation', fn ($results) => isset($results[$this->machine->id]['periods'][$row->reconciliation_period_id]));
+        $this->get(route('machines.index'))->assertOk()->assertSee('Kết quả cập nhật liên kết sau bàn giao:');
         $this->assertSame($this->b->id, (int) $row->fresh()->command_center_id);
         $this->assertSame(210, (int) $row->fresh()->regular_minutes);
     }
@@ -487,6 +489,36 @@ class RetroactiveBchTransferTest extends TestCase
         $this->assertBusinessSame($before, $later->fresh()->getAttributes());
         $this->assertSame($c->id, $later->fresh()->machine_assignment_id);
         $this->assertSame('2026-09-15 07:00:00', $c->fresh()->time_in->toDateTimeString());
+    }
+
+    public function test_october_created_first_then_real_backdated_transfer_updates_all_created_future_periods_and_reports_protection(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $old = $this->assignment('2026-08-01');
+        $rows = [];
+        foreach (['2026-08', '2026-09', '2026-10', '2026-11'] as $month) {
+            $rows[$month] = $this->row($this->period($month), $old, $month.'-20', $this->payload());
+        }
+        $locked = ReconciliationPeriod::create(['name' => 'Locked shared', 'type' => 'WEEKLY',
+            'date_from' => '2026-10-01', 'date_to' => '2026-10-07', 'status' => 'CONFIRMED']);
+        $this->row($locked, $old, '2026-10-02');
+        $before = [];
+        foreach ($rows as $month => $row) {
+            $before[$month] = $row->getAttributes();
+        }
+        $this->post(route('ops.transfer.submit', $this->machine), [
+            'from_project_id' => $this->project->id, 'from_command_center_id' => $this->a->id,
+            'to_project_id' => $this->project->id, 'to_command_center_id' => $this->b->id,
+            'time_out' => '2026-09-10 15:00:00', 'time_in' => '2026-09-10 15:00:00',
+        ])->assertSessionHas('transfer_propagation', fn ($result) => count($result['periods']) === 3 && count($result['protected_periods']) === 1);
+        foreach ($rows as $month => $row) {
+            $this->assertBusinessSame($before[$month], $row->fresh()->getAttributes());
+            $this->assertSame($month === '2026-08' ? $this->a->id : $this->b->id, $row->fresh()->command_center_id);
+        }
+        $this->get(route('machines.show', $this->machine))->assertOk()->assertSee('đã khóa, giữ nguyên dữ liệu');
+        $counts = [ReconciliationRow::count(), DailyPhotoCase::count(), ActivityLog::count(), MachineEvent::count()];
+        $this->transfer('2026-09-10 15:00:00', '2026-09-10 15:00:00');
+        $this->assertSame($counts, [ReconciliationRow::count(), DailyPhotoCase::count(), ActivityLog::count(), MachineEvent::count()]);
     }
 
     private function payload(): array

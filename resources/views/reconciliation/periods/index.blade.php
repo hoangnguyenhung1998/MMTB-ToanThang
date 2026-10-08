@@ -7,7 +7,12 @@
             <h1 class="h4 mb-1">Kỳ đối chiếu</h1>
             <div class="text-muted small">Mỗi tháng một kỳ gốc; xem và xuất theo tuần/ngày ngay trong kỳ tháng.</div>
         </div>
-        <a class="btn btn-primary" href="{{ route('reconciliation-periods.create') }}">Tạo kỳ đối chiếu</a>
+        <div class="d-flex gap-2">
+            @can('repairAll', \App\Models\ReconciliationPeriod::class)
+                <a class="btn btn-outline-warning" href="{{ route('reconciliation-periods.repair-all.preview') }}">Sửa liên kết tất cả kỳ</a>
+            @endcan
+            <a class="btn btn-primary" href="{{ route('reconciliation-periods.create') }}">Tạo kỳ đối chiếu</a>
+        </div>
     </div>
 
     @if (session('success'))

@@ -88,10 +88,10 @@ class MachineService
             ]);
 
             $machine->update(['status' => 'HANDED_OVER']);
-            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+            $propagation = app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
                 ->propagate($machine->id, $date, null, auth()->id());
 
-            return $machine->refresh();
+            return $machine->refresh()->setRelation('reconciliationPropagation', $propagation);
         }, 3);
     }
 
@@ -208,10 +208,10 @@ class MachineService
                 'from_command_center_id' => $currentCommandCenterId,
                 'to_command_center_id' => $toCommandCenterId,
             ]);
-            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+            $propagation = app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
                 ->propagate($machine->id, $out->toDateTimeString(), null, auth()->id());
 
-            return $machine->refresh();
+            return $machine->refresh()->setRelation('reconciliationPropagation', $propagation);
         }, 3);
     }
 
@@ -273,10 +273,10 @@ class MachineService
                 'current_driver_id' => null,
                 'returned_to_app' => $appReturnConfirmed,
             ]);
-            app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
+            $propagation = app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)
                 ->propagate($machine->id, $timeOut, null, auth()->id());
 
-            return $machine->refresh();
+            return $machine->refresh()->setRelation('reconciliationPropagation', $propagation);
         }, 3);
     }
 
