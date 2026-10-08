@@ -99,7 +99,7 @@
                         <dt class="col-5 text-muted">Mã máy</dt>
                         <dd class="col-7 fw-semibold">{{ $machineCode }}</dd>
                         <dt class="col-5 text-muted">BCH</dt>
-                        <dd class="col-7">{{ $reconciliationRow->commandCenter?->name ?? '—' }}</dd>
+                        <dd class="col-7">{{ $reconciliationRow->commandCenter?->name ?? ($reconciliationRow->machine_assignment_id === null && $reconciliationRow->project_id === null ? 'Không BCH' : '—') }}</dd>
                         <dt class="col-5 text-muted">Dự án</dt>
                         <dd class="col-7">{{ $reconciliationRow->project?->name ?? '—' }}</dd>
                         <dt class="col-5 text-muted">Lái xe</dt>

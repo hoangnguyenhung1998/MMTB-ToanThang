@@ -7,6 +7,7 @@ use App\Models\DailyPhotoCaseEvidence;
 use App\Models\DailyPhotoInterval;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
+use App\Services\Reconciliation\AssignmentInterval;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -34,6 +35,9 @@ class DailyPhotoCaseService
 
             $workDate = $job->extracted_date->format('Y-m-d');
             $captureAt = $job->extracted_time ? $workDate.' '.substr((string) $job->extracted_time, 0, 8) : null;
+            if ($captureAt !== null && strlen($captureAt) === 16) {
+                $captureAt .= ':00';
+            }
             $assignments = $candidateAssignments ?? MachineAssignment::query()
                 ->where('machine_id', $job->machine_id)
                 ->where('time_in', '<=', $captureAt ?? $workDate.' 23:59:59')
@@ -41,6 +45,14 @@ class DailyPhotoCaseService
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
+
+            // Preloaded backlog candidates are date-scoped. Laravel must still enforce the
+            // same capture-time and positive-range rules as the authoritative direct query.
+            $assignments = $assignments->filter(fn ($assignment) => AssignmentInterval::valid($assignment)
+                && (int) $assignment->machine_id === (int) $job->machine_id
+                && AssignmentInterval::stamp($assignment->time_in) <= ($captureAt ?? $workDate.' 23:59:59')
+                && (! $assignment->time_out || AssignmentInterval::stamp($assignment->time_out) > ($captureAt ?? $workDate.' 00:00:00')))
+                ->values();
 
             $assignment = $assignments->count() === 1 ? $assignments->first() : null;
             $scopeKey = $assignment

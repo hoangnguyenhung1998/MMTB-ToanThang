@@ -89,8 +89,16 @@ class CanonicalAssignmentRelinker
         }
         $sourceId = $sourceIds[0] ?? null;
         $targetId = $targetIds[0] ?? null;
+        if ($target->id === null && $sourceId !== $targetId) {
+            if ($sourceId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
+                return 'PROTECTED_CANONICAL_RELATIONSHIP';
+            }
+            if ($targetId && ! $this->emptyCase($targetId)) {
+                return 'CANONICAL_CONFLICT';
+            }
+        }
         if ($sourceId && ! $this->emptyCase($sourceId)) {
-            if (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey])) {
+            if ($sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
                 return 'PROTECTED_CANONICAL_RELATIONSHIP';
             }
             if ($targetId && $targetId !== $sourceId && ! $this->emptyCase($targetId)) {
@@ -117,7 +125,7 @@ class CanonicalAssignmentRelinker
                 }
             }
             foreach ($this->caseIntervals[$sourceId] ?? [] as $interval) {
-                if (! $this->containsStamp($target, $interval->raw_start_at) || ! $this->containsStamp($target, $interval->raw_end_at)) {
+                if (! $this->containsStamp($target, $interval->raw_start_at) || ! $this->containsStamp($target, $interval->raw_end_at, true)) {
                     return 'CANONICAL_TIME_CONFLICT';
                 }
             }
@@ -134,27 +142,104 @@ class CanonicalAssignmentRelinker
         return null;
     }
 
+    /** Prove a stale all-day segment may be narrowed without moving any business time. */
+    public function canNarrow(object $row, object $target): bool
+    {
+        $ids = $this->byScope[$this->key($row->machine_id, $row->work_date, $row->machine_assignment_id)] ?? [];
+        if (count($ids) !== 1 || empty($this->caseIntervals[$ids[0]]) || ! empty(json_decode($row->journal_row_ids ?? '[]', true))) {
+            return false;
+        }
+        [$start, $end] = AssignmentInterval::segment($target, $row->work_date);
+        $start = max($start, $row->segment_start ?: $start);
+        $end = min($end, $row->segment_end ?: $end);
+        if ($start >= $end) {
+            return false;
+        }
+        $bounded = (object) ['id' => $target->id, 'time_in' => $row->work_date.' '.$start, 'time_out' => $row->work_date.' '.$end];
+        if ($this->reason($row, $bounded) !== null) {
+            return false;
+        }
+        $knownJobs = array_map(fn ($job) => (int) $job->id, ($this->jobs[$ids[0]] ?? collect())->all());
+        foreach (json_decode($row->daily_ocr_job_ids ?? '[]', true) ?? [] as $id) {
+            if (! in_array((int) $id, $knownJobs, true)) {
+                return false;
+            }
+        }
+        foreach (json_decode($row->daily_intervals ?? '[]', true) ?? [] as $part) {
+            foreach (['start', 'end'] as $endpoint) {
+                if (! empty($part[$endpoint])) {
+                    $time = (string) $part[$endpoint];
+                    $time = strlen($time) === 5 ? $time.':00' : $time;
+                    if (! preg_match('/^\d{2}:\d{2}:\d{2}$/', $time) || $time < $start || $time > $end
+                        || (! empty($part[$endpoint.'_date']) && $part[$endpoint.'_date'] !== $row->work_date)) {
+                        return false;
+                    }
+                }
+                if (! empty($part[$endpoint.'_job_id']) && ! in_array((int) $part[$endpoint.'_job_id'], $knownJobs, true)) {
+                    return false;
+                }
+            }
+        }
+        $fields = ['ocr_check_in_raw', 'ocr_check_out_raw', 'rounded_check_in', 'rounded_check_out',
+            'confirmed_check_in', 'confirmed_check_out', 'gps_check_in', 'gps_check_out'];
+        foreach (DailyTimeAllocator::KINDS as $kind) {
+            $fields[] = $kind.'_start';
+            $fields[] = $kind.'_end';
+            if (! empty($row->{$kind.'_start'}) && ! empty($row->{$kind.'_end'})
+                && $row->{$kind.'_end'} <= $row->{$kind.'_start'}) {
+                return false; // Overnight/split data is never inferred or copied.
+            }
+        }
+        foreach ($fields as $field) {
+            if (! empty($row->$field)) {
+                $time = (string) $row->$field;
+                if (! preg_match('/^\d{2}:\d{2}(?::\d{2})?$/', $time)) {
+                    return false;
+                }
+                $time = strlen($time) === 5 ? $time.':00' : $time;
+                if ($time < $start || $time > $end) {
+                    return false;
+                }
+            }
+        }
+        foreach (['regular_minutes' => ['regular_morning', 'regular_afternoon'], 'lunch_minutes' => ['overtime_lunch'],
+            'ot_afternoon_minutes' => ['overtime_afternoon'], 'ot_evening_minutes' => ['overtime_evening']] as $field => $kinds) {
+            if (! empty($row->$field) && ! collect($kinds)->contains(fn ($kind) => ! empty($row->{$kind.'_start'}) && ! empty($row->{$kind.'_end'}))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public function plan(object $row, object $target, ?int $actor, string $now): void
     {
         $sourceKey = $this->key($row->machine_id, $row->work_date, $row->machine_assignment_id);
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
         $sourceId = $this->byScope[$sourceKey][0] ?? null;
         $targetId = $this->byScope[$targetKey][0] ?? null;
-        if (! $sourceId || $sourceId === $targetId || $this->emptyCase($sourceId)) {
+        if (! $sourceId || $sourceId === $targetId || ($target->id !== null && $this->emptyCase($sourceId))) {
             return;
         }
         if ($targetId) {
             $this->deletes[$targetId] = true;
         }
         $case = $this->cases[$sourceId];
-        $changes = ['machine_assignment_id' => $target->id, 'scope_key' => 'assignment:'.$target->id.'|date:'.$row->work_date];
+        $changes = ['machine_assignment_id' => $target->id, 'scope_key' => $target->id === null ? 'machine:'.$row->machine_id.'|date:'.$row->work_date.'|assignment:unresolved' : 'assignment:'.$target->id.'|date:'.$row->work_date];
         $this->updates[$sourceId] = $changes;
         foreach ($this->jobs[$sourceId] ?? [] as $job) {
-            $metadata = json_decode($job->daily_metadata ?? 'null', true);
-            if (isset($metadata['case_materialization'])) {
-                $metadata['case_materialization']['machine_assignment_id'] = $target->id;
-                $metadata['case_materialization']['scope_key'] = $changes['scope_key'];
-                $metadata['case_materialization']['candidate_machine_assignment_ids'] = [$target->id];
+            // Preserve opaque JSON object/list types outside the relationship metadata.
+            $metadata = json_decode($job->daily_metadata ?? 'null');
+            if (isset($metadata->case_materialization)
+                && (is_object($metadata->case_materialization) || is_array($metadata->case_materialization))) {
+                $links = (object) $metadata->case_materialization;
+                $links->machine_assignment_id = $target->id;
+                $links->scope_key = $changes['scope_key'];
+                if ($target->id === null && isset($links->assignment_resolution_status)) {
+                    $links->assignment_resolution_status = 'NOT_FOUND';
+                }
+                $links->candidate_machine_assignment_ids = $target->id === null ? [] : [$target->id];
+                $metadata->case_materialization = $links;
                 $this->jobUpdates[$job->id] = ['daily_metadata' => json_encode($metadata, JSON_THROW_ON_ERROR)];
             }
         }
@@ -222,9 +307,10 @@ class CanonicalAssignmentRelinker
         return empty($this->caseIntervals[$id]);
     }
 
-    private function containsStamp(object $target, string $stamp): bool
+    private function containsStamp(object $target, string $stamp, bool $intervalEnd = false): bool
     {
-        return $stamp >= (string) $target->time_in && (! $target->time_out || $stamp <= (string) $target->time_out);
+        return $stamp >= (string) $target->time_in && (! $target->time_out
+            || (($target->id !== null || $intervalEnd) ? $stamp <= (string) $target->time_out : $stamp < (string) $target->time_out));
     }
 
     private function key(int $machine, string $date, mixed $assignment): string

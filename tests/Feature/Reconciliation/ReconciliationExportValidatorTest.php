@@ -44,7 +44,8 @@ class ReconciliationExportValidatorTest extends TestCase
 
         $result = app(ReconciliationExportValidator::class)->validate($period);
 
-        $this->assertTrue($result['can_export']);
+        $this->assertFalse($result['can_export']);
+        $this->assertStringContainsString('TRUE_ASSIGNMENT_OVERLAP', $result['blocking']->implode(' '));
         $this->assertStringContainsString('chồng lấn', $result['warnings']->implode(' '));
     }
 

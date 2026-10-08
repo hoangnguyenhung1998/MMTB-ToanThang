@@ -16,9 +16,9 @@ class ReconciliationLinkRepairService
             if (! in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true)) {
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể sửa liên kết.');
             }
-            $result = ['repaired' => 0, 'removed' => 0, 'unresolved' => 0];
+            $result = ['repaired' => 0, 'normalized_unassigned' => 0, 'removed' => 0, 'unresolved' => 0];
             $result['diagnostics'] = ['total_inspected' => 0, 'already_correct' => 0, 'repairable_stale_links' => 0,
-                'reasons' => [], 'rows' => []];
+                'unassigned_by_context' => [], 'cleaned_by_context' => [], 'reasons' => [], 'rows' => []];
             // Keep all siblings of each machine together, including stale rows.
             $machineIds = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
                 ->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
@@ -40,11 +40,11 @@ class ReconciliationLinkRepairService
                 $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'));
                 $firstDate = $rows->min('work_date');
                 $lastDate = $rows->max('work_date');
-                $byMachine = $assignments->filter(fn ($a) => (string) $a->time_in <= $lastDate.' 23:59:59'
+                $byMachine = $assignments->filter(fn ($a) => AssignmentInterval::valid($a) && (string) $a->time_in <= $lastDate.' 23:59:59'
                     && (! $a->time_out || (string) $a->time_out >= $firstDate.' 00:00:00'))->groupBy('machine_id');
                 $timeline = new AssignmentTimelineState($assignments, DB::table('machine_events')
                     ->whereIn('machine_id', $ids)->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])
-                    ->lockForUpdate()->get(['machine_id', 'type', 'occurred_at']));
+                    ->lockForUpdate()->get(['id', 'machine_id', 'type', 'occurred_at']));
                 $effective = [];
                 $targets = [];
                 $duplicates = [];
@@ -86,11 +86,6 @@ class ReconciliationLinkRepairService
                         && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
                     $protected = $this->protected($row);
                     $human = $row->manually_edited_at !== null;
-                    if ($source && ! AssignmentInterval::valid($source)) {
-                        $this->unresolved($result, $row, 'INVALID_TIMELINE');
-
-                        continue;
-                    }
                     if (($row->segment_start && $row->segment_end && $row->segment_start >= $row->segment_end)
                         || ((! $row->segment_start || ! $row->segment_end) && $this->hasData($row))) {
                         $this->unresolved($result, $row, 'INVALID_SEGMENT');
@@ -100,25 +95,61 @@ class ReconciliationLinkRepairService
                     $context = $timeline->context((int) $row->machine_id,
                         $row->work_date.' '.($row->segment_start ?: '00:00:00'),
                         $row->work_date.' '.($row->segment_end ?: '23:59:59'));
+                    $context['source_assignment_id'] = $row->machine_assignment_id;
+                    $context['_candidate_assignments'] = $effective[$key];
                     $state = $context['timeline_context'];
-                    if (in_array($state, ['LEGITIMATE_UNASSIGNED_GAP', 'AFTER_RETURN'], true)) {
-                        if ($protected || $human || $this->hasData($row) || $canonical->hasContent($row) || $this->hasCanonicalReference($row)) {
-                            $this->unresolved($result, $row, $protected ? 'PROTECTED_RELATIONSHIP'
-                                : ($state === 'LEGITIMATE_UNASSIGNED_GAP' ? 'UNASSIGNED_GAP_REQUIRES_REVIEW' : 'AFTER_RETURN_REQUIRES_REVIEW'), $context);
-                        } elseif ($source && (int) $source->machine_id === (int) $row->machine_id) {
+                    if (AssignmentTimelineState::isUnassigned($state)) {
+                        $rich = $human || $this->hasData($row) || $canonical->hasContent($row) || $this->hasCanonicalReference($row);
+                        if ($row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null) {
+                            $target = (object) ['id' => null, 'time_in' => $row->work_date.' '.($row->segment_start ?: '00:00:00'),
+                                'time_out' => $row->work_date.' '.($row->segment_end ?: '23:59:59')];
+                            $occupants = $targets[$key.'|'] ?? [];
+                            unset($occupants[$row->id]);
+                            if ($occupants) {
+                                $this->unresolved($result, $row, 'UNASSIGNED_IDENTITY_CONFLICT', $context);
+                            } elseif ($reason = $canonical->reason($row, $target)) {
+                                $this->unresolved($result, $row, $reason, $context);
+                            } else {
+                                $result['diagnostics']['already_correct']++;
+                            }
+                        } elseif ($protected) {
+                            $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP', $context);
+                        } elseif (! $rich && $source && (int) $source->machine_id === (int) $row->machine_id) {
                             $deletes[$row->id] = $row->id;
                             unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
                             $logs[] = $this->log($row, $userId, 'reconciliation.stale_row_removed',
                                 'Dọn nháp rỗng ngoài lịch hiệu lực; không lấp khoảng không BCH.',
                                 ['row' => (array) $row, 'timeline_context' => $state], $now);
                             $result['removed']++;
+                            $result['diagnostics']['cleaned_by_context'][$state] = ($result['diagnostics']['cleaned_by_context'][$state] ?? 0) + 1;
                         } else {
-                            $this->unresolved($result, $row, 'NO_EFFECTIVE_ASSIGNMENT', $context);
+                            // Nullable existing relationships represent proven unassigned ranges.
+                            // Canonical validation also proves captures/intervals fit this exact range.
+                            $target = (object) ['id' => null, 'time_in' => $row->work_date.' '.($row->segment_start ?: '00:00:00'),
+                                'time_out' => $row->work_date.' '.($row->segment_end ?: '23:59:59')];
+                            $reason = $canonical->reason($row, $target);
+                            $occupants = $targets[$key.'|'] ?? [];
+                            unset($occupants[$row->id]);
+                            if ($reason || $occupants) {
+                                $this->unresolved($result, $row, $reason ?: 'UNASSIGNED_IDENTITY_CONFLICT', $context);
+
+                                continue;
+                            }
+                            $canonical->plan($row, $target, $userId, $now);
+                            $changes = ['machine_assignment_id' => null, 'project_id' => null, 'command_center_id' => null];
+                            $updates[$row->id] = $changes;
+                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                            $targets[$key.'|'][$row->id] = true;
+                            $logs[] = $this->log($row, $userId, 'reconciliation.relationship_unassigned',
+                                'Chuẩn hóa Không BCH; giữ nguyên dữ liệu nghiệp vụ và identity.',
+                                ['old' => array_intersect_key((array) $row, $changes), 'new' => $changes, 'timeline_context' => $state], $now);
+                            $result['normalized_unassigned']++;
+                            $result['diagnostics']['unassigned_by_context'][$state] = ($result['diagnostics']['unassigned_by_context'][$state] ?? 0) + 1;
                         }
 
                         continue;
                     }
-                    if (in_array($state, ['INVALID_TIMELINE', 'LIFECYCLE_AMBIGUITY'], true)) {
+                    if (in_array($state, ['INVALID_TIMELINE', 'LIFECYCLE_AMBIGUITY', 'LIFECYCLE_ASSIGNMENT_CONFLICT'], true)) {
                         $this->unresolved($result, $row, $state, $context);
 
                         continue;
@@ -134,6 +165,9 @@ class ReconciliationLinkRepairService
                             continue;
                         }
                         $candidates = $this->containedCandidates($row, $effective[$key]);
+                        if (! $candidates && $canonical->hasContent($row)) {
+                            $candidates = array_values(array_filter($effective[$key], fn ($a) => $canonical->canNarrow($row, $a)));
+                        }
                         // Legacy empty all-day drafts can be narrowed only to a sole date candidate.
                         if (! $candidates && ! $human && ! $this->hasData($row) && ! $canonical->hasContent($row) && count($effective[$key]) === 1) {
                             $candidates = $effective[$key];
@@ -180,7 +214,7 @@ class ReconciliationLinkRepairService
                         continue;
                     }
                     if ($this->ambiguous($source, $row, $effective[$key])) {
-                        $this->unresolved($result, $row, 'TRUE_ASSIGNMENT_OVERLAP');
+                        $this->unresolved($result, $row, 'TRUE_ASSIGNMENT_OVERLAP', $context);
 
                         continue;
                     }
@@ -193,8 +227,8 @@ class ReconciliationLinkRepairService
                         }
                     }
                     if (! $this->withinSegment($source, $row)) {
-                        if ($human || $this->hasData($row) || $canonical->hasContent($row)) {
-                            $this->unresolved($result, $row, 'SEGMENT_AMBIGUITY');
+                        if (($human || $this->hasData($row) || $canonical->hasContent($row)) && ! $canonical->canNarrow($row, $source)) {
+                            $this->unresolved($result, $row, 'SEGMENT_AMBIGUITY', $context);
 
                             continue;
                         }
@@ -370,6 +404,9 @@ class ReconciliationLinkRepairService
             if (! $exact || (! $this->withinSegment($source, $row)
                 && ($row->manually_edited_at || $rich[$row->id] || $this->containedCandidates($row, $effective[$key])))) {
                 $candidates = $this->containedCandidates($row, $effective[$key]);
+                if (! $candidates && $canonical->hasContent($row)) {
+                    $candidates = array_values(array_filter($effective[$key], fn ($a) => $canonical->canNarrow($row, $a)));
+                }
                 if (! $candidates && ! $row->manually_edited_at && ! $rich[$row->id] && count($effective[$key]) === 1) {
                     $candidates = $effective[$key];
                 }
@@ -417,6 +454,10 @@ class ReconciliationLinkRepairService
 
     private function unresolved(array &$result, object $row, string $reason, array $context = []): void
     {
+        if (isset($context['_candidate_assignments'])) {
+            $context['effective_assignments'] = array_map(fn ($a) => ['id' => $a->id, 'time_in' => $a->time_in, 'time_out' => $a->time_out], $context['_candidate_assignments']);
+            unset($context['_candidate_assignments']);
+        }
         $result['unresolved']++;
         $result['diagnostics']['reasons'][$reason] = ($result['diagnostics']['reasons'][$reason] ?? 0) + 1;
         $result['diagnostics']['rows'][] = ['row_id' => $row->id, 'machine_id' => $row->machine_id,

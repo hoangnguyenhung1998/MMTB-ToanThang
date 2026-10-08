@@ -15,7 +15,7 @@ use PhpOffice\PhpSpreadsheet\Style\Border;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Worksheet\PageSetup;
 
-class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, ShouldAutoSize
+class ReconciliationBchSheet implements FromArray, ShouldAutoSize, WithEvents, WithTitle
 {
     private array $machineRanges = [];
 
@@ -25,8 +25,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
         private readonly string $sheetTitle,
         private readonly ?string $dateFrom = null,
         private readonly ?string $dateTo = null
-    ) {
-    }
+    ) {}
 
     public function title(): string
     {
@@ -64,7 +63,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                 $machine?->asset_code,
                 '', '', '', '=SUM(G'.$firstDayRow.':G'.$lastDayRow.')',
                 '', '', '', '', '', '', '', '', '', '', '=SUM(R'.$firstDayRow.':R'.$lastDayRow.')',
-                '', '', $first->commandCenter?->name,
+                '', '', $first->commandCenter?->name ?? 'Không BCH',
             ];
 
             $rowsByDate = $machineRows->groupBy(fn ($row) => $row->work_date->format('Y-m-d'));
@@ -97,7 +96,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                     $logbookMinutes === null ? null : $logbookMinutes / 1440,
                     $active ? $row->work_location : null,
                     $active ? $row->explanation : null,
-                    $active ? $row->commandCenter?->name : null,
+                    $active ? ($row->commandCenter?->name ?? 'Không BCH') : null,
                     null,
                     $active ? implode('|', [$row->command_center_id, $machine?->asset_code, $date->format('Ymd'), $row->id]) : null,
                     $active ? $row->work_content : null,
@@ -171,7 +170,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
                     }
                 }
 
-                foreach (['A'=>6,'B'=>26,'C'=>15,'D'=>13,'E'=>11,'F'=>11,'G'=>12,'H'=>11,'I'=>11,'J'=>11,'K'=>11,'L'=>11,'M'=>11,'N'=>11,'O'=>11,'P'=>11,'Q'=>11,'R'=>12,'S'=>22,'T'=>34,'U'=>16,'V'=>12,'W'=>20,'X'=>32] as $column => $width) {
+                foreach (['A' => 6, 'B' => 26, 'C' => 15, 'D' => 13, 'E' => 11, 'F' => 11, 'G' => 12, 'H' => 11, 'I' => 11, 'J' => 11, 'K' => 11, 'L' => 11, 'M' => 11, 'N' => 11, 'O' => 11, 'P' => 11, 'Q' => 11, 'R' => 12, 'S' => 22, 'T' => 34, 'U' => 16, 'V' => 12, 'W' => 20, 'X' => 32] as $column => $width) {
                     $sheet->getColumnDimension($column)->setAutoSize(false)->setWidth($width);
                 }
                 $sheet->freezePane('A6');
@@ -187,7 +186,7 @@ class ReconciliationBchSheet implements FromArray, WithEvents, WithTitle, Should
 
     private function minutesBetween(?string $start, ?string $end): ?int
     {
-        if (!$start || !$end) {
+        if (! $start || ! $end) {
             return null;
         }
 

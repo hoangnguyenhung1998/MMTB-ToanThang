@@ -86,7 +86,7 @@ class ReconciliationPeriodController extends Controller
         try {
             $result = $repair->repair($reconciliationPeriod, auth()->id());
 
-            return back()->with('success', "Đã khôi phục {$result['repaired']} liên kết và dọn {$result['removed']} dòng nháp hết hiệu lực; còn {$result['unresolved']} dòng cần kiểm tra. Không thay đổi giờ làm.")
+            return back()->with('success', "Đã khôi phục {$result['repaired']} liên kết, chuẩn hóa {$result['normalized_unassigned']} dòng Không BCH và dọn {$result['removed']} dòng nháp hết hiệu lực; còn {$result['unresolved']} dòng cần kiểm tra. Không thay đổi giờ làm.")
                 ->with('repair_diagnostics', $result['diagnostics']);
         } catch (Throwable $exception) {
             report($exception);

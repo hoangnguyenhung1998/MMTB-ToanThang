@@ -103,7 +103,7 @@ class ReconciliationRepairTimelineTest extends TestCase
         $start = $this->row(null, 15);
         $later = $this->row(null, 16);
         $before = $early->getAttributes();
-        $this->assertSame(['repaired' => 2, 'removed' => 0, 'unresolved' => 1], $this->repair());
+        $this->assertSame(['repaired' => 2, 'removed' => 0, 'unresolved' => 0], $this->repair());
         $this->assertSame($before, $early->fresh()->getAttributes());
         $this->assertSame('07:30:00', $start->fresh()->segment_start);
         $this->assertSame($a->id, (int) $later->fresh()->machine_assignment_id);

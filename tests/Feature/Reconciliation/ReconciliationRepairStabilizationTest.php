@@ -127,11 +127,11 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->row($a, '2026-09-08', ['segment_start' => '17:00:00', 'segment_end' => '07:00:00']);
         $result = $this->repair();
         $this->assertSame(6, $result['diagnostics']['total_inspected']);
-        $this->assertSame(1, $result['diagnostics']['already_correct']);
-        $this->assertSame(5, $result['unresolved']);
-        $this->assertEquals(['NO_EFFECTIVE_ASSIGNMENT' => 1, 'PROTECTED_RELATIONSHIP' => 1,
+        $this->assertSame(2, $result['diagnostics']['already_correct']);
+        $this->assertSame(4, $result['unresolved']);
+        $this->assertEquals(['PROTECTED_RELATIONSHIP' => 1,
             'NO_BCH_RESOLUTION' => 1, 'TRUE_ASSIGNMENT_OVERLAP' => 1, 'INVALID_SEGMENT' => 1], $result['diagnostics']['reasons']);
-        $this->assertCount(5, $result['diagnostics']['rows']);
+        $this->assertCount(4, $result['diagnostics']['rows']);
         $this->assertStringContainsString('phân công nguồn thực sự chồng lấn', app(ReconciliationExportValidator::class)->validate($this->period)['warnings']->implode(' '));
         $this->assertSame(0, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
         $this->actingAs(User::factory()->create())->from(route('reconciliation-periods.show', $this->period))
@@ -179,7 +179,11 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $boundary = $this->row($a, '2026-09-10', ['regular_minutes' => 321]);
         $this->row($a, '2026-09-11', ['work_content' => 'After return']);
         $before = $boundary->getAttributes();
-        $this->assertEquals(['NO_EFFECTIVE_ASSIGNMENT' => 2, 'SEGMENT_AMBIGUITY' => 1], $this->repair()['diagnostics']['reasons']);
+        $result = $this->repair();
+        $this->assertEquals(['SEGMENT_AMBIGUITY' => 1], $result['diagnostics']['reasons']);
+        $this->assertSame(1, $result['normalized_unassigned']);
+        $this->assertNull($this->period->rows()->whereDate('work_date', '2026-09-11')->first()->command_center_id);
+        $this->assertSame('After return', $this->period->rows()->whereDate('work_date', '2026-09-11')->first()->work_content);
         $this->assertSame($before, $boundary->fresh()->getAttributes());
     }
 

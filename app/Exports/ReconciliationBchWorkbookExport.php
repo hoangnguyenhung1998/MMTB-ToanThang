@@ -11,14 +11,12 @@ class ReconciliationBchWorkbookExport implements WithMultipleSheets
     public function __construct(
         private readonly ReconciliationPeriod $period,
         private readonly array $filters = []
-    ) {
-    }
+    ) {}
 
     public function sheets(): array
     {
         $query = $this->period->rows()
             ->with(['machine', 'project:id,name', 'commandCenter:id,name', 'driver:id,name'])
-            ->whereNotNull('command_center_id')
             ->when($this->filters['machine_id'] ?? null, fn ($query, $id) => $query->where('machine_id', $id))
             ->when($this->filters['project_id'] ?? null, fn ($query, $id) => $query->where('project_id', $id))
             ->when($this->filters['command_center_id'] ?? null, fn ($query, $id) => $query->where('command_center_id', $id))
@@ -33,7 +31,7 @@ class ReconciliationBchWorkbookExport implements WithMultipleSheets
         return $query->get()
             ->groupBy('command_center_id')
             ->map(function (Collection $rows) use (&$usedTitles) {
-                $title = $this->uniqueTitle($rows->first()->commandCenter?->name ?? 'BCH', $usedTitles);
+                $title = $this->uniqueTitle($rows->first()->commandCenter?->name ?? 'Không BCH', $usedTitles);
 
                 return new ReconciliationBchSheet(
                     $this->period,

@@ -12,8 +12,7 @@ class ReconciliationRowsExport implements FromArray, WithHeadings
     public function __construct(
         private readonly ReconciliationPeriod $period,
         private readonly ReconciliationCalculator $calculator
-    ) {
-    }
+    ) {}
 
     public function headings(): array
     {
@@ -58,7 +57,7 @@ class ReconciliationRowsExport implements FromArray, WithHeadings
                     $this->period->name,
                     $row->work_date?->format('Y-m-d'),
                     $row->machine?->asset_code ?? $row->machine?->code ?? ('Máy #'.$row->machine_id),
-                    $row->commandCenter?->name,
+                    $row->commandCenter?->name ?? ($row->machine_assignment_id === null && $row->project_id === null ? 'Không BCH' : null),
                     $row->project?->name,
                     $row->driver?->name,
                     $row->status,

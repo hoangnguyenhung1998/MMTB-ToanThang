@@ -1,20 +1,20 @@
 # Project State
 
-- Updated: 2026-10-07.
-- Current Phase: 17.3 — Unassigned Gap Reconciliation Recovery & Residual Validation Stabilization.
-- Status: CODE COMPLETE / COMPLETED locally under the rich-data fail-safe policy — mandatory local checks PASS; awaiting review; STOP. Production NOT VERIFIED.
-- Verified branch: `phase17-3-unassigned-gap-reconciliation`; base HEAD `6bb75f267015c94cadfd93abffb3624b10072d45`; initial tree clean; branch has no upstream. No fetch/pull or Git mutation performed.
-- Documentation discrepancy: prior State/Index/17.2 checkpoint described an uncommitted 17.2 diff at db3f5c1. Current Git verifies 17.2 merged at 6bb75f2. Historical phase documents remain historical; production runtime/data NOT independently VERIFIED.
-- Confirmed: date-limited repair reads omit future assignment needed to prove cross-period gaps; ACTIVE validation requires any in-period assignment; validator clips a stale out-of-date source into a phantom daily interval before overlap checking.
-- Implementation milestone: read-only indexed timeline gaps from complete batched source history/lifecycle; safe empty-draft cleanup/audit; explicit preserved-data gap/return review; accurate source versus reconciliation overlap messages. No transfer redesign.
-- Latest tests: full `artisan test --compact` 434 PASS / 2866 assertions / 32.35 s; dependent scope 104 PASS / 946 assertions / 5.74 s; new gap suite 14 PASS / 124 assertions. SQLite :memory:, APP_ENV=testing. Scoped Pint 7 files / PHP syntax 7 files / whitespace and final 11-file diff review PASS.
-- Baseline benchmark (same machine): canonical 2400 rows / 1200 cases / 2400 photos 252.04 ms / 146 queries / 0 hydrated models. Final full after: 257.16 ms / 147 queries / 0 models. Long gap 1200 rows: 181.64 ms / 23 queries / 0 row models (independent dependent run 83.09 ms, same counts). Budgets PASS; timing diagnostic only.
-- Limitation: assignment-scoped canonical lookup and orphan/materialization protections make nullable relationship columns insufficient for safe automatic rich-row detachment. Gap/return business data remains unchanged with explicit blocking/manual diagnostic. No schema redesign or data merge.
+- Updated: 2026-10-08.
+- Current Phase: 17.3 — Unassigned Relationship Completion & Production Residual Stabilization (continuation; no new Phase).
+- Status: CODE COMPLETE — local only; mandatory local checks PASS; stopped for review. Production NOT independently VERIFIED.
+- Verified Git at start: clean branch `phase17-3-unassigned-gap-reconciliation`, HEAD `f690ecf`, upstream `origin/phase17-3-unassigned-gap-reconciliation`, ahead/behind 0/0. Current changes are local/uncommitted; no Git write/fetch/pull.
+- Production merge `6b6a4cc68c4b6a622ba13e15b883fb323d2fceac` and 6046/5825/221 residual/317 blockers/3 warnings are user-reported. Commit object unavailable locally; merge equivalence and live data NOT VERIFIED.
+- Confirmed: prior gap/return rich-data policy retained stale relationships although the existing schema permits NULL; machine-global invalid-history flag poisoned unrelated periods; NULL wildcard append and automatic sync/export needed safe downstream handling.
+- Implemented: stable-ID nullable UNASSIGNED row/canonical representation, protected/conflict fail-safe, scoped invalid/lifecycle diagnostics, evidence-proven boundary narrowing, aligned validator, NULL payload preservation, disjoint append, Không BCH views/export, capture-time guard for preloaded Daily Photo materialization candidates. No migration, transfer redesign or workers/provider changes.
+- Final validation: full suite PASS 451 tests / 3060 assertions (29.09 s); reconciliation PASS 134 / 1194; targeted gap/17.2/performance PASS 63 / 552. Pint --test / PHP syntax 19 changed non-Blade PHP files PASS; both changed Blade pages render in authenticated tests; git diff --check PASS.
+- Performance: assigned and unassigned 2400-row/1200-case/2400-photo repair preserve 147 queries / 0 row/case/OCR model hydration; long gap cleanup 23 queries. Final full run: assigned 232.89 ms, unassigned 218.89 ms, long gap 71.95 ms; timing variation and earlier paired samples are reported in Phase 17.3; production 6k+/MySQL contention NOT VERIFIED; timeout unchanged.
+- Residuals: actual histories of machines 79/261, the five ambiguous rows and SGC/VT warnings absent; no fabricated data conclusions. T-XL0345 supplied source does not overlap, its mixed evidence remains manual. Protected rows/shared cases stay protected.
 
 ## NEXT ACTION
 
-User reviews the 11-file local diff and docs/phases/PHASE-17.3.md. Prioritize AssignmentTimelineState cross-period proof, empty-draft before-snapshot audits, ACTIVE/source-overlap validator fix and explicit rich-row fail-safe limitation. HEAD remains 6bb75f267015c94cadfd93abffb3624b10072d45; 8 modified + 3 new files, uncommitted. SGC-T-3C0466 and VT-3C0664 production timelines, real MySQL contention and production counts/runtime remain NOT VERIFIED. Do not start an automatic detachment follow-up or next Phase. All requested local checks PASS; STOP and await review. Publication/production verification plan is recorded but requires separate authorization.
+STOP for human review of the 24-file local Phase 17.3 continuation diff; implementation and mandatory local validation are complete. Reviewer should check nullable canonical scope/content invariants, boundary narrowing proof and production verification plan. Do not run any production step without a new explicit authorization. Do not start another Phase.
 
 ## Not authorized
 
-No commit, push, PR, merge, deploy, production Repair Links/batch/data repair/migration, worker/service restart or next Phase. No provider/model/prompt/schema/worker changes.
+No commit, push, PR, merge, deploy, production migration/Repair Links/batch/data changes, worker/service restart or next Phase. No provider/model/prompt/worker-contract/schema changes.

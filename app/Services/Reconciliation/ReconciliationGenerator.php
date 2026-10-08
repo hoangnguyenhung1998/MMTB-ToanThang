@@ -28,6 +28,10 @@ class ReconciliationGenerator
             throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
         }
 
+        if (! $appendOnly && $period->rows()->whereNull('machine_assignment_id')->exists()) {
+            throw new RuntimeException('Kỳ có dữ liệu Không BCH cần bảo toàn. Hãy dùng Bổ sung máy mới.');
+        }
+
         return DB::transaction(function () use ($period, $appendOnly) {
             $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
             if (! in_array($period->status, $appendOnly ? ['DRAFT', 'GENERATED', 'REVIEWING'] : ['DRAFT', 'GENERATED'], true)) {
@@ -36,6 +40,9 @@ class ReconciliationGenerator
             if (! $appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
                 || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
                 throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
+            }
+            if (! $appendOnly && $period->rows()->whereNull('machine_assignment_id')->exists()) {
+                throw new RuntimeException('Kỳ có dữ liệu Không BCH cần bảo toàn. Hãy dùng Bổ sung máy mới.');
             }
             if ($appendOnly) {
                 app(ReconciliationLinkRepairService::class)->repair($period, auth()->id());
@@ -143,8 +150,8 @@ class ReconciliationGenerator
                     ]);
 
                     $segmentStart = $this->segmentStart($assignmentStart, $date);
-                    // An orphaned legacy row must be repaired explicitly, not duplicated.
-                    if ($existing->has($key) || $existing->has($assignment->machine_id.'|'.$date->toDateString().'|')) {
+                    // Identity and segment occupancy are checked separately, including NULL gap rows.
+                    if ($existing->has($key)) {
                         continue;
                     }
                     $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);

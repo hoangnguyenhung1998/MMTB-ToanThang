@@ -374,8 +374,10 @@ class RetroactiveBchTransferTest extends TestCase
         $returned = $orphan->fresh()->getAttributes();
         $this->assertBusinessSame($before, $returned);
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame(['AFTER_RETURN_REQUIRES_REVIEW' => 1], $result['diagnostics']['reasons']);
-        $this->assertSame('AFTER_RETURN', $result['diagnostics']['rows'][0]['timeline_context']);
+        $this->assertSame([], $result['diagnostics']['reasons']);
+        $this->assertSame(0, $result['normalized_unassigned']);
+        $this->assertNull($orphan->fresh()->machine_assignment_id);
+        $this->assertNull($orphan->fresh()->command_center_id);
         $this->assertSame($returned, $orphan->fresh()->getAttributes());
         $this->assertSame(1, MachineAssignment::count());
     }
