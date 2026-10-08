@@ -31,10 +31,10 @@ class CanonicalAssignmentRelinker
 
     private array $logs = [];
 
-    public function __construct(array $machineIds, string $from, string $to)
+    public function __construct(array $machineIds, string $from, string $to, private readonly bool $lock = true)
     {
         $cases = DB::table('daily_photo_cases')->whereIn('machine_id', $machineIds)
-            ->whereBetween('work_date', [$from, $to.' 23:59:59'])->orderBy('id')->lockForUpdate()->get();
+            ->whereBetween('work_date', [$from, $to.' 23:59:59'])->orderBy('id')->when($lock, fn ($q) => $q->lockForUpdate())->get();
         foreach ($cases as $case) {
             $case->work_date = substr($case->work_date, 0, 10);
             $this->cases[$case->id] = $case;
@@ -45,15 +45,15 @@ class CanonicalAssignmentRelinker
         }
         $ids = $cases->pluck('id')->all();
         $this->members = DB::table('daily_photo_case_evidence')->whereIn('daily_photo_case_id', $ids)
-            ->lockForUpdate()->get()->groupBy('daily_photo_case_id')->all();
+            ->when($lock, fn ($q) => $q->lockForUpdate())->get()->groupBy('daily_photo_case_id')->all();
         $this->intervals = DB::table('daily_photo_intervals')->whereIn('daily_photo_case_id', $ids)
-            ->lockForUpdate()->get()->keyBy('id')->all();
+            ->when($lock, fn ($q) => $q->lockForUpdate())->get()->keyBy('id')->all();
         foreach ($this->intervals as $interval) {
             $this->caseIntervals[$interval->daily_photo_case_id][] = $interval;
         }
         $memberJobIds = collect($this->members)->flatten(1)->pluck('ocr_job_id')->all();
         $jobs = DB::table('ocr_jobs')->where(fn ($q) => $q->whereIn('daily_photo_case_id', $ids)->orWhereIn('id', $memberJobIds))
-            ->lockForUpdate()->get();
+            ->when($lock, fn ($q) => $q->lockForUpdate())->get();
         $this->jobs = $jobs->groupBy('daily_photo_case_id')->all();
         $this->jobsById = $jobs->keyBy('id')->all();
         // A shared canonical case cannot be moved underneath a locked historical period/row.
@@ -61,7 +61,7 @@ class CanonicalAssignmentRelinker
             ->whereIn('r.machine_id', $machineIds)->whereBetween('r.work_date', [$from, $to.' 23:59:59'])
             ->where(fn ($q) => $q->whereNotIn('p.status', ['DRAFT', 'GENERATED', 'REVIEWING'])
                 ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at'))
-            ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id'])->lockForUpdate()->get();
+            ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
         foreach ($protected as $row) {
             $this->blocked[$this->key($row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id)] = true;
         }
@@ -145,24 +145,36 @@ class CanonicalAssignmentRelinker
     /** Prove a stale all-day segment may be narrowed without moving any business time. */
     public function canNarrow(object $row, object $target): bool
     {
+        return $this->narrowingReason($row, $target) === null;
+    }
+
+    /** Same proof as Repair; explain why evidence cannot establish a unique safe segment. */
+    public function narrowingReason(object $row, object $target): ?string
+    {
         $ids = $this->byScope[$this->key($row->machine_id, $row->work_date, $row->machine_assignment_id)] ?? [];
-        if (count($ids) !== 1 || empty($this->caseIntervals[$ids[0]]) || ! empty(json_decode($row->journal_row_ids ?? '[]', true))) {
-            return false;
+        if (count($ids) !== 1) {
+            return 'NO_SINGLE_CANONICAL_CASE';
+        }
+        if (empty($this->caseIntervals[$ids[0]])) {
+            return 'CANONICAL_INTERVALS_MISSING';
+        }
+        if (! empty(json_decode($row->journal_row_ids ?? '[]', true))) {
+            return 'JOURNAL_TIME_NOT_PROVEN';
         }
         [$start, $end] = AssignmentInterval::segment($target, $row->work_date);
         $start = max($start, $row->segment_start ?: $start);
         $end = min($end, $row->segment_end ?: $end);
         if ($start >= $end) {
-            return false;
+            return 'NO_SEGMENT_INTERSECTION';
         }
         $bounded = (object) ['id' => $target->id, 'time_in' => $row->work_date.' '.$start, 'time_out' => $row->work_date.' '.$end];
-        if ($this->reason($row, $bounded) !== null) {
-            return false;
+        if ($reason = $this->reason($row, $bounded)) {
+            return $reason;
         }
         $knownJobs = array_map(fn ($job) => (int) $job->id, ($this->jobs[$ids[0]] ?? collect())->all());
         foreach (json_decode($row->daily_ocr_job_ids ?? '[]', true) ?? [] as $id) {
             if (! in_array((int) $id, $knownJobs, true)) {
-                return false;
+                return 'OCR_REFERENCE_OUTSIDE_CANONICAL_CASE';
             }
         }
         foreach (json_decode($row->daily_intervals ?? '[]', true) ?? [] as $part) {
@@ -172,11 +184,11 @@ class CanonicalAssignmentRelinker
                     $time = strlen($time) === 5 ? $time.':00' : $time;
                     if (! preg_match('/^\d{2}:\d{2}:\d{2}$/', $time) || $time < $start || $time > $end
                         || (! empty($part[$endpoint.'_date']) && $part[$endpoint.'_date'] !== $row->work_date)) {
-                        return false;
+                        return 'DAILY_INTERVAL_OUTSIDE_CANDIDATE_SEGMENT';
                     }
                 }
                 if (! empty($part[$endpoint.'_job_id']) && ! in_array((int) $part[$endpoint.'_job_id'], $knownJobs, true)) {
-                    return false;
+                    return 'DAILY_INTERVAL_OCR_REFERENCE_CONFLICT';
                 }
             }
         }
@@ -187,33 +199,37 @@ class CanonicalAssignmentRelinker
             $fields[] = $kind.'_end';
             if (! empty($row->{$kind.'_start'}) && ! empty($row->{$kind.'_end'})
                 && $row->{$kind.'_end'} <= $row->{$kind.'_start'}) {
-                return false; // Overnight/split data is never inferred or copied.
+                return 'OVERNIGHT_OR_NON_POSITIVE_ALLOCATION:'.$kind;
             }
         }
         foreach ($fields as $field) {
             if (! empty($row->$field)) {
                 $time = (string) $row->$field;
                 if (! preg_match('/^\d{2}:\d{2}(?::\d{2})?$/', $time)) {
-                    return false;
+                    return 'INVALID_TIME_FORMAT:'.$field;
                 }
                 $time = strlen($time) === 5 ? $time.':00' : $time;
                 if ($time < $start || $time > $end) {
-                    return false;
+                    return 'BUSINESS_TIME_OUTSIDE_CANDIDATE_SEGMENT:'.$field;
                 }
             }
         }
         foreach (['regular_minutes' => ['regular_morning', 'regular_afternoon'], 'lunch_minutes' => ['overtime_lunch'],
             'ot_afternoon_minutes' => ['overtime_afternoon'], 'ot_evening_minutes' => ['overtime_evening']] as $field => $kinds) {
             if (! empty($row->$field) && ! collect($kinds)->contains(fn ($kind) => ! empty($row->{$kind.'_start'}) && ! empty($row->{$kind.'_end'}))) {
-                return false;
+                return 'DURATION_WITHOUT_ALLOCATED_ENDPOINTS:'.$field;
             }
         }
 
-        return true;
+        return null;
     }
 
     public function plan(object $row, object $target, ?int $actor, string $now): void
     {
+        if (! $this->lock) {
+            throw new \LogicException('Read-only canonical snapshot cannot plan writes.');
+        }
+
         $sourceKey = $this->key($row->machine_id, $row->work_date, $row->machine_assignment_id);
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
         $sourceId = $this->byScope[$sourceKey][0] ?? null;
@@ -258,6 +274,10 @@ class CanonicalAssignmentRelinker
 
     public function flush(string $now): void
     {
+        if (! $this->lock) {
+            throw new \LogicException('Read-only canonical snapshot cannot flush writes.');
+        }
+
         foreach (array_chunk(array_keys($this->deletes), 250) as $ids) {
             DB::table('daily_photo_cases')->whereIn('id', $ids)->delete();
         }
