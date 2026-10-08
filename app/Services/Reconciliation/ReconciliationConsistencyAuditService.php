@@ -39,7 +39,7 @@ class ReconciliationConsistencyAuditService
         foreach ($rows->groupBy(fn ($r) => $r->machine_id.'|'.$r->work_date) as $siblings) {
             $first = $siblings->first();
             $day = $ownership->resolve($first->machine_id, $first->work_date);
-            $details = [];
+            $rowSummaries = [];
             foreach ($siblings as $row) {
                 $reason = $day['reason'];
                 if (! $reason && $day['assignment']) {
@@ -48,7 +48,7 @@ class ReconciliationConsistencyAuditService
                 if ($reason) {
                     $reasonCounts[$reason] = ($reasonCounts[$reason] ?? 0) + 1;
                 }
-                $details[] = ['row_id' => $row->id, 'assignment_id' => $row->machine_assignment_id,
+                $rowSummaries[] = ['row_id' => $row->id, 'assignment_id' => $row->machine_assignment_id,
                     'project_id' => $row->project_id, 'bch_id' => $row->command_center_id,
                     'protected' => $classifier->protected($row), 'canonical_reason' => $reason,
                     'canonical_needs_relink' => $day['assignment'] ? $canonical->needsRelink($row, $day['assignment']) : false,
@@ -77,7 +77,7 @@ class ReconciliationConsistencyAuditService
             $groups[] = ['machine_id' => $first->machine_id, 'work_date' => $first->work_date,
                 'owner_assignment_id' => $day['assignment']->id ?? null,
                 'owner_bch_id' => $day['assignment']->source_bch_id ?? null,
-                'ownership_reason' => $day['reason'], 'rows' => $details, 'pairs' => $pairs];
+                'ownership_reason' => $day['reason'], 'rows' => $rowSummaries, 'pairs' => $pairs];
         }
 
         $validation = app(ReconciliationExportValidator::class)->validate($period, $machineId, $from, $to);
