@@ -4,6 +4,7 @@ namespace App\Services\Reconciliation;
 
 use App\Models\ReconciliationRow;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /** Explicit shift types preserve the SOP: lunch/evening never top up HC. */
@@ -114,6 +115,12 @@ class DailyTimeAllocator
 
     public function assertWithinAssignment(array $allocation, ReconciliationRow $row, ?Collection $contextRows = null): void
     {
+        $unassignedTimeline = null;
+        if ($row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null) {
+            $unassignedTimeline = new AssignmentTimelineState(
+                DB::table('machine_assignments')->where('machine_id', $row->machine_id)->get(),
+                DB::table('machine_events')->where('machine_id', $row->machine_id)->get(['id', 'machine_id', 'type', 'occurred_at']));
+        }
         foreach (self::KINDS as $kind) {
             if (empty($allocation[$kind.'_start'])) {
                 continue;
@@ -124,7 +131,15 @@ class DailyTimeAllocator
                 $end->addDay();
             }
             $assignment = $row->assignment;
-            if (! $assignment || $start->lt($assignment->time_in) || ($assignment->time_out && $end->gt($assignment->time_out))) {
+            if ($unassignedTimeline) {
+                $context = $unassignedTimeline->context($row->machine_id, $start->toDateTimeString(), $end->toDateTimeString());
+                if (! AssignmentTimelineState::isUnassigned($context['timeline_context'])
+                    || ! $row->segment_start || ! $row->segment_end
+                    || $start->toDateTimeString() < $row->work_date->toDateString().' '.$row->segment_start
+                    || $end->toDateTimeString() > $row->work_date->toDateString().' '.$row->segment_end) {
+                    $this->invalid('Giờ Không BCH vượt khoảng không phân công đã được timeline xác minh.');
+                }
+            } elseif (! $assignment || $start->lt($assignment->time_in) || ($assignment->time_out && $end->gt($assignment->time_out))) {
                 $this->invalid('Giờ tính công vượt khoảng phân công máy/BCH. Kiểm tra ca và lịch điều chuyển.');
             }
         }

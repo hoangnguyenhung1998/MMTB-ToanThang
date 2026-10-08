@@ -109,6 +109,13 @@ class DailyPhotoSyncService
                         $contextByMachine = $this->cacheBatch($lockedPeriod, $rows);
 
                         foreach ($rows as $row) {
+                            // Relationship repair preserves historical payload; automatic sync must not clear it
+                            // when there is deliberately no assignment to allocate against.
+                            if ($row->machine_assignment_id === null) {
+                                $result['protected']++;
+
+                                continue;
+                            }
                             $preview = $this->preview($row, collect($contextByMachine->get($row->machine_id, [])));
                             if ($preview['case']?->status === DailyPhotoCase::STATUS_COLLECTING) {
                                 $result['partial']++;
@@ -210,7 +217,7 @@ class DailyPhotoSyncService
                     foreach ($cases as $case) {
                         $assignment = $case->machineAssignment;
                         $key = $case->machine_id.'|'.$case->work_date->toDateString().'|';
-                        $alreadyExists = $existing->has($key.$assignment?->id) || $existing->has($key.'*');
+                        $alreadyExists = $existing->has($key.$assignment?->id);
                         if (! $assignment || $alreadyExists) {
                             continue;
                         }

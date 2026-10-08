@@ -120,15 +120,25 @@ class UnassignedGapRecoveryTest extends TestCase
             $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
             $this->assertSame(0, $result['removed']);
             $this->assertSame(0, $result['repaired']);
-            $this->assertSame(['UNASSIGNED_GAP_REQUIRES_REVIEW' => 9, 'PROTECTED_RELATIONSHIP' => 1], $result['diagnostics']['reasons']);
+            $this->assertSame(['PROTECTED_RELATIONSHIP' => 1], $result['diagnostics']['reasons']);
+            $this->assertSame($run === 0 ? 9 : 0, $result['normalized_unassigned']);
             foreach ($snapshots as [$row, $payload]) {
-                $this->assertSame($payload, $row->fresh()->getAttributes());
+                if ($row->status === 'REVIEWED') {
+                    $this->assertSame($payload, $row->fresh()->getAttributes());
+                } else {
+                    $this->assertNormalized($row, $payload);
+                }
             }
             foreach ($tables as $table) {
-                $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson());
+                if (! in_array($table, ['daily_photo_cases', 'ocr_jobs'], true)) {
+                    $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson());
+                }
             }
         }
-        $this->assertSame(0, ActivityLog::where('event', 'like', 'reconciliation.%')->count());
+        $this->assertNull($case->fresh()->machine_assignment_id);
+        $this->assertSame('machine:'.$this->machine->id.'|date:2026-09-15|assignment:unresolved', $case->fresh()->scope_key);
+        $this->assertCanonicalPayloadPreserved($before);
+        $this->assertSame(9, ActivityLog::where('event', 'reconciliation.relationship_unassigned')->count());
     }
 
     public function test_same_day_one_minute_gap_and_contiguous_boundary_preserve_generator_and_validator(): void
@@ -152,7 +162,8 @@ class UnassignedGapRecoveryTest extends TestCase
                 $gap = $this->row($period, $a, '2026-09-16');
                 $gap->update(['work_date' => '2026-09-15', 'machine_assignment_id' => null, 'segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
                 // Unlinked rows cannot be silently deleted: no source provenance.
-                $this->assertSame('LEGITIMATE_UNASSIGNED_GAP', app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['rows'][0]['timeline_context']);
+                $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+                $this->assertNull($gap->fresh()->command_center_id);
             }
         }
     }
@@ -204,9 +215,9 @@ class UnassignedGapRecoveryTest extends TestCase
         $before = $rich->getAttributes();
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
         $this->assertSame(1, $result['removed']);
-        $this->assertSame(['AFTER_RETURN_REQUIRES_REVIEW' => 1], $result['diagnostics']['reasons']);
-        $this->assertSame('AFTER_RETURN', $result['diagnostics']['rows'][0]['timeline_context']);
-        $this->assertSame($before, $rich->fresh()->getAttributes());
+        $this->assertSame([], $result['diagnostics']['reasons']);
+        $this->assertSame(['AFTER_RETURN' => 1], $result['diagnostics']['unassigned_by_context']);
+        $this->assertNormalized($rich, $before);
     }
 
     public function test_true_source_overlap_remains_manual(): void
@@ -258,6 +269,8 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertSame(['LIFECYCLE_AMBIGUITY' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
         $this->assertSame($before, $row->fresh()->getAttributes());
         $this->assignment('2026-06-10', '2026-06-09');
+        $this->assertSame(['LIFECYCLE_AMBIGUITY' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $invalid = $this->assignment('2026-09-16', '2026-09-14');
         $this->assertSame(['INVALID_TIMELINE' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
         $this->assertSame($before, $row->fresh()->getAttributes());
     }
@@ -347,13 +360,363 @@ class UnassignedGapRecoveryTest extends TestCase
             $before[$table] = DB::table($table)->orderBy('id')->get()->toJson();
         }
         $result = app(\App\Services\Reconciliation\AssignmentRelationshipPropagation::class)->propagate($this->machine->id, '2026-08-08', '2026-10-13', null);
-        $this->assertSame('LEGITIMATE_UNASSIGNED_GAP', $result['canonical_review'][0]['reason']);
+        $this->assertSame([], $result['canonical_review']);
+        $this->assertSame(1, $result['canonical_unassigned']);
         app(DailyPhotoSyncService::class)->sync($period);
         $this->assertSame(0, $period->rows()->count());
         foreach ($tables as $table) {
-            $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson());
+            if (! in_array($table, ['daily_photo_cases', 'ocr_jobs'], true)) {
+                $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson());
+            }
         }
-        $this->assertSame($a->id, (int) $case->fresh()->machine_assignment_id);
+        $this->assertNull($case->fresh()->machine_assignment_id);
+        $this->assertCanonicalPayloadPreserved($before);
+    }
+
+    public function test_normalized_row_validates_and_daily_sync_preserves_every_payload_field(): void
+    {
+        config(['daily_photos.enabled' => true]);
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $case = $this->canonical($a, '2026-09-15');
+        $row = $this->row($period, $a, '2026-09-15', $this->payload());
+        $before = $row->getAttributes();
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $this->assertNormalized($row, $before);
+        $normalized = $row->fresh()->getAttributes();
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        app(DailyPhotoSyncService::class)->sync($period);
+        $this->assertSame($normalized, $row->fresh()->getAttributes());
+        $preview = app(DailyPhotoSyncService::class)->preview($row->fresh());
+        $this->assertSame($case->id, $preview['case']->id);
+        $this->assertCount(2, $preview['sources']);
+        app(\App\Services\Reconciliation\DailyTimeAllocator::class)->assertWithinAssignment(
+            ['regular_morning_start' => '07:30', 'regular_morning_end' => '11:00', 'regular_minutes' => 210], $row->fresh());
+        $weekly = ReconciliationPeriod::create(['name' => 'Valid locked NULL scope', 'type' => 'WEEKLY', 'date_from' => '2026-09-14', 'date_to' => '2026-09-20', 'status' => 'CONFIRMED']);
+        $weekly->rows()->create(['machine_id' => $this->machine->id, 'work_date' => '2026-09-15',
+            'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'status' => 'CONFIRMED']);
+        $logs = ActivityLog::count();
+        $again = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $this->assertSame(0, $again['unresolved']);
+        $this->assertSame(1, $again['diagnostics']['already_correct']);
+        $this->assertSame($logs, ActivityLog::count());
+        $this->assertSame($normalized, $row->fresh()->getAttributes());
+
+    }
+
+    public function test_unassigned_normalization_audit_failure_rolls_back_row_case_and_ocr(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $this->canonical($a, '2026-09-15');
+        $row = $this->row($period, $a, '2026-09-15', $this->payload());
+        foreach (['reconciliation_rows', 'daily_photo_cases', 'ocr_jobs', 'daily_photo_case_evidence', 'daily_photo_intervals'] as $table) {
+            $before[$table] = DB::table($table)->get()->toJson();
+        }
+        DB::unprepared("CREATE TRIGGER reject_unassigned BEFORE INSERT ON activity_logs WHEN NEW.event = 'reconciliation.relationship_unassigned' BEGIN SELECT RAISE(ABORT, 'unassigned audit failure'); END");
+        try {
+            app(ReconciliationLinkRepairService::class)->repair($period, null);
+            $this->fail('Expected audit rejection');
+        } catch (\Illuminate\Database\QueryException $error) {
+            $this->assertStringContainsString('unassigned audit failure', $error->getMessage());
+        }
+        foreach ($before as $table => $snapshot) {
+            $this->assertSame($snapshot, DB::table($table)->get()->toJson());
+        }
+    }
+
+    public function test_populated_unassigned_case_conflict_and_locked_shared_case_preserve_all_data(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $this->canonical($a, '2026-09-15');
+        $row = $this->row($period, $a, '2026-09-15', $this->payload());
+        DailyPhotoCase::create(['machine_id' => $this->machine->id, 'work_date' => '2026-09-15',
+            'scope_key' => 'machine:'.$this->machine->id.'|date:2026-09-15|assignment:unresolved', 'status' => 'READY', 'source_version' => 'v1']);
+        $before = $row->getAttributes();
+        $this->assertSame(['CANONICAL_CONFLICT' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, $row->fresh()->getAttributes());
+        DailyPhotoCase::whereNull('machine_assignment_id')->delete();
+        $weekly = ReconciliationPeriod::create(['name' => 'Locked weekly', 'type' => 'WEEKLY', 'date_from' => '2026-09-14', 'date_to' => '2026-09-20', 'status' => 'CONFIRMED']);
+        $this->row($weekly, $a, '2026-09-15', ['status' => 'CONFIRMED']);
+        $weekly->update(['status' => 'CONFIRMED']);
+        $this->assertSame(['PROTECTED_CANONICAL_RELATIONSHIP' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, $row->fresh()->getAttributes());
+    }
+
+    public function test_invalid_timeline_is_scoped_and_reports_assignment_ids_and_times(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $this->assignment('2026-06-10', '2026-06-09');
+        $this->assignment('2026-07-01', '2026-07-01');
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', $this->payload());
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $invalid = $this->assignment('2026-09-16', '2026-09-14');
+        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $issue = $result['diagnostics']['rows'][0]['assignment_issues'][0];
+        $this->assertSame($invalid->id, $issue['assignment_id']);
+        $this->assertSame('REVERSED_INTERVAL', $issue['issue']);
+        $this->assertSame('2026-09-16 00:00:00', $issue['time_in']);
+        $this->assertFalse(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+    }
+
+    public function test_before_handover_and_after_last_assignment_are_unassigned_and_missing_history_is_not(): void
+    {
+        $a = $this->assignment('2026-09-10', '2026-09-20');
+        $period = $this->period('2026-09');
+        foreach (['2026-09-05', '2026-09-25'] as $date) {
+            $this->row($period, $a, $date, ['notes' => 'preserve']);
+        }
+        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $this->assertSame(2, $result['normalized_unassigned']);
+        $this->assertSame(['BEFORE_FIRST_HANDOVER' => 1, 'AFTER_LAST_ASSIGNMENT' => 1], $result['diagnostics']['unassigned_by_context']);
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        MachineAssignment::where('machine_id', $this->machine->id)->delete();
+        $this->assertFalse(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+    }
+
+    public function test_unassigned_target_identity_conflict_is_manual_and_idempotent(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'source']);
+        $period->rows()->create(['machine_id' => $this->machine->id, 'work_date' => '2026-09-15',
+            'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'status' => 'DRAFT', 'notes' => 'distinct target']);
+        $before = DB::table('reconciliation_rows')->get()->toJson();
+        for ($i = 0; $i < 2; $i++) {
+            $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+            $this->assertSame(['UNASSIGNED_IDENTITY_CONFLICT' => 1], $result['diagnostics']['reasons']);
+            $this->assertSame(0, $result['normalized_unassigned']);
+            $this->assertSame($before, DB::table('reconciliation_rows')->get()->toJson());
+        }
+        $this->assertFalse(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        $row->update(['machine_assignment_id' => null, 'project_id' => null, 'command_center_id' => null]);
+        $before = DB::table('reconciliation_rows')->get()->toJson();
+        $this->assertSame(['UNASSIGNED_IDENTITY_CONFLICT' => 2], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, DB::table('reconciliation_rows')->get()->toJson());
+    }
+
+    public function test_null_gap_identity_does_not_block_disjoint_assignment_append_or_disappear_from_exports(): void
+    {
+        $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
+        $b = $this->assignment('2026-09-15 15:01:00', null, $this->b);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'one minute gap', 'segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        app(ReconciliationGenerator::class)->generate($period, true);
+        $this->assertSame(3, $period->rows()->whereDate('work_date', '2026-09-15')->count());
+        $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->where('machine_assignment_id', $b->id)->count());
+        app(ReconciliationGenerator::class)->generate($period, true);
+        $this->assertSame(3, $period->rows()->whereDate('work_date', '2026-09-15')->count());
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        $sheets = (new \App\Exports\ReconciliationBchWorkbookExport($period))->sheets();
+        $this->assertCount(3, $sheets);
+        $this->assertContains('Không BCH', array_map(fn ($sheet) => $sheet->title(), $sheets));
+        $this->expectException(\RuntimeException::class);
+        app(ReconciliationGenerator::class)->generate($period, false);
+    }
+
+    public function test_repair_flash_period_and_row_views_render_unassigned_and_diagnostics(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'view preservation']);
+        $this->actingAs(\App\Models\User::factory()->create());
+        $this->post(route('reconciliation-periods.repair-links', $period))->assertSessionHas('success', fn ($message) => str_contains($message, 'chuẩn hóa 1 dòng Không BCH'));
+        $this->get(route('reconciliation-periods.show', $period))->assertOk()->assertSee('Không BCH')->assertSee('LEGITIMATE_UNASSIGNED_GAP');
+        $this->get(route('reconciliation-rows.show', [$period, $row]))->assertOk()->assertSee('Không BCH')->assertSee('view preservation');
+    }
+
+    public function test_return_event_conflicting_with_live_assignment_remains_manual(): void
+    {
+        $a = $this->assignment('2026-01-01');
+        MachineEvent::create(['machine_id' => $this->machine->id, 'type' => 'RETURN', 'occurred_at' => '2026-09-10']);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'conflicting timeline']);
+        $before = $row->getAttributes();
+        $this->assertSame(['LIFECYCLE_ASSIGNMENT_CONFLICT' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, $row->fresh()->getAttributes());
+        $this->assertStringContainsString('LIFECYCLE_ASSIGNMENT_CONFLICT', app(ReconciliationExportValidator::class)->validate($period)['blocking']->implode(' '));
+    }
+
+    public function test_unassigned_hours_crossing_assignment_boundary_remain_preserved_but_block_validation(): void
+    {
+        $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
+        $this->assignment('2026-09-15 15:01:00', null, $this->b);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['segment_start' => '15:00:00', 'segment_end' => '15:01:00',
+            'overtime_afternoon_start' => '15:00:00', 'overtime_afternoon_end' => '17:00:00', 'ot_afternoon_minutes' => 120]);
+        $before = $row->getAttributes();
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $this->assertNormalized($row, $before);
+        $this->assertStringContainsString('UNASSIGNED_TIME_CONFLICT', app(ReconciliationExportValidator::class)->validate($period)['blocking']->implode(' '));
+    }
+
+    public function test_empty_canonical_case_is_unassigned_with_stable_identity_and_populated_conflicts_are_preserved(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $case = DailyPhotoCase::create(['machine_id' => $this->machine->id, 'machine_assignment_id' => $a->id,
+            'work_date' => '2026-09-15', 'scope_key' => 'assignment:'.$a->id.'|date:2026-09-15', 'status' => 'COLLECTING', 'source_version' => 'v1']);
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'rich manual row']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $this->assertNull($case->fresh()->machine_assignment_id);
+        $this->assertSame(1, DailyPhotoCase::count());
+        $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        DailyPhotoCase::create(['machine_id' => $this->machine->id, 'machine_assignment_id' => $a->id,
+            'work_date' => '2026-09-16', 'scope_key' => 'assignment:'.$a->id.'|date:2026-09-16', 'status' => 'COLLECTING', 'source_version' => 'v1']);
+        DailyPhotoCase::create(['machine_id' => $this->machine->id, 'work_date' => '2026-09-16',
+            'scope_key' => 'machine:'.$this->machine->id.'|date:2026-09-16|assignment:unresolved', 'status' => 'READY', 'source_version' => 'v1']);
+        $this->row($period, $a, '2026-09-16', ['notes' => 'distinct conflict']);
+        $before = DB::table('daily_photo_cases')->orderBy('id')->get()->toJson();
+        $this->assertSame(['CANONICAL_CONFLICT' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, DB::table('daily_photo_cases')->orderBy('id')->get()->toJson());
+
+    }
+
+    public function test_canonical_wholly_before_or_after_boundary_narrows_only_relationship_segment(): void
+    {
+        foreach ([['07:30:00', '11:00:00'], ['17:30:00', '18:00:00']] as $i => $times) {
+            $day = 15 + $i;
+            $date = '2026-09-'.$day;
+            $a = $this->assignment('2026-08-01', $date.' 15:00:00');
+            $b = $this->assignment($date.' 15:01:00', null, $this->b);
+            $period = $this->period('2026-09');
+            $case = $this->canonical($a, $date, $times);
+            $row = $this->row($period, $a, $date, ['notes' => 'HUMAN preserved', 'manually_edited_at' => now(),
+                'ocr_check_in_raw' => $times[0], 'ocr_check_out_raw' => $times[1]]);
+            $before = $row->getAttributes();
+            $photos = DB::table('daily_photo_case_evidence')->get()->toJson();
+            $intervals = DB::table('daily_photo_intervals')->get()->toJson();
+            $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+            $this->assertSame(1, $result['repaired']);
+            $this->assertSame(0, $result['unresolved']);
+            $after = $row->fresh()->getAttributes();
+            foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'segment_start', 'segment_end', 'updated_at'] as $field) {
+                unset($before[$field], $after[$field]);
+            }
+            $this->assertSame($before, $after);
+            $this->assertSame($i === 0 ? $a->id : $b->id, $row->fresh()->machine_assignment_id);
+            $this->assertSame($i === 0 ? '15:00:00' : '23:59:59', $row->fresh()->segment_end);
+            $this->assertSame($photos, DB::table('daily_photo_case_evidence')->get()->toJson());
+            $this->assertSame($intervals, DB::table('daily_photo_intervals')->get()->toJson());
+            $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
+            // Isolate the next independent timeline without changing evidence fixtures.
+            DB::table('reconciliation_rows')->delete();
+            DB::table('daily_photo_cases')->delete();
+            DB::table('machine_assignments')->delete();
+        }
+    }
+
+    public function test_canonical_inside_one_assignment_does_not_narrow_conflicting_hours(): void
+    {
+        $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
+        $this->assignment('2026-09-15 15:01:00', null, $this->b);
+        $period = $this->period('2026-09');
+        $this->canonical($a, '2026-09-15', ['17:30:00', '18:00:00']);
+        $row = $this->row($period, $a, '2026-09-15', ['regular_minutes' => 210, 'regular_morning_start' => '07:30:00', 'regular_morning_end' => '11:00:00']);
+        $before = $row->getAttributes();
+        $this->assertSame(['SEGMENT_AMBIGUITY' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame($before, $row->fresh()->getAttributes());
+    }
+
+    public function test_return_inside_proven_full_period_gap_does_not_invent_a_bch_requirement(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        MachineEvent::create(['machine_id' => $this->machine->id, 'type' => 'RETURN', 'occurred_at' => '2026-09-15 12:00:00']);
+        $period = $this->period('2026-09');
+        $row = $this->row($period, $a, '2026-09-15', ['notes' => 'already unassigned on both sides of return']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $this->assertNull($row->fresh()->command_center_id);
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+    }
+
+    public function test_preloaded_date_candidates_cannot_rematerialize_gap_photos_into_future_bch(): void
+    {
+        config(['daily_photos.enabled' => true]);
+        foreach ([['2026-09-10 15:00:00', '2026-09-11 15:00:00', '2026-09-11', '11:18'],
+            ['2026-09-15 15:00:00', '2026-09-15 15:01:00', '2026-09-15', '15:00:30']] as $i => [$out, $in, $date, $time]) {
+            $a = $this->assignment('2026-08-01', $out);
+            $b = $this->assignment($in, null, $this->b);
+            $message = ZaloMessage::create(['group_id' => 'gap', 'message_id' => 'preloaded-'.$i, 'sender_id' => 'gap',
+                'sent_at' => $date.' '.$time, 'received_at' => $date.' '.$time, 'status' => 'STORED']);
+            $attachment = ZaloAttachment::create(['zalo_message_id' => $message->id, 'attachment_index' => 0,
+                'storage_disk' => 'local', 'storage_path' => 'test/preloaded-'.$i.'.jpg', 'sha256' => hash('sha256', 'preloaded-'.$i),
+                'mime_type' => 'image/jpeg', 'byte_size' => 10, 'status' => 'STORED']);
+            $job = OcrJob::create(['zalo_attachment_id' => $attachment->id, 'document_type' => 'DAILY_TIMEMARK',
+                'status' => 'COMPLETED', 'machine_id' => $this->machine->id, 'extracted_date' => $date, 'extracted_time' => $time]);
+            $before = DB::table('machine_assignments')->get()->toJson();
+            $case = app(\App\Services\DailyPhotoCaseService::class)->materialize($job, false, collect([$a, $b]));
+            $this->assertNull($case->machine_assignment_id);
+            $this->assertSame('machine:'.$this->machine->id.'|date:'.$date.'|assignment:unresolved', $case->scope_key);
+            $this->assertSame('NOT_FOUND', $job->fresh()->daily_metadata['case_materialization']['assignment_resolution_status']);
+            $this->assertSame($attachment->id, $job->fresh()->zalo_attachment_id);
+            $this->assertSame($before, DB::table('machine_assignments')->get()->toJson());
+            MachineAssignment::where('machine_id', $this->machine->id)->delete();
+        }
+    }
+
+    public function test_unassignment_preserves_opaque_ocr_rescue_json_object_and_list_types(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-08');
+        $this->assignment('2026-10-13', null, $this->b);
+        $period = $this->period('2026-09');
+        $case = $this->canonical($a, '2026-09-15');
+        $this->row($period, $a, '2026-09-15', ['notes' => 'opaque metadata preservation']);
+        $job = DB::table('ocr_jobs')->where('daily_photo_case_id', $case->id)->first();
+        $metadata = json_decode($job->daily_metadata);
+        $metadata->ai_rescue_payload = (object) ['result' => (object) [], 'reference' => 'unchanged', 'items' => []];
+        DB::table('ocr_jobs')->where('id', $job->id)->update(['daily_metadata' => json_encode($metadata)]);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $after = json_decode(DB::table('ocr_jobs')->where('id', $job->id)->value('daily_metadata'));
+        $this->assertEquals($metadata->ai_rescue_payload, $after->ai_rescue_payload);
+        $this->assertInstanceOf(\stdClass::class, $after->ai_rescue_payload->result);
+        $this->assertSame([], $after->ai_rescue_payload->items);
+        $this->assertSame($metadata->ocr_content, $after->ocr_content);
+    }
+
+    private function assertCanonicalPayloadPreserved(array $before): void
+    {
+        foreach (['daily_photo_cases', 'ocr_jobs'] as $table) {
+            $old = json_decode($before[$table], true);
+            $new = json_decode(DB::table($table)->orderBy('id')->get()->toJson(), true);
+            foreach ($old as $i => $record) {
+                if ($table === 'daily_photo_cases') {
+                    unset($old[$i]['machine_assignment_id'], $new[$i]['machine_assignment_id'], $old[$i]['scope_key'], $new[$i]['scope_key']);
+                } else {
+                    $a = json_decode($old[$i]['daily_metadata'], true);
+                    $b = json_decode($new[$i]['daily_metadata'], true);
+                    foreach (['machine_assignment_id', 'scope_key', 'candidate_machine_assignment_ids'] as $field) {
+                        unset($a['case_materialization'][$field], $b['case_materialization'][$field]);
+                        $old[$i]['daily_metadata'] = json_encode($a);
+                        $new[$i]['daily_metadata'] = json_encode($b);
+                    }
+                }
+                unset($old[$i]['updated_at'], $new[$i]['updated_at']);
+            }
+            $this->assertSame($old, $new);
+        }
+    }
+
+    private function assertNormalized(ReconciliationRow $row, array $before): void
+    {
+        $after = $row->fresh()->getAttributes();
+        foreach (['machine_assignment_id', 'project_id', 'command_center_id'] as $field) {
+            $this->assertNull($after[$field]);
+            unset($before[$field], $after[$field]);
+        }
+        unset($before['updated_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
     }
 
     private function payload(): array

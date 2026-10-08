@@ -43,25 +43,82 @@ class ReconciliationExportValidator
         $ids = $unassignedMachines->pluck('id')->merge($rows->pluck('machine_id'))->unique();
         $history = $ids->isEmpty() ? collect() : DB::table('machine_assignments')->whereIn('machine_id', $ids)->get();
         $events = $ids->isEmpty() ? collect() : DB::table('machine_events')->whereIn('machine_id', $ids)
-            ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->get(['machine_id', 'type', 'occurred_at']);
+            ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->get(['id', 'machine_id', 'type', 'occurred_at']);
         $states = new AssignmentTimelineState($history, $events);
-        $timeline = $history->filter(fn ($a) => (string) $a->time_in <= $period->date_to->toDateString().' 23:59:59'
+        $timeline = $history->filter(fn ($a) => AssignmentInterval::valid($a) && (string) $a->time_in <= $period->date_to->toDateString().' 23:59:59'
             && (! $a->time_out || (string) $a->time_out >= $period->date_from->toDateString().' 00:00:00'))->groupBy('machine_id');
         foreach ($unassignedMachines as $machine) {
             $context = $states->context($machine->id, $period->date_from->toDateString().' 00:00:00', $period->date_to->toDateString().' 23:59:59');
-            if ($context['timeline_context'] !== 'LEGITIMATE_UNASSIGNED_GAP') {
+            if (! AssignmentTimelineState::isUnassigned($context['timeline_context'])) {
                 $blocking->push($machine->asset_code.': đang hoạt động nhưng không có lịch phân BCH trong kỳ. ['.$context['timeline_context'].']');
             }
         }
 
+        $referenceIds = $rows->whereNull('machine_assignment_id')->flatMap(fn ($row) => collect($row->daily_intervals ?? [])->pluck('canonical_interval_id'))->filter()->unique();
+        $canonicalReferences = $referenceIds->isEmpty() ? collect() : DB::table('daily_photo_intervals as i')
+            ->join('daily_photo_cases as c', 'c.id', '=', 'i.daily_photo_case_id')->whereIn('i.id', $referenceIds)
+            ->get(['i.id', 'i.raw_start_at', 'i.raw_end_at', 'c.machine_id', 'c.work_date', 'c.machine_assignment_id'])->keyBy('id');
+        $jobIds = $rows->whereNull('machine_assignment_id')->flatMap(fn ($row) => $row->daily_ocr_job_ids ?? [])->unique();
+        $jobReferences = $jobIds->isEmpty() ? collect() : DB::table('ocr_jobs as j')
+            ->leftJoin('daily_photo_cases as c', 'c.id', '=', 'j.daily_photo_case_id')->whereIn('j.id', $jobIds)
+            ->get(['j.id', 'j.machine_id', 'j.extracted_date', 'c.machine_assignment_id'])->keyBy('id');
         foreach ($rows as $row) {
             $label = $this->rowLabel($row);
             $context = $states->context($row->machine_id, $row->work_date->toDateString().' '.($row->segment_start ?: '00:00:00'),
                 $row->work_date->toDateString().' '.($row->segment_end ?: '23:59:59'));
-            if (in_array($context['timeline_context'], ['LEGITIMATE_UNASSIGNED_GAP', 'AFTER_RETURN'], true)) {
+            $unassigned = AssignmentTimelineState::isUnassigned($context['timeline_context']);
+            $normalized = $unassigned && $row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null;
+            if ($normalized) {
+                foreach (DailyTimeAllocator::KINDS as $kind) {
+                    if (! $row->{$kind.'_start'} || ! $row->{$kind.'_end'}) {
+                        continue;
+                    }
+                    $start = $row->work_date->copy()->setTimeFromTimeString($row->{$kind.'_start'});
+                    $end = $row->work_date->copy()->setTimeFromTimeString($row->{$kind.'_end'});
+                    if ($kind === 'overtime_evening' && $end->lt($start)) {
+                        $end->addDay();
+                    }
+                    $hours = $states->context($row->machine_id, $start->toDateTimeString(), $end->toDateTimeString());
+                    if ($start->gte($end) || ! AssignmentTimelineState::isUnassigned($hours['timeline_context'])
+                        || $start->toDateTimeString() < $row->work_date->toDateString().' '.$row->segment_start
+                        || $end->toDateTimeString() > $row->work_date->toDateString().' '.$row->segment_end) {
+                        $blocking->push($label.': UNASSIGNED_TIME_CONFLICT '.$kind);
+                    }
+                }
+                foreach ($row->daily_ocr_job_ids ?? [] as $id) {
+                    $reference = $jobReferences->get($id);
+                    if ($reference && ($reference->machine_assignment_id !== null
+                        || ($reference->machine_id !== null && (int) $reference->machine_id !== (int) $row->machine_id)
+                        || ($reference->extracted_date !== null && substr($reference->extracted_date, 0, 10) !== $row->work_date->toDateString()))) {
+                        $blocking->push($label.': CANONICAL_OCR_CONFLICT #'.$id);
+                    }
+                }
+                foreach ($row->daily_intervals ?? [] as $part) {
+                    if ($id = $part['canonical_interval_id'] ?? null) {
+                        $reference = $canonicalReferences->get($id);
+                        if (! $reference || $reference->machine_assignment_id !== null || (int) $reference->machine_id !== (int) $row->machine_id
+                            || substr($reference->work_date, 0, 10) !== $row->work_date->toDateString()
+                            || $reference->raw_start_at < $row->work_date->toDateString().' '.$row->segment_start
+                            || $reference->raw_end_at > $row->work_date->toDateString().' '.$row->segment_end
+                            || ! AssignmentTimelineState::isUnassigned($states->context($row->machine_id, $reference->raw_start_at, $reference->raw_end_at)['timeline_context'])) {
+                            $blocking->push($label.': CANONICAL_CONFLICT #'.$id);
+                        }
+                    }
+                }
+            }
+            if ($unassigned && ! $normalized) {
                 $blocking->push($label.': dữ liệu ngoài lịch BCH có hiệu lực; giữ evidence để kiểm tra. ['.$context['timeline_context'].']');
             }
 
+            if (in_array($context['timeline_context'], ['LIFECYCLE_AMBIGUITY', 'LIFECYCLE_ASSIGNMENT_CONFLICT'], true)) {
+                $blocking->push($label.': '.$context['timeline_context'].' event #'.($context['last_lifecycle_event_id'] ?? '').' '.$context['last_lifecycle_at']);
+            }
+            if ($context['timeline_context'] === 'INVALID_TIMELINE') {
+                $blocking->push($label.': INVALID_TIMELINE '.json_encode($context['assignment_issues']));
+            }
+            if ($row->machine_assignment_id === null && ! $normalized) {
+                $blocking->push($label.': relationship Không BCH chưa được timeline chứng minh. ['.$context['timeline_context'].']');
+            }
             if ($row->machine_assignment_id && ! $row->assignment) {
                 $blocking->push($label.': không tìm thấy phân công nguồn.');
             }
@@ -87,15 +144,16 @@ class ReconciliationExportValidator
                     [$otherStart, $otherEnd] = AssignmentInterval::segment($candidate, $date->toDateString());
                     if (AssignmentInterval::overlaps(max($start, $row->segment_start ?: $start), min($end, $row->segment_end ?: $end), $otherStart, $otherEnd)) {
                         $warnings->push($label.': phân công nguồn thực sự chồng lấn, cần kiểm tra.');
+                        $blocking->push($label.': TRUE_ASSIGNMENT_OVERLAP #'.$assignment->id.' / #'.$candidate->id);
                     }
                 }
             }
 
-            if (! $row->command_center_id) {
+            if (! $row->command_center_id && ! $normalized) {
                 $blocking->push($label.': chưa xác định BCH.');
             }
 
-            if (! $row->project_id) {
+            if (! $row->project_id && ! $normalized) {
                 $blocking->push($label.': chưa xác định dự án.');
             }
 
@@ -130,7 +188,7 @@ class ReconciliationExportValidator
                         $first = $dailyRows[$left];
                         $second = $dailyRows[$right];
 
-                        if ($first->command_center_id === $second->command_center_id) {
+                        if ($first->command_center_id !== null && $first->command_center_id === $second->command_center_id) {
                             continue;
                         }
 

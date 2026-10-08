@@ -7,6 +7,14 @@
             Đã kiểm tra {{ $diagnostics['total_inspected'] }} dòng;
             {{ $diagnostics['already_correct'] }} dòng có liên kết đúng;
             {{ $diagnostics['repairable_stale_links'] }} dòng stale được chuyển sang phân công đúng.
+            Không BCH: {{ array_sum($diagnostics['unassigned_by_context'] ?? []) }} dòng.
+            @foreach ($diagnostics['unassigned_by_context'] ?? [] as $context => $count)
+                {{ $context }}: {{ $count }}.
+            @endforeach
+            Nháp rỗng đã dọn: {{ array_sum($diagnostics['cleaned_by_context'] ?? []) }}.
+            @foreach ($diagnostics['cleaned_by_context'] ?? [] as $context => $count)
+                {{ $context }}: {{ $count }}.
+            @endforeach
             @if ($diagnostics['reasons'])
                 @php
                     $repairReasons = [
@@ -18,6 +26,7 @@
                         'CANONICAL_TIME_CONFLICT' => 'Thời điểm ảnh/pairing nằm ngoài phân công đích',
                         'UNASSIGNED_GAP_REQUIRES_REVIEW' => 'Dữ liệu trong khoảng không BCH hợp lệ; giữ nguyên để review',
                         'AFTER_RETURN_REQUIRES_REVIEW' => 'Dữ liệu sau trả máy; giữ nguyên để review',
+                        'LIFECYCLE_ASSIGNMENT_CONFLICT' => 'Assignment còn hiệu lực sau event trả máy; cần xác minh nguồn',
                         'LIFECYCLE_AMBIGUITY' => 'Khoảng giờ giao boundary bàn giao/trả máy; cần review',
                         'NO_EFFECTIVE_ASSIGNMENT' => 'Không có phân công có hiệu lực',
                         'TRUE_ASSIGNMENT_OVERLAP' => 'Phân công thực sự chồng lấn',
@@ -27,6 +36,7 @@
                         'TARGET_DUPLICATE' => 'Đã có dòng tại phân công đích',
                         'DUPLICATE_PAYLOAD_CONFLICT' => 'Hai dòng có dữ liệu khác nhau; cần kiểm tra thủ công',
                         'PROTECTED_DUPLICATE' => 'Dòng đích đã duyệt/xác nhận; không tự merge',
+                        'UNASSIGNED_IDENTITY_CONFLICT' => 'Đã có dữ liệu Không BCH khác cùng máy/ngày; không tự merge',
                         'INVALID_TIMELINE' => 'Lịch phân công không hợp lệ',
                         'INVALID_SEGMENT' => 'Khoảng giờ thiếu hoặc không hợp lệ',
                     ];
@@ -49,6 +59,12 @@
                                         · {{ $diagnostic['last_lifecycle_event'] }}: {{ $diagnostic['last_lifecycle_at'] }}
                                     @endif
                                 @endif
+                                @foreach ($diagnostic['assignment_issues'] ?? [] as $issue)
+                                    · Assignment #{{ $issue['assignment_id'] }} {{ $issue['issue'] }}: {{ $issue['time_in'] }} → {{ $issue['time_out'] }}
+                                @endforeach
+                                @foreach ($diagnostic['effective_assignments'] ?? [] as $assignment)
+                                    · Assignment #{{ $assignment['id'] }} {{ $assignment['time_in'] }} → {{ $assignment['time_out'] ?? 'open' }}
+                                @endforeach
                             </li>
                         @endforeach
                     </ul>
@@ -563,7 +579,7 @@
                         <tr>
                             <td class="sticky-col bg-white">{{ $row->work_date?->format('d/m/Y') ?? '—' }}</td>
                             <td class="fw-semibold">{{ $machineCode }}</td>
-                            @if (!request('command_center_id'))<td>{{ $row->commandCenter?->name ?? '—' }}</td>@endif
+                            @if (!request('command_center_id'))<td>{{ $row->commandCenter?->name ?? ($row->machine_assignment_id === null && $row->project_id === null ? 'Không BCH' : '—') }}</td>@endif
                             <td>{{ $fmtTime($row->gps_check_in) }}</td>
                             <td>{{ $fmtTime($row->gps_check_out) }}</td>
                             <td class="fw-semibold">{{ $fmtMinutes($calculation['gps_minutes'] ?? null) }}</td>
