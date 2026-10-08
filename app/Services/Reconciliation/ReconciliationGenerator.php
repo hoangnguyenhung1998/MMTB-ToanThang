@@ -24,7 +24,8 @@ class ReconciliationGenerator
         }
 
         if (! $appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
-            || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
+            || $period->rows()->where(fn ($q) => $q->whereNotNull('manually_edited_at')->orWhereNotNull('reviewed_at')->orWhereNotNull('confirmed_at')
+                ->orWhereNotNull('reviewed_by')->orWhereNotNull('confirmed_by'))->exists())) {
             throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
         }
 
@@ -38,12 +39,19 @@ class ReconciliationGenerator
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể bổ sung dữ liệu.');
             }
             if (! $appendOnly && ($period->rows()->whereIn('status', ['REVIEWED', 'CONFIRMED'])->exists()
-                || $period->rows()->whereNotNull('manually_edited_at')->exists())) {
+                || $period->rows()->where(fn ($q) => $q->whereNotNull('manually_edited_at')->orWhereNotNull('reviewed_at')->orWhereNotNull('confirmed_at')
+                    ->orWhereNotNull('reviewed_by')->orWhereNotNull('confirmed_by'))->exists())) {
                 throw new RuntimeException('Kỳ có dữ liệu sửa tay hoặc đã duyệt. Hãy dùng Bổ sung máy mới.');
             }
             if (! $appendOnly && $period->rows()->whereNull('machine_assignment_id')->exists()) {
                 throw new RuntimeException('Kỳ có dữ liệu Không BCH cần bảo toàn. Hãy dùng Bổ sung máy mới.');
             }
+            // Replaying generation preserves already materialized payload and row identities.
+            // Reviewed/manual/NULL guards above still require the explicit append workflow.
+            if (! $appendOnly && $period->rows()->exists()) {
+                $appendOnly = true;
+            }
+            app(DayBasedCanonicalRepairService::class)->repair($period);
             if ($appendOnly) {
                 app(ReconciliationLinkRepairService::class)->repair($period, auth()->id());
             }
@@ -71,7 +79,8 @@ class ReconciliationGenerator
                 ->get();
 
             $machineIds = $assignments->pluck('machine_id')->unique()->values();
-            $ownership = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
+            $ownershipHistory = MachineAssignment::query()->with('bchResolution')->whereIn('machine_id', $machineIds)->get();
+            $ownership = new DayBasedAssignmentOwnership($ownershipHistory, DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
 
             $journalRows = $machineIds->isEmpty()
                 ? collect()

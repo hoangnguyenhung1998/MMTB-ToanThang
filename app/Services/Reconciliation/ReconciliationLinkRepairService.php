@@ -37,7 +37,8 @@ class ReconciliationLinkRepairService
                     ->leftJoin('command_centers as b', 'b.id', '=', DB::raw('COALESCE(a.command_center_id, r.command_center_id)'))
                     ->whereIn('a.machine_id', $ids)
                     ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->lockForUpdate()->get()->keyBy('id');
-                $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'));
+                $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'), true,
+                    $rows->flatMap(fn ($r) => json_decode($r->daily_ocr_job_ids ?? '[]', true) ?? [])->unique()->all());
                 $firstDate = $rows->min('work_date');
                 $lastDate = $rows->max('work_date');
                 $ownership = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')
@@ -245,7 +246,17 @@ class ReconciliationLinkRepairService
                         continue;
                     }
                     if (! $changes) {
-                        $result['diagnostics']['already_correct']++;
+                        if ($canonical->needsRelink($row, $source)) {
+                            if ($protected) {
+                                $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP');
+
+                                continue;
+                            }
+                            $canonical->plan($row, $source, $userId, $now);
+                            $result['repaired']++;
+                        } else {
+                            $result['diagnostics']['already_correct']++;
+                        }
 
                         continue;
                     }
@@ -261,7 +272,7 @@ class ReconciliationLinkRepairService
                         $sourceEmpty = ! $human && ! $this->hasData($row) && ! $canonical->hasContent($row);
                         $targetEmpty = $targetRow && ! $this->protected($targetRow) && ! $targetRow->manually_edited_at
                             && ! $this->hasData($targetRow) && ! $canonical->hasContent($targetRow);
-                        if ($targetRow && $this->protected($targetRow)) {
+                        if ($targetRow && ($this->protected($targetRow) || $canonical->protectedEvidence($row) || $canonical->protectedEvidence($targetRow))) {
                             $this->unresolved($result, $row, 'PROTECTED_DUPLICATE');
 
                             continue;
@@ -277,6 +288,24 @@ class ReconciliationLinkRepairService
                             $deletes[$row->id] = $row->id;
                             unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
                             $logs[] = $this->mergeLog($row, $targetRow, $targetRow, $source, $userId, $sourceEmpty ? 'EMPTY_SOURCE' : 'IDENTICAL_PAYLOAD', $now);
+                            $result['removed']++;
+
+                            continue;
+                        } elseif ($targetRow && ($proof = (new ReconciliationDuplicateClassifier)->compare($row, $targetRow))['category'] === 'C') {
+                            if ($reason = $canonical->reason($targetRow, $source)) {
+                                $this->unresolved($result, $row, $reason);
+
+                                continue;
+                            }
+                            $canonical->plan($row, $source, $userId, $now);
+                            $targetBefore = clone $targetRow;
+                            $updates[$targetRow->id] = array_replace($updates[$targetRow->id] ?? [], $proof['changes']);
+                            foreach ($proof['changes'] as $field => $value) {
+                                $targetRow->$field = $value;
+                            }
+                            $deletes[$row->id] = $row->id;
+                            unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
+                            $logs[] = $this->mergeLog($row, $targetBefore, $targetRow, $source, $userId, 'COMPLEMENTARY_DESCRIPTORS', $now);
                             $result['removed']++;
 
                             continue;
@@ -321,6 +350,26 @@ class ReconciliationLinkRepairService
 
             return $result;
         });
+    }
+
+    /** Local/restored-copy dry run: exercise actual guarded writes inside a rolled-back savepoint. */
+    public function preview(ReconciliationPeriod $period, ?int $machineId = null, ?string $from = null, ?string $to = null): array
+    {
+        $level = DB::transactionLevel();
+        DB::beginTransaction();
+        try {
+            $count = fn () => DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
+                ->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
+                ->when($from, fn ($q) => $q->whereDate('work_date', '>=', $from))
+                ->when($to, fn ($q) => $q->whereDate('work_date', '<=', $to))->count();
+            $before = $count();
+            $result = $this->repair($period, null, $machineId, $from, $to);
+            $after = $count();
+
+            return ['dry_run' => true, 'period_id' => $period->id, 'before_rows' => $before, 'after_rows' => $after, 'repair' => $result];
+        } finally {
+            DB::rollBack($level);
+        }
     }
 
     private function sourceForDay(object $row, $assignments, array $effective): ?object
@@ -370,7 +419,7 @@ class ReconciliationLinkRepairService
 
     private function protected(object $row): bool
     {
-        return $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null || $row->manually_edited_at !== null;
+        return (new ReconciliationDuplicateClassifier)->protected($row);
     }
 
     private function hasCanonicalReference(object $row): bool
@@ -471,33 +520,12 @@ class ReconciliationLinkRepairService
 
     private function hasData(object $row): bool
     {
-        $ignored = ['id', 'reconciliation_period_id', 'machine_id', 'machine_assignment_id', 'work_date',
-            'project_id', 'command_center_id', 'segment_start', 'segment_end', 'status', 'created_at', 'updated_at',
-            'change_type', 'change_note', 'evidence_status'];
-        foreach ((array) $row as $field => $value) {
-            if (in_array($field, $ignored, true) || $value === null || $value === '' || $value === 0 || $value === '0' || $value === '[]') {
-                continue;
-            }
-
-            return true;
-        }
-
-        return $row->evidence_status !== 'NO_EVIDENCE';
+        return (new ReconciliationDuplicateClassifier)->hasEvidence($row);
     }
 
     private function payloadKey(object $row): string
     {
-        $payload = (array) $row;
-        foreach (['id', 'machine_assignment_id', 'project_id', 'command_center_id', 'created_at', 'updated_at'] as $field) {
-            unset($payload[$field]);
-        }
-        foreach (['daily_ocr_job_ids', 'journal_row_ids'] as $field) {
-            $ids = json_decode($payload[$field] ?? '[]', true) ?? [];
-            sort($ids);
-            $payload[$field] = $ids;
-        }
-
-        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+        return (new ReconciliationDuplicateClassifier)->key($row);
     }
 
     private function log(object $row, ?int $userId, string $event, string $description, array $properties, string $now): array

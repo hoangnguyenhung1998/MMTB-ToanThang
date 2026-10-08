@@ -1,4 +1,61 @@
-# Phase 17.3 — Final fix: day-based BCH assignment
+# Phase 17.3 — Cross-period reconciliation consistency continuation
+
+- Updated: 2026-10-08. Verified new baseline `45c211e`, branch `phase17-3-final-fix`, tracking same origin branch. Initially clean tracked tree; unrelated `tatus --short` is preserved. PR #63 deployment and September success are owner-reported, not independently accessed.
+- Scope: extend the same day-based owner to legacy materialized canonical and reconciliation data and new periods. No hardcoded month/machine/row fix; no migration, worker/parser/provider or raw timestamp change. No Git writes or production actions. Local verification in progress; production NOT VERIFIED.
+- This continuation supersedes the earlier blanket rejection of all distinct automatic populated payloads only for proven missing independent descriptors. Distinct time/evidence bundles and all HUMAN/manual/reviewed/locked conflicts remain review-only. Earlier day-based acceptance and the 126 normalized NULL baseline remain in force.
+
+## Cross-period audit: proven code causes and evidence limits
+
+| Proven cause at baseline `45c211e` | Resulting behavior | Local correction |
+|---|---|---|
+| Repair payload hash excluded links and created/updated timestamps, but included `segment_start/end`, `change_type/note`, evidence status/summary/signature/sync timestamp | Identical business hours/reference payload with different derived metadata is rejected as `DUPLICATE_PAYLOAD_CONFLICT` | Shared conservative classifier separates technical fields; business payload/reference equality still required, with before snapshots retained in merge audit |
+| Canonical relinker finds source only by row assignment; an already-correct owner row cannot find a populated case under the predecessor | Repair can report already correct while Validator reports canonical OCR/interval conflicts | Index populated canonical by machine/date; adopt only the sole non-conflicting legacy case; inspect canonical even when row links need no update |
+| Resync candidates exclude jobs with evidence membership | Existing stale canonical is never rematerialized by replay | Relationship-only canonical preflight before Generator/Sync; membership/pairing/OCR content are retained, no re-OCR or pairing recomputation for existing cases |
+| Generator originally takes only assignments physically intersecting the period | Its resolver sees a different historical snapshot from Repair/Validator | Generator uses full machine history for ownership, retaining intersecting assignments only for enumeration |
+| Default Generator replay deletes automatic existing rows before rebuilding | Historical materialized hours/row IDs can be replaced | Existing automatic periods replay via guarded append/Repair; manual/review/NULL guards still require explicit append |
+| Sync can process the correct-owner sibling while another populated stale sibling remains | Automatic allocation can obscure the unresolved conflict | Skip entire unresolved duplicate day using the existing batch row context; no hours or references cleared |
+
+These defects are reproduced by local regression tests. They do **not** prove that all 794 production rows have technical-only differences. The reported 7149/6355/794, 3084 blockers and 108 warnings have no October JSON/snapshot available in this session. Requested its local path; exact classification remains NOT VERIFIED. The September JSON is not substituted as October evidence.
+
+| Requested production sample | Evidence needed / current result |
+|---|---|
+| Machine #30, Oct1–31 | Scoped audit of every sibling field/link/reference; a 31-day technical-only regression reproduces and fixes that class, but the actual machine payload is NOT VERIFIED |
+| T-XL0034, Oct1–3 | Row job/interval references versus actual canonical assignment and daily owner; already-correct row / stale canonical class reproduced locally; actual IDs/content NOT VERIFIED |
+| T-XL0345, Oct2–3, ME HLX/ME 10 | Materialized row overlap versus actual source timestamps; do not infer a valid transfer or equivalent payload from BCH names; NOT VERIFIED |
+| T-XL0296, Cơ Hữu/TĐXD 02.1 | Same timeline/row/canonical/payload proof; actual source or materialized overlap NOT VERIFIED |
+
+794 is a reported count of Repair conflict rows. 3084 is a reported count of Validator **unique diagnostic messages**, which can include multiple OCR references, intervals, ownership mismatch and sibling-pair diagnostics for one row/day. Neither number establishes deletable row count. A month is not an isolation boundary for canonical identity: canonical cases pre-exist period generation, while row links/payload are period snapshots. September repair cannot normalize October's legacy snapshots; new periods must inspect existing canonical too. Whether each October row was created before or after PR #63 requires its created/updated/audit evidence; current Generator and ensureRows occupancy guards already prevent inserting a second occupied machine/day. No claim that current Sync created all duplicates is supported.
+
+## Classification and safe consolidation
+
+- **A:** automatic empty row, no payload or scoped canonical evidence; delete only with a valid sole daily owner and successful canonical/protection checks. Preserve rich source identity when target is empty. NULL gaps are not bulk-cleaned.
+- **B:** equal business payload/reference sets; link/segment/derived cache differences do not count as distinct evidence. Preserve the survivor's full business values and source/target before snapshots. No hour addition or photo movement.
+- **C:** both automatic, shared compatible time/evidence bundles, differences restricted to missing `driver_id`, `work_location`, `work_content`, `explanation`, `notes`. Fill missing descriptors only, without concatenating conflicting text or choosing between two values. Source and target before snapshots remain in the same atomic audit.
+- **D:** conflicting hours/endpoints/GPS/reference sets, unknown field differences, distinct populated canonical cases, HUMAN/manual/reviewed/locked/shared protected evidence, invalid/overlapping timeline or missing daily owner. Preserve records and require review. Complementary time/photo bundles with insufficient proof also stay D; no inference or general photo union is implemented.
+
+`ReconciliationDuplicateClassifier` is pure and shared by Repair and SELECT-only audit. `CanonicalAssignmentRelinker` loads referenced jobs in batches even outside the selected day window so wrong-day OCR is a real conflict. It also guards reviewer/confirmation IDs and HUMAN evidence before deduplication. `DayBasedCanonicalRepairService` repairs existing days before row creation, respecting period/date/BCH scope and shared protection. `DailyPhotoCaseService`, existing Resync membership selection, pairing, `AssignmentRelationshipPropagation` and historical BCH recovery reuse the strengthened relinker/day ownership; no timestamp/history rewrite is introduced. Validator retains real blockers and supports an optional read-only machine/date scope without changing normal export behavior. UI/export continue to consume the same stored row/canonical links.
+
+## Tools, data impact and rollout
+
+`reconciliation:consistency-audit PERIOD [--machine=ID] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD]` is SELECT-only, no locks or mutation; outputs field names, IDs, hashes and scoped blocker categories, never notes/raw OCR/photos/credentials. Pair A/B/C/D counts are **pairs**, not 794 Repair rows. Map actual conflict row IDs from the production Repair report to those pairs before counting dispositions. Protected/canonical checks can downgrade a payload candidate to D. An A/B/C audit label is not authorization to change production.
+
+`reconciliation:repair-preview PERIOD` is a separate restored-copy dry-run: actual guarded Repair inside a savepoint with **all writes rolled back**, returning period-limited before/after row counts and diagnostics. It refuses APP_ENV=production. It is not the SELECT-only audit, and must never run against a production-connected local environment. No automatic apply or blind rollback command was added. Actual cleanup remains the reviewed existing period Repair workflow; full consistent backup/restore is the data rollback procedure, including shared canonical/jobs and audits. Code rollback alone cannot undo row consolidation. See runbook for backup, review, later deployment and verification; none executed here.
+
+No new schema/data migration. MySQL concurrency/unique constraint/release verification and exact October distribution remain pending. Remaining HUMAN review includes every D category, source anomalies, protected references and incompatible independent canonical cases. The earlier 126 normalized genuine gaps must retain row IDs, NULL links and payload through every replay.
+
+## Cross-period validation checkpoint
+
+- Final reviewed full suite: `php artisan test --compact` **487 tests / 3703 assertions PASS**, 70.25 s, APP_ENV=testing, SQLite `:memory:`. This includes the September five-case/126 NULL replay and all new cross-period regressions.
+- Final shared/large-volume targeted run: `--filter='CrossPeriodConsistencyTest|DayBasedBchOwnershipTest|ReconciliationRepairPerformanceTest|DailyPhotoLargeVolumeReconciliationTest'` **30 tests / 528 assertions PASS**, 20.27 s. Initial focused baseline extensions also passed 71/962; final evidence is the reviewed full run.
+- New 12-test `CrossPeriodConsistencyTest` covers 31-day October materialized B duplicates with hour preservation, correct-owner/stale canonical, new-period Sync/Generator/Resync, next month replay, C descriptor fill with before audit, D hours/manual/HUMAN/shared locked records, SELECT-only redacted scoped audit, invalid command scope, dry-run full rollback, wrong-day OCR conflict, default Generator row/hour identity preservation, empty duplicates and identical photo references.
+- Performance: canonical 2400-row/1200-case relink remains **147 queries / zero row models**; ordinary 2400-row Repair **24 queries / zero row models** (one batched referenced-job check added); long-gap 1200-row Repair **23 queries / zero row models**; historical residual audit 1200 rows **18 queries**, same as one row. Daily Photo 500-row budget is **150 SELECTs**, increased only for the batched canonical preflight, with duplicate detection reusing existing context. No per-row history queries.
+- Pint `--test` and PHP syntax: **13 changed/new PHP files PASS**. Diff check final result recorded in checkpoint. Full schema rebuilt by test migrations; **no new migration**.
+- An old gap-preservation fixture used fake job IDs 1/2 that accidentally belonged to a different actual canonical date. Fake payload-only IDs moved to 9001/9002, and a separate actual wrong-day OCR regression proves such mismatches remain blocked. Protection assertions compare unordered reason maps because dependency processing order is not a business contract.
+- Status: **LOCAL IMPLEMENTATION VERIFIED / STOP FOR OWNER REVIEW**. Exact October 794/3084 classification, requested production sample outcomes, MySQL data replay/concurrency and deployment verification remain **NOT VERIFIED** pending October evidence. No commits/remote/production actions. Earlier results below describe the previous PR #63 implementation only.
+
+---
+
+## Previous PR #63 day-based implementation record
 
 - Updated: 2026-10-08. Existing Phase 17.3 only; dependencies 17.1 / 17.2 and canonical Daily Photo 16.10.1–16.10.4.
 - Baseline VERIFIED locally: clean `phase17-3-final-fix`, HEAD `e997531`, tracking `origin/phase17-3-final-fix`. PR #62 deployment is owner-reported; this session has not accessed production.
