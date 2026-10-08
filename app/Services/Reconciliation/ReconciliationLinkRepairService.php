@@ -9,14 +9,41 @@ use RuntimeException;
 
 class ReconciliationLinkRepairService
 {
-    public function repair(ReconciliationPeriod $period, ?int $userId, ?int $machineId = null, ?string $from = null, ?string $to = null): array
+    public function repair(ReconciliationPeriod $period, ?int $userId, ?int $machineId = null, ?string $from = null, ?string $to = null, ?string $runId = null): array
     {
-        return DB::transaction(function () use ($period, $userId, $machineId, $from, $to) {
-            $period = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
+        return $this->run($period, $userId, $machineId, $from, $to, true, true, $runId);
+    }
+
+    /** SELECT-only simulation of the same decisions; never calls flush or a writer. */
+    public function plan(ReconciliationPeriod $period, ?int $machineId = null, ?string $from = null, ?string $to = null): array
+    {
+        return $this->run($period, null, $machineId, $from, $to, false);
+    }
+
+    public function repairExpected(ReconciliationPeriod $period, int $actor, string $expected, string $runId): array
+    {
+        return DB::transaction(function () use ($period, $actor, $expected, $runId) {
+            $plan = $this->run($period, null, null, null, null, false, true);
+            if (! hash_equals($expected, $plan['snapshot_fingerprint'])) {
+                throw new \DomainException('STALE_PREVIEW');
+            }
+
+            return $this->repair($period, $actor, runId: $runId);
+        });
+    }
+
+    private function run(ReconciliationPeriod $period, ?int $userId, ?int $machineId, ?string $from, ?string $to, bool $apply, bool $lock = false, ?string $runId = null): array
+    {
+        return DB::transaction(function () use ($period, $userId, $machineId, $from, $to, $apply, $lock, $runId) {
+            $period = ReconciliationPeriod::query()->when($lock, fn ($q) => $q->lockForUpdate())->findOrFail($period->id);
             if (! in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true)) {
                 throw new RuntimeException('Kỳ đã chốt hoặc khóa, không thể sửa liên kết.');
             }
             $result = ['repaired' => 0, 'normalized_unassigned' => 0, 'removed' => 0, 'unresolved' => 0];
+            $result['duplicates_consolidated'] = 0;
+            $result['actions'] = [];
+            $fingerprint = hash_init('sha256');
+            hash_update($fingerprint, serialize(ReconciliationRepairSnapshot::normalize([$period->getAttributes(), $machineId, $from, $to])));
             $result['diagnostics'] = ['total_inspected' => 0, 'already_correct' => 0, 'repairable_stale_links' => 0,
                 'unassigned_by_context' => [], 'cleaned_by_context' => [], 'reasons' => [], 'rows' => []];
             // Keep all siblings of each machine together, including stale rows.
@@ -25,7 +52,7 @@ class ReconciliationLinkRepairService
                 ->distinct()->orderBy('machine_id')->pluck('machine_id')->all();
             foreach (array_chunk($machineIds, 100) as $ids) {
                 $rows = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
-                    ->whereIn('machine_id', $ids)->orderBy('id')->lockForUpdate()->get();
+                    ->whereIn('machine_id', $ids)->orderBy('id')->when($lock, fn ($q) => $q->lockForUpdate())->get();
                 // SQLite legacy fixtures may store a DATE as midnight datetime;
                 // normalize once, also preserving MySQL DATE semantics.
                 foreach ($rows as $row) {
@@ -36,14 +63,16 @@ class ReconciliationLinkRepairService
                     ->leftJoin('projects as p', 'p.id', '=', 'a.project_id')
                     ->leftJoin('command_centers as b', 'b.id', '=', DB::raw('COALESCE(a.command_center_id, r.command_center_id)'))
                     ->whereIn('a.machine_id', $ids)
-                    ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->lockForUpdate()->get()->keyBy('id');
-                $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'), true,
-                    $rows->flatMap(fn ($r) => json_decode($r->daily_ocr_job_ids ?? '[]', true) ?? [])->unique()->all());
+                    ->select(['a.*', 'p.id as source_project_id', 'b.id as source_bch_id'])->when($lock, fn ($q) => $q->lockForUpdate())->get()->keyBy('id');
+                $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'), $lock,
+                    $rows->flatMap(fn ($r) => json_decode($r->daily_ocr_job_ids ?? '[]', true) ?? [])->unique()->all(), ! $apply);
                 $firstDate = $rows->min('work_date');
                 $lastDate = $rows->max('work_date');
-                $ownership = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')
+                $events = DB::table('machine_events')
                     ->whereIn('machine_id', $ids)->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])
-                    ->lockForUpdate()->get(['id', 'machine_id', 'type', 'occurred_at']));
+                    ->when($lock, fn ($q) => $q->lockForUpdate())->get(['id', 'machine_id', 'type', 'occurred_at']);
+                hash_update($fingerprint, serialize(ReconciliationRepairSnapshot::normalize([$rows->all(), $assignments->all(), $events->all(), $canonical->snapshotFingerprint()])));
+                $ownership = new DayBasedAssignmentOwnership($assignments, $events);
                 $contexts = [];
                 $effective = [];
                 $targets = [];
@@ -69,12 +98,15 @@ class ReconciliationLinkRepairService
                 $logs = [];
                 $now = now()->toDateTimeString();
                 $rowIndex = $rows->keyBy('id');
+                $inspected = [];
+                $alreadyCorrectRows = [];
                 [$orderedRows, $writeLevels] = $this->orderByDependencies($rows->all(), $assignments, $effective, $targets, $canonical);
                 foreach ($orderedRows as $row) {
                     if (isset($deletes[$row->id]) || ($from && $row->work_date < substr($from, 0, 10)) || ($to && $row->work_date > substr($to, 0, 10))) {
                         continue;
                     }
                     $result['diagnostics']['total_inspected']++;
+                    $inspected[$row->id] = true;
                     $source = $this->sourceForDay($row, $assignments, $effective);
                     $key = $row->machine_id.'|'.$row->work_date;
                     $exact = $source && (int) $source->machine_id === (int) $row->machine_id
@@ -105,6 +137,7 @@ class ReconciliationLinkRepairService
                                 $this->unresolved($result, $row, $reason, $context);
                             } else {
                                 $result['diagnostics']['already_correct']++;
+                                $alreadyCorrectRows[$row->id] = true;
                             }
                         } elseif ($protected) {
                             $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP', $context);
@@ -256,6 +289,7 @@ class ReconciliationLinkRepairService
                             $result['repaired']++;
                         } else {
                             $result['diagnostics']['already_correct']++;
+                            $alreadyCorrectRows[$row->id] = true;
                         }
 
                         continue;
@@ -277,7 +311,28 @@ class ReconciliationLinkRepairService
 
                             continue;
                         }
-                        if ($targetEmpty) {
+                        $classifier = new ReconciliationDuplicateClassifier;
+                        $sourceRich = $targetRow && $classifier->sameSourceShadow($row, $targetRow)
+                            && $canonical->provesSameOcrSource($row, $targetRow, $source);
+                        $targetRich = $targetRow && $classifier->sameSourceShadow($targetRow, $row)
+                            && $canonical->provesSameOcrSource($targetRow, $row, $source);
+                        if ($sourceRich || $targetRich) {
+                            $survivor = $sourceRich ? $row : $targetRow;
+                            $redundant = $sourceRich ? $targetRow : $row;
+                            $canonical->plan($row, $source, $userId, $now);
+                            $deletes[$redundant->id] = $redundant->id;
+                            unset($targets[$key.'|'.$redundant->machine_assignment_id][$redundant->id]);
+                            $logs[] = $this->mergeLog($row, $targetRow, $survivor, $source, $userId, 'SAME_OCR_REDUNDANT_SHADOW', $now);
+                            $result['removed']++;
+                            if ($targetRich) {
+                                continue;
+                            }
+                            if (! isset($inspected[$targetRow->id])) {
+                                $result['diagnostics']['total_inspected']++;
+                            } elseif (isset($alreadyCorrectRows[$targetRow->id])) {
+                                $result['diagnostics']['already_correct']--;
+                            }
+                        } elseif ($targetEmpty) {
                             $deletes[$targetRow->id] = $targetRow->id;
                             $logs[] = $this->mergeLog($row, $targetRow, $row, $source, $userId, 'EMPTY_TARGET', $now);
                             unset($targets[$key.'|'.$source->id][$targetRow->id]);
@@ -328,11 +383,22 @@ class ReconciliationLinkRepairService
                         ['old' => $old, 'new' => $changes, 'machine_assignment_id' => $source->id], $now);
                     $result['repaired']++;
                 }
+                foreach ($logs as $log) {
+                    $properties = json_decode($log['properties'], true, 512, JSON_THROW_ON_ERROR);
+                    if (isset($properties['survivor_row_id'])) {
+                        $result['duplicates_consolidated']++;
+                        $result['actions'][] = ['row_ids' => [$properties['source']['id'], $properties['target']['id']],
+                            'survivor_row_id' => $properties['survivor_row_id'], 'reason' => $properties['action']];
+                    }
+                }
+                if (! $apply) {
+                    continue;
+                }
                 // Delete proven empty/identical duplicates before claiming their unique identity.
                 foreach (array_chunk(array_values($deletes), 250) as $chunk) {
                     DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)->whereIn('id', $chunk)->delete();
                 }
-                $canonical->flush($now);
+                $canonical->flush($now, $runId);
                 // Release occupied identities before a dependent row claims them.
                 // CASE updates within each wave have no dependency on one another.
                 $waves = [];
@@ -344,9 +410,19 @@ class ReconciliationLinkRepairService
                     $this->writeUpdates($period->id, $wave, $now);
                 }
                 foreach (array_chunk($logs, 100) as $chunk) {
+                    if ($runId !== null) {
+                        foreach ($chunk as &$log) {
+                            $properties = json_decode($log['properties'], true, 512, JSON_THROW_ON_ERROR);
+                            $log['properties'] = json_encode($properties + ['repair_run_id' => $runId], JSON_THROW_ON_ERROR);
+                        }
+                        unset($log);
+                    }
                     DB::table('activity_logs')->insert($chunk);
                 }
             }
+
+            $result['snapshot_fingerprint'] = hash_final($fingerprint);
+            $result['protected'] = collect($result['diagnostics']['reasons'])->filter(fn ($count, $reason) => str_starts_with($reason, 'PROTECTED_'))->sum();
 
             return $result;
         });
@@ -537,11 +613,22 @@ class ReconciliationLinkRepairService
 
     private function mergeLog(object $sourceRow, object $targetRow, object $survivor, object $assignment, ?int $actor, string $reason, string $now): array
     {
+        $proof = [];
+        if ($reason === 'SAME_OCR_REDUNDANT_SHADOW') {
+            $proof = ['proof' => ['same_ocr_job_ids' => json_decode($survivor->daily_ocr_job_ids, true, 512, JSON_THROW_ON_ERROR),
+                'canonical_interval_ids' => array_column(json_decode($survivor->daily_intervals, true, 512, JSON_THROW_ON_ERROR), 'canonical_interval_id'),
+                'preserve_whole_row' => true, 'owner_assignment_id' => $assignment->id],
+                'survivor_before' => (array) $survivor,
+                'survivor_after' => $survivor->id === $sourceRow->id ? array_replace((array) $survivor,
+                    ['machine_assignment_id' => $assignment->id, 'project_id' => $assignment->source_project_id,
+                        'command_center_id' => $assignment->source_bch_id, 'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'updated_at' => $now]) : (array) $survivor];
+        }
+
         return $this->log($survivor, $actor, $survivor->id === $targetRow->id ? 'reconciliation.stale_row_removed' : 'reconciliation.rows_merged',
             'Dọn duplicate an toàn; giữ identity chứa dữ liệu và lịch sử trước merge.',
             ['action' => $reason, 'source' => (array) $sourceRow, 'target' => (array) $targetRow,
                 'survivor_row_id' => $survivor->id, 'target_assignment_id' => $assignment->id,
-                'target_command_center_id' => $assignment->source_bch_id, 'work_date' => $sourceRow->work_date], $now);
+                'target_command_center_id' => $assignment->source_bch_id, 'work_date' => $sourceRow->work_date] + $proof, $now);
     }
 
     private function writeUpdates(int $periodId, array $updates, string $now): void

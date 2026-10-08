@@ -62,8 +62,9 @@ class MachineBatchController extends Controller
             ]);
         }
 
+        $propagations = [];
         try {
-            DB::transaction(function () use ($machines, $validated) {
+            DB::transaction(function () use ($machines, $validated, &$propagations) {
                 $machines = Machine::query()->whereKey($machines->modelKeys())->orderBy('id')->lockForUpdate()->get();
                 foreach ($machines as $machine) {
                     if (!in_array($machine->status, ['WAIT_HANDOVER', 'RETURNED'], true)) {
@@ -92,14 +93,15 @@ class MachineBatchController extends Controller
                     ]);
 
                     $machine->update(['status' => 'HANDED_OVER']);
-                    app(AssignmentRelationshipPropagation::class)->propagate($machine->id, $validated['time_in'], null, auth()->id());
+                    $propagations[$machine->id] = app(AssignmentRelationshipPropagation::class)->propagate($machine->id, $validated['time_in'], null, auth()->id());
                 }
             }, 3);
         } catch (BusinessRuleException $exception) {
             return back()->withErrors(['error' => $exception->getMessage()])->withInput();
         }
 
-        return back()->with('success', 'Đã bàn giao ' . $machines->count() . ' máy (không biên bản).');
+        return back()->with('success', 'Đã bàn giao ' . $machines->count() . ' máy (không biên bản).')
+            ->with('batch_propagation', $propagations);
     }
 
     public function activate(Request $request): RedirectResponse

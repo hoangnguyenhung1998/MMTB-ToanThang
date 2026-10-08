@@ -6,6 +6,8 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
+Schedule::command('reconciliation:process-repair-runs --limit=1')->everyMinute()->withoutOverlapping();
+
 Artisan::command('machine-intakes:enqueue-ocr {reference?} {--retry}', function (?string $reference = null) {
     $query = MachineIntakeCase::query()->with('documents')->when($reference, fn ($q) => $q->where('reference', $reference));
     $count = 0;

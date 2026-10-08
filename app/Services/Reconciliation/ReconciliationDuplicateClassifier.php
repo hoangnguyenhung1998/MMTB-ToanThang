@@ -5,6 +5,40 @@ namespace App\Services\Reconciliation;
 /** Pure, conservative payload proof shared by Repair and the read-only audit. */
 class ReconciliationDuplicateClassifier
 {
+    private const ALLOCATION = ['rounded_check_in', 'rounded_check_out', 'confirmed_check_in', 'confirmed_check_out',
+        'regular_morning_start', 'regular_morning_end', 'regular_afternoon_start', 'regular_afternoon_end',
+        'overtime_lunch_start', 'overtime_lunch_end', 'overtime_afternoon_start', 'overtime_afternoon_end',
+        'overtime_evening_start', 'overtime_evening_end', 'regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'];
+
+    /** Whole-row preservation only: the other row has no independent interval/time bundle. */
+    public function sameSourceShadow(object $rich, object $shadow): bool
+    {
+        if ($this->protected($rich) || $this->protected($shadow)) {
+            return false;
+        }
+        $left = $this->payload($rich);
+        $right = $this->payload($shadow);
+        if (empty($left['daily_intervals']) || ! empty($right['daily_intervals']) || ! empty($left['journal_row_ids']) || ! empty($right['journal_row_ids'])) {
+            return false;
+        }
+        $a = array_intersect_key($left, array_flip(self::ALLOCATION));
+        $b = array_intersect_key($right, array_flip(self::ALLOCATION));
+        if ($a !== $b) {
+            if (array_filter($b, fn ($v) => $v !== null)) {
+                return false;
+            }
+            // Explicit zero is populated allocation, including on the rich side.
+            foreach ($a as $field => $value) {
+                if (in_array($value, [0, '0'], true) && ($b[$field] ?? null) !== $value) {
+                    return false;
+                }
+            }
+        }
+        $ignored = array_flip([...self::ALLOCATION, 'daily_intervals']);
+
+        return array_diff_key($left, $ignored) === array_diff_key($right, $ignored);
+    }
+
     public const TECHNICAL = ['id', 'machine_assignment_id', 'project_id', 'command_center_id',
         'segment_start', 'segment_end', 'created_at', 'updated_at', 'change_type', 'change_note',
         'evidence_signature', 'evidence_synced_at', 'evidence_summary', 'evidence_status'];

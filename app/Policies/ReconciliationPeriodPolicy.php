@@ -7,6 +7,16 @@ use App\Models\User;
 
 class ReconciliationPeriodPolicy
 {
+    public function repairAll(User $user): bool
+    {
+        return $this->viewAny($user);
+    }
+
+    public function repairLinks(User $user, ReconciliationPeriod $period): bool
+    {
+        return in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true);
+    }
+
     public function appendMachines(User $user, ReconciliationPeriod $period): bool
     {
         return $period->type === 'MONTHLY' && in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true);

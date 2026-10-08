@@ -20,6 +20,28 @@
         <div class="alert alert-success">{{ session('success') }}</div>
     @endif
 
+    @if ($propagations = session('batch_propagation'))
+        <div class="alert alert-info">
+            Kết quả cập nhật liên kết sau bàn giao:
+            @foreach ($propagations as $machineId => $propagation)
+                @foreach ($propagation['periods'] as $periodId => $result)
+                    <div>Máy #{{ $machineId }}, kỳ #{{ $periodId }}: sửa {{ $result['repaired'] }},
+                        Không BCH {{ $result['normalized_unassigned'] }}, loại {{ $result['removed'] }}, còn {{ $result['unresolved'] }} cần kiểm tra.
+                        @foreach ($result['diagnostics']['reasons'] as $reason => $count)
+                            {{ $reason }}: {{ $count }}.
+                        @endforeach
+                    </div>
+                @endforeach
+                @foreach ($propagation['protected_periods'] as $protected)
+                    <div>Máy #{{ $machineId }}, kỳ #{{ $protected['period_id'] }}: {{ $protected['reason'] }}.</div>
+                @endforeach
+                @foreach ($propagation['canonical_review'] as $review)
+                    <div>Máy #{{ $machineId }}, canonical #{{ $review['case_id'] }}: {{ $review['reason'] }}.</div>
+                @endforeach
+            @endforeach
+        </div>
+    @endif
+
     @if ($errors->any())
         <div class="alert alert-danger">
             <ul class="mb-0">

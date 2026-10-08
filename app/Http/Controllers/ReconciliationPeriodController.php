@@ -82,7 +82,7 @@ class ReconciliationPeriodController extends Controller
 
     public function repairLinks(ReconciliationPeriod $reconciliationPeriod, \App\Services\Reconciliation\ReconciliationLinkRepairService $repair): RedirectResponse
     {
-        Gate::authorize('appendMachines', $reconciliationPeriod);
+        Gate::authorize('repairLinks', $reconciliationPeriod);
         try {
             $result = $repair->repair($reconciliationPeriod, auth()->id());
 
