@@ -135,10 +135,10 @@ class CanonicalAssignmentRelinker
         }
         $sourceId = $sourceIds[0] ?? null;
         $targetId = $targetIds[0] ?? null;
-        if ($sourceId && $sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]) || isset($this->blockedCases[$sourceId]) || isset($this->blockedCases[$targetId]))) {
+        if ($sourceId && ($sourceId !== $targetId || $this->metadataNeedsRepair($sourceId, $target)) && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]) || isset($this->blockedCases[$sourceId]) || isset($this->blockedCases[$targetId]))) {
             return 'PROTECTED_CANONICAL_RELATIONSHIP';
         }
-        if ($sourceId && $sourceId !== $targetId) {
+        if ($sourceId && ($sourceId !== $targetId || $this->metadataNeedsRepair($sourceId, $target))) {
             foreach ($this->jobs[$sourceId] ?? [] as $job) {
                 if ($job->reviewed_at !== null || ($job->machine_resolution_method ?? null) === 'HUMAN' || ($job->ocr_final_source ?? null) === 'MANUAL' || in_array($job->review_status, ['APPROVED', 'CORRECTED'], true)) {
                     return 'PROTECTED_CANONICAL_RELATIONSHIP';
@@ -176,6 +176,9 @@ class CanonicalAssignmentRelinker
                 }
             }
             foreach ($this->jobs[$sourceId] ?? [] as $job) {
+                if ($job->extracted_date !== null && substr($job->extracted_date, 0, 10) !== $row->work_date) {
+                    return 'CANONICAL_OCR_CONFLICT';
+                }
                 if ($job->machine_id !== null && (int) $job->machine_id !== (int) $row->machine_id) {
                     return 'CANONICAL_CONFLICT';
                 }
@@ -298,7 +301,29 @@ class CanonicalAssignmentRelinker
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
         $sourceId = $this->byScope[$sourceKey][0] ?? null;
         $targetId = $this->byScope[$targetKey][0] ?? null;
-        if (! $sourceId || $sourceId === $targetId || ($target->id !== null && $this->emptyCase($sourceId) && $targetId && ! $this->emptyCase($targetId))) {
+        if ($sourceId && $sourceId === $targetId) {
+            if ($this->reason($row, $target) !== null) {
+                return;
+            }
+            foreach ($this->jobs[$sourceId] ?? [] as $job) {
+                $metadata = $this->repairedMetadata($job, $sourceId, $target);
+                if ($metadata !== null) {
+                    $this->jobUpdates[$job->id] = ['daily_metadata' => $metadata];
+                    $this->logs[] = ['user_id' => $actor, 'machine_id' => $row->machine_id,
+                        'subject_type' => \App\Models\OcrJob::class, 'subject_id' => $job->id,
+                        'event' => 'reconciliation.ocr_relationship_metadata_repaired',
+                        'description' => 'Repair OCR relationship metadata; preserve source evidence and pairing.',
+                        'properties' => json_encode(['case_id' => $sourceId, 'assignment_id' => $target->id,
+                            'old_relationship' => $this->relationshipForAudit($job->daily_metadata),
+                            'new_relationship' => $this->relationshipForAudit($metadata)], JSON_THROW_ON_ERROR),
+                        'occurred_at' => $now, 'created_at' => $now, 'updated_at' => $now];
+                    $job->daily_metadata = $metadata;
+                }
+            }
+
+            return;
+        }
+        if (! $sourceId || ($target->id !== null && $this->emptyCase($sourceId) && $targetId && ! $this->emptyCase($targetId))) {
             return;
         }
         if ($targetId) {
@@ -321,6 +346,7 @@ class CanonicalAssignmentRelinker
                 $links->candidate_machine_assignment_ids = $target->id === null ? [] : [$target->id];
                 $metadata->case_materialization = $links;
                 $this->jobUpdates[$job->id] = ['daily_metadata' => json_encode($metadata, JSON_THROW_ON_ERROR)];
+                $job->daily_metadata = $this->jobUpdates[$job->id]['daily_metadata'];
             }
         }
         $this->logs[] = ['user_id' => $actor, 'machine_id' => $row->machine_id,
@@ -403,7 +429,54 @@ class CanonicalAssignmentRelinker
     {
         $source = $this->sourceRow($row, $target);
 
-        return $this->hasContent($source) && (int) $source->machine_assignment_id !== (int) $target->id;
+        $sourceId = $this->byScope[$this->key($row->machine_id, $row->work_date, $source->machine_assignment_id)][0] ?? null;
+
+        return $this->hasContent($source) && ((int) $source->machine_assignment_id !== (int) $target->id
+            || ($sourceId && $this->metadataNeedsRepair($sourceId, $target)));
+    }
+
+    private function relationshipForAudit(string $metadata): array
+    {
+        $links = (array) json_decode($metadata, false, 512, JSON_THROW_ON_ERROR)->case_materialization;
+
+        return array_intersect_key($links, array_flip(['machine_assignment_id', 'scope_key', 'daily_photo_case_id',
+            'assignment_resolution_status', 'candidate_machine_assignment_ids']));
+    }
+
+    private function metadataNeedsRepair(int $caseId, object $target): bool
+    {
+        foreach ($this->jobs[$caseId] ?? [] as $job) {
+            if ($this->repairedMetadata($job, $caseId, $target) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function repairedMetadata(object $job, int $caseId, object $target): ?string
+    {
+        $metadata = json_decode($job->daily_metadata ?? 'null');
+        if (! is_object($metadata) || ! isset($metadata->case_materialization)
+            || ! is_object($metadata->case_materialization)) {
+            return null;
+        }
+        $before = json_encode($metadata, JSON_THROW_ON_ERROR);
+        $links = $metadata->case_materialization;
+        $links->machine_assignment_id = $target->id;
+        $links->scope_key = $this->cases[$caseId]->scope_key;
+        if (property_exists($links, 'daily_photo_case_id')) {
+            $links->daily_photo_case_id = $caseId;
+        }
+        if (property_exists($links, 'assignment_resolution_status')) {
+            $links->assignment_resolution_status = $target->id === null ? 'NOT_FOUND' : 'MATCHED';
+        }
+        if (property_exists($links, 'candidate_machine_assignment_ids')) {
+            $links->candidate_machine_assignment_ids = $target->id === null ? [] : [$target->id];
+        }
+        $after = json_encode($metadata, JSON_THROW_ON_ERROR);
+
+        return $before === $after ? null : $after;
     }
 
     private function emptyCase(int $id): bool

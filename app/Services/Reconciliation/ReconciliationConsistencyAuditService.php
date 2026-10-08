@@ -5,15 +5,15 @@ namespace App\Services\Reconciliation;
 use App\Models\ReconciliationPeriod;
 use Illuminate\Support\Facades\DB;
 
-/** SELECT-only scoped diagnostic. Values, photos, notes and opaque OCR are never exported. */
+/** SELECT-only diagnostic: default redacted, optional safe time/reference details. */
 class ReconciliationConsistencyAuditService
 {
-    public function audit(ReconciliationPeriod $period, ?int $machineId = null, ?string $from = null, ?string $to = null): array
+    public function audit(ReconciliationPeriod $period, ?int $machineId = null, ?string $from = null, ?string $to = null, bool $details = false, ?string $release = null): array
     {
-        return DB::transaction(fn () => $this->collect($period, $machineId, $from, $to));
+        return DB::transaction(fn () => $this->collect($period, $machineId, $from, $to, $details, $release));
     }
 
-    private function collect(ReconciliationPeriod $period, ?int $machineId, ?string $from, ?string $to): array
+    private function collect(ReconciliationPeriod $period, ?int $machineId, ?string $from, ?string $to, bool $details, ?string $release): array
     {
         $from ??= $period->date_from->toDateString();
         $to ??= $period->date_to->toDateString();
@@ -110,11 +110,17 @@ class ReconciliationConsistencyAuditService
             return $counts;
         };
 
-        return ['schema_version' => 1, 'read_only' => true, 'period_id' => $period->id,
+        $report = ['schema_version' => $details ? 2 : 1, 'read_only' => true, 'period_id' => $period->id,
             'scope' => ['machine_id' => $machineId, 'from' => $from, 'to' => $to],
             'summary' => ['rows' => $rows->count(), 'machine_days' => count($groups), 'duplicate_pairs' => $counts, 'canonical_reasons' => $reasonCounts],
             'validation' => ['blocking_messages' => $validation['blocking']->count(), 'blocking_by_reason' => $classify($validation['blocking']),
                 'warning_messages' => $validation['warnings']->count(), 'warnings_by_reason' => $classify($validation['warnings'])],
             'groups' => $groups];
+        if ($details) {
+            $report['operator_reported_release'] = $release;
+            $report['evidence'] = app(ReconciliationEvidenceAudit::class)->collect($period, $groups);
+        }
+
+        return $report;
     }
 }

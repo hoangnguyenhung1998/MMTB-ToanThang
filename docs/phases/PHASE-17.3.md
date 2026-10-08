@@ -1,3 +1,73 @@
+# Phase 17.3 — October root cause and guarded fixes
+
+- Updated 2026-10-08. Local code/tests/docs COMPLETE FOR REVIEW; production NOT VERIFIED. This checkpoint supersedes the previous audit-only continuation. No new Phase.
+- Verified local branch `phase17-3-final-fix`, HEAD `21f458d` (PR #64 implementation commit). Owner-reported production merge `4baa0e3` is absent in local Git. No fetch/pull or hosting access. JSON schema 1 matches the local command contract, but does not identify the executable/deployed release. Hosting must report HEAD separately.
+- Evidence: user-provided `october-consistency.json`, period **9**, full October, SHA256 `33630a14688fc3740f129190ff6460b323bf1605f7a7c700ab4542a77ca1c32f`. Preserve this local evidence unmodified/unversioned. September evidence is used only for the existing 126-day regression.
+
+## Verified production classification and its limits
+
+| Evidence from October JSON | Count | Proven interpretation |
+|---|---:|---|
+| Rows / machine-days | 6484 / 6355 | 129 extra rows, 129 pairs on 23 machines, Oct1–7 |
+| Category D, only `daily_intervals` differs | 21 | Interval JSON business payload differs; no proof of serialization-only or safe merge |
+| Category D, interval plus time/allocation fields differ | 108 | Includes confirmed/rounded check-in/out, regular/overtime/lunch allocation; no automatic overwrite/merge |
+| A / B / C pairs | 0 / 0 / 0 | Existing classifier identifies no proven safe duplicate consolidation |
+| CANONICAL_OCR_CONFLICT | 672 | Per-reference Validator diagnostics, not 672 distinct rows |
+| CANONICAL_CONFLICT | 220 | Per-interval Validator diagnostics; investigate separately from duplicates |
+| DAY_OWNERSHIP_MISMATCH | 129 | Stored row/source ownership disagrees with day owner |
+| DAY_OWNERSHIP_DUPLICATE | 129 | Multiple rows for one machine/day |
+| IDENTICAL_ALLOCATED_TIME | 21 | Duplicate allocated range diagnostic; alone does not prove equal evidence |
+| MATERIALIZED_OR_SOURCE_OVERLAP | 108 | Warnings; source-versus-materialized cause still requires timeline/value proof |
+| Total blockers | 1171 | 672 + 220 + 129 + 129 + 21; diagnostics, not deletion count |
+
+All 6484 row summaries have projected `canonical_reason = null`; all 258 duplicate row summaries are unprotected and have `canonical_needs_relink = false`. This **does not** contradict Validator: `CanonicalAssignmentRelinker::reason` tests whether references are compatible with the projected daily owner, while Validator checks the stored row assignment. The old-BCH sibling can reference an already-correct new-owner case and still fail export. Schema 1 has neither actual reference values nor per-message mapping; it cannot establish that all 892 reference diagnostics originate in the 129 pairs. No conclusion is derived from snapshot hashes.
+
+No differing `daily_ocr_job_ids`, `journal_row_ids`, GPS or descriptor fields are reported by the pair comparator. This establishes equal normalized reference sets / equal reported payload fields, not equal source OCR, valid pairing, HUMAN provenance or disposable hours. Distinct interval values remain significant.
+
+| Representative, verified numeric IDs | Stored identities | Daily owner / finding |
+|---|---|---|
+| #16 Oct1–7 | Old assignment 50 / BCH15 vs 416 / BCH42; Oct1 rows91968/98342, Oct7 rows91974/98348 | Owner416/BCH42; all seven D: one interval-only, six time/interval |
+| #255 Oct1–7 | Old334/BCH25/project5 vs402/BCH3/project6; Oct1 rows96618/98280, Oct7 rows96624/98286 | Owner402/BCH3; all seven D, differing time/intervals |
+| #25 (September snapshot maps T-XL0345; recheck current catalogue) Oct1–3 | Old256/BCH17 vs420/BCH28; rows92247/98652,92248/98653,92249/98654 | Owner420/BCH28; Oct1 interval-only; Oct2–3 time/intervals |
+| T-XL0034 | Current machine ID/reference values absent | Collect ID from catalogue; investigate all October, including single-row days |
+
+The report has no assignment timestamps, interval values, source OCR/protection/shared-lock details, creation action/release provenance. Two materialized rows under different assignments are proven; their actual creation command and whether values were historical projection versus conflicting business input are NOT VERIFIED. September success cannot change October's separately materialized snapshots.
+
+## New code defects reproduced and fixed
+
+1. **Same-case replay skips OCR relationship metadata.** `DailyPhotoCaseService::materialize(job,false)` returned when membership/capture/canonical were already correct, before refreshing stale `case_materialization`. Relinker also returned when source and target case IDs were equal, and `needsRelink` ignored metadata. A regression with an already-correct October case and stale predecessor metadata failed (assignment1 persisted instead of2). Shared guarded metadata-only planning now repairs existing relationship fields, preserves opaque OCR JSON, photos/member/interval IDs and pairing, and emits an old/new relationship audit. Repair, preflight/Sync/Generator and replay reuse this path. Second run has no new write/audit. HUMAN/MANUAL/reviewed/shared locked cases remain untouched.
+2. **Machine-day occupancy depends on malformed legacy segment overlap.** The old guard allowed a full-day owner row to be inserted beside another assignment's zero-length row because timestamp ranges did not overlap. Repeated Sync reproduced two rows rather than one. Occupancy now considers any row in the caller's locked machine/day group, regardless of segment. Generator and Sync retain the unresolved legacy row for review and cannot insert a sibling. No row is deleted or time normalized by this guard.
+3. **Canonical proof omitted OCR source-date mismatch.** Case/member dates could look correct while a job's extracted date belonged to another day. Shared canonical proof now blocks that relationship correction with CANONICAL_OCR_CONFLICT. No source date/time or pairing is edited.
+
+These tests prove local logic defects. They do **not** prove those defects caused all production pairs/reference errors, or that this code reduces the existing 1171 diagnostics to zero. Existing category-D payload/protection guards and Validator remain strict. No parser/worker/API/schema/migration or raw assignment-history change. Validator uses actual job/case relationships, not OCR relationship metadata, so the metadata replay defect alone does not explain672 Validator messages.
+
+## Implementation files
+
+- `app/Services/Reconciliation/ReconciliationIdentityGuard.php`: day occupancy shared by Generator/Sync.
+- `app/Services/Reconciliation/CanonicalAssignmentRelinker.php`: metadata-only repair, same-case protection, source-date proof, in-memory idempotency and relationship audit.
+- `app/Services/DailyPhotoCaseService.php`: guarded replay of stale metadata without rematerialization/pairing.
+- `app/Services/Reconciliation/ReconciliationConsistencyAuditService.php`, `ReconciliationEvidenceAudit.php`, `app/Console/Commands/ReconciliationConsistencyAudit.php`: opt-in `--details`, schema2 SELECT-only time/interval/reference/HUMAN/shared-period evidence, operator-labelled release. Default schema1 output remains compatible.
+- `tests/Feature/Reconciliation/OctoberResidualFixTest.php`: seven new regressions covering metadata replay/Repair, protected sources/shared locks, wrong date, differing intervals, independent single-row reference conflict, zero-length occupancy, future-month Generator replay and prior-month preservation.
+
+Detailed disposition is deliberately conservative: SAFE means a preview candidate/no demonstrated impediment, not authorization; all duplicate pairs and protected/reference/ownership conflicts remain HUMAN_REVIEW; missing referenced job/case/interval is UNSAFE. Unknown interval fields are listed but values withheld; consult them securely before considering consolidation. The packet exports no opaque OCR, descriptive text, coordinates, image paths or images. Reference mismatch totals are diagnostic comparisons, not a replacement for Validator, especially normalized unassigned/lifecycle checks.
+
+## Verification
+
+- Baseline new regressions: **2 failed**, confirming stale metadata and duplicate insertion before fixes.
+- Targeted `OctoberResidualFixTest|CrossPeriodConsistencyTest|DayBasedBchOwnershipTest`: **30 PASS / 505 assertions**. Includes September five-boundary outcomes and all126 normalized NULL days, return/gap/manual protection, cross-month repair, Resync and future-month replay.
+- Final full `php artisan test --compact`: **494 PASS /3778 assertions**,115.19s (APP_ENV=testing, SQLite in-memory). Scoped Pint `--test`: **7 files PASS**; PHP syntax **7 files PASS**; final diff check PASS. All included performance regressions PASS.
+- No production audit/write performed; exact release and production outcome NOT VERIFIED.
+
+## Data repair, acceptance and rollback
+
+The **129 category-D pairs remain HUMAN_REVIEW** until actual intervals/time/source/protection prove a safe case-specific disposition. No new destructive merger or winner-selection rule. Collect schema2 full-period/focus reports per runbook, separate reference errors on duplicate versus single-row days, and obtain creation/audit provenance. Rehearse existing transactional `reconciliation:repair-preview 9` exclusively on an isolated restored database: default SELECT-only audit runs safely on hosting, write-and-rollback preview is refused in production. Backup is mandatory before any separately approved actual repair; preserve original rows/cases/jobs/members/intervals/history and record before/after counts/reference sets/hours/GPS.
+
+Acceptance: unchanged genuine unassigned126, August/September snapshots/protected records; one row per newly generated machine/day; repeated Generate/Repair/Resync/replay yields no extra row/case/photo/job/pairing and no extra audit for no-op; every retained historical conflict explicitly reviewed, every reference blocker mapped to row/reference/cause. Zero blockers cannot be achieved by deleting/overwriting conflicting data or relaxing Validator. Review and evidence are required to complete production normalization.
+
+Rollback: no migration. Revert this patch through a reviewed release if necessary; code rollback alone does not undo a subsequently approved data repair. Relationship-only metadata audit includes old/new relationship; restore guarded relationships or the verified database backup if data rollback is required, keeping opaque OCR unchanged and stopping writers during restore. Never run repair-preview on live data by changing APP_ENV. No commit/push/PR/merge/deploy or production mutation authorized; stop after local code/test/docs review.
+
+---
+
 # Phase 17.3 — Cross-period reconciliation consistency continuation
 
 - Updated: 2026-10-08. Verified new baseline `45c211e`, branch `phase17-3-final-fix`, tracking same origin branch. Initially clean tracked tree; unrelated `tatus --short` is preserved. PR #63 deployment and September success are owner-reported, not independently accessed.

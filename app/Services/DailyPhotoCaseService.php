@@ -97,6 +97,19 @@ class DailyPhotoCaseService
             if ($membership && ! $recompute
                 && $membership->daily_photo_case_id === $case->id
                 && $membership->capture_datetime?->format('Y-m-d H:i:s') === $captureAt) {
+                $metadataLinks = $job->daily_metadata['case_materialization'] ?? [];
+                if ($assignment && (($metadataLinks['machine_assignment_id'] ?? null) !== $assignment->id
+                    || ($metadataLinks['scope_key'] ?? null) !== $scopeKey
+                    || (isset($metadataLinks['daily_photo_case_id']) && $metadataLinks['daily_photo_case_id'] !== $case->id))) {
+                    $links = new CanonicalAssignmentRelinker([$job->machine_id], $workDate, $workDate);
+                    $row = (object) ['machine_id' => $job->machine_id, 'work_date' => $workDate,
+                        'machine_assignment_id' => $case->machine_assignment_id, 'daily_intervals' => null];
+                    if ($links->reason($row, $assignment) === null) {
+                        $links->plan($row, $assignment, auth()->id(), now()->toDateTimeString());
+                        $links->flush(now()->toDateTimeString());
+                    }
+                }
+
                 return $case;
             }
             if ($membership) {
