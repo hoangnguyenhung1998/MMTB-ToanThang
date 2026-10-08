@@ -7,7 +7,8 @@ use App\Models\DailyPhotoCaseEvidence;
 use App\Models\DailyPhotoInterval;
 use App\Models\MachineAssignment;
 use App\Models\OcrJob;
-use App\Services\Reconciliation\AssignmentInterval;
+use App\Services\Reconciliation\CanonicalAssignmentRelinker;
+use App\Services\Reconciliation\DayBasedAssignmentOwnership;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -15,13 +16,13 @@ class DailyPhotoCaseService
 {
     public function __construct(private readonly DailyPhotoPairingService $pairing) {}
 
-    public function materialize(OcrJob $job, bool $recompute = true, ?Collection $candidateAssignments = null): ?DailyPhotoCase
+    public function materialize(OcrJob $job, bool $recompute = true, ?Collection $candidateAssignments = null, ?DayBasedAssignmentOwnership $ownership = null): ?DailyPhotoCase
     {
         if (! config('daily_photos.enabled')) {
             return null;
         }
 
-        return DB::transaction(function () use ($job, $recompute, $candidateAssignments): ?DailyPhotoCase {
+        return DB::transaction(function () use ($job, $recompute, $candidateAssignments, $ownership): ?DailyPhotoCase {
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             if ($job->document_type !== 'DAILY_TIMEMARK'
                 || $job->status !== 'COMPLETED'
@@ -40,30 +41,38 @@ class DailyPhotoCaseService
             }
             $assignments = $candidateAssignments ?? MachineAssignment::query()
                 ->where('machine_id', $job->machine_id)
-                ->where('time_in', '<=', $captureAt ?? $workDate.' 23:59:59')
-                ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>', $captureAt ?? $workDate.' 00:00:00'))
+                ->with('bchResolution')
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
 
-            // Preloaded backlog candidates are date-scoped. Laravel must still enforce the
-            // same capture-time and positive-range rules as the authoritative direct query.
-            $assignments = $assignments->filter(fn ($assignment) => AssignmentInterval::valid($assignment)
-                && (int) $assignment->machine_id === (int) $job->machine_id
-                && AssignmentInterval::stamp($assignment->time_in) <= ($captureAt ?? $workDate.' 23:59:59')
-                && (! $assignment->time_out || AssignmentInterval::stamp($assignment->time_out) > ($captureAt ?? $workDate.' 00:00:00')))
-                ->values();
-
-            $assignment = $assignments->count() === 1 ? $assignments->first() : null;
+            // The day is authoritative, including photos before the physical transfer time.
+            $ownership ??= new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')->where('machine_id', $job->machine_id)->get(['id', 'machine_id', 'type', 'occurred_at']));
+            $day = $ownership->resolve((int) $job->machine_id, $workDate);
+            $assignment = $day['assignment'];
+            $assignmentStatus = $assignment ? 'MATCHED' : ($day['reason'] ? 'AMBIGUOUS' : 'NOT_FOUND');
             $scopeKey = $assignment
                 ? "assignment:{$assignment->id}|date:{$workDate}"
                 : "machine:{$job->machine_id}|date:{$workDate}|assignment:unresolved";
-            $assignmentStatus = match ($assignments->count()) {
-                0 => 'NOT_FOUND',
-                1 => 'MATCHED',
-                default => 'AMBIGUOUS',
-            };
+            // Stored canonical identity wins over potentially stale OCR relationship metadata.
+            $existingCase = $job->daily_photo_case_id ? DailyPhotoCase::query()->find($job->daily_photo_case_id) : null;
+            if ($existingCase && $existingCase->scope_key !== $scopeKey) {
+                if ($existingCase && $existingCase->machine_id === $job->machine_id && $existingCase->work_date->toDateString() === $workDate) {
+                    $links = new CanonicalAssignmentRelinker([$job->machine_id], $workDate, $workDate);
+                    $row = (object) ['machine_id' => $job->machine_id, 'work_date' => $workDate,
+                        'machine_assignment_id' => $existingCase->machine_assignment_id, 'daily_intervals' => null];
+                    if ($assignment && $links->reason($row, $assignment) === null) {
+                        $links->plan($row, $assignment, auth()->id(), now()->toDateTimeString());
+                        $links->flush(now()->toDateTimeString());
 
+                        // Preserve member/interval IDs and the existing pairing result during ownership correction.
+                        return $existingCase->fresh(['evidenceMemberships', 'intervals']);
+                    }
+
+                    // Conflicting/populated/protected cases need explicit review, not rematerialization.
+                    return $existingCase;
+                }
+            }
             $case = DailyPhotoCase::query()->firstOrCreate(
                 ['scope_key' => $scopeKey],
                 [
@@ -85,6 +94,11 @@ class DailyPhotoCaseService
             $caseIds = collect([$oldCaseId, $case->id])->filter()->unique()->sort()->values();
             DailyPhotoCase::query()->whereKey($caseIds->all())->orderBy('id')->lockForUpdate()->get();
             $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->lockForUpdate()->first();
+            if ($membership && ! $recompute
+                && $membership->daily_photo_case_id === $case->id
+                && $membership->capture_datetime?->format('Y-m-d H:i:s') === $captureAt) {
+                return $case;
+            }
             if ($membership) {
                 if ($membership->daily_photo_case_id !== $case->id) {
                     DailyPhotoInterval::query()
@@ -118,7 +132,7 @@ class DailyPhotoCaseService
                 'scope_key' => $scopeKey,
                 'assignment_resolution_status' => $assignmentStatus,
                 'machine_assignment_id' => $assignment?->id,
-                'candidate_machine_assignment_ids' => $assignments->pluck('id')->all(),
+                'candidate_machine_assignment_ids' => $assignment ? [$assignment->id] : collect($day['candidates'])->pluck('id')->all(),
                 'capture_datetime_convention' => 'NAIVE_LOCAL_WALL_CLOCK',
                 'capture_timezone' => config('daily_photos.capture_timezone'),
             ];

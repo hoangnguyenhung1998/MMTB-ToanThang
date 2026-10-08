@@ -16,6 +16,8 @@ class DailyPhotoSyncService
 {
     private const BATCH_SIZE = 100;
 
+    private ?DayBasedAssignmentOwnership $cachedOwnership = null;
+
     private ?Collection $cachedSources = null;
 
     private ?Collection $cachedCases = null;
@@ -34,16 +36,23 @@ class DailyPhotoSyncService
                     fn ($q) => $q->whereIn('review_status', ['AUTO_APPROVED', 'APPROVED', 'CORRECTED']))
                 ->whereNotNull('extracted_time')->orderBy('extracted_date')->orderBy('extracted_time')->orderBy('id')->get();
 
-        return $jobs->filter(function (OcrJob $job) use ($row) {
+        $ownership = $this->cachedOwnership;
+        if ($includeNextDay && ! $ownership) {
+            $ownership = new DayBasedAssignmentOwnership(DB::table('machine_assignments as a')
+                ->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')
+                ->where('a.machine_id', $row->machine_id)->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]),
+                DB::table('machine_events')->where('machine_id', $row->machine_id)->get(['id', 'machine_id', 'type', 'occurred_at']));
+        }
+
+        return $jobs->filter(function (OcrJob $job) use ($row, $ownership) {
             if ($job->extracted_date->isSameDay($row->work_date)) {
                 return $this->allocator->minute($job->extracted_time) >= $this->allocator->minute($row->segment_start)
                     && $this->allocator->minute($job->extracted_time) <= $this->allocator->minute($row->segment_end);
             }
             // Next-day images are offered only for explicit overnight selection.
-            $assignment = $row->assignment;
-            $at = $job->extracted_date->copy()->setTimeFromTimeString($job->extracted_time);
+            $next = $ownership?->resolve($row->machine_id, $job->extracted_date->toDateString())['assignment'];
 
-            return $assignment && (! $assignment->time_out || $at->lte($assignment->time_out));
+            return $next && (int) $next->id === (int) $row->machine_assignment_id;
         })->values();
     }
 
@@ -68,7 +77,7 @@ class DailyPhotoSyncService
                     ->all();
                 if ($intervals) {
                     $allocation = $this->allocator->allocate($intervals, true, $this->allocator->remainingRegularMinutes($row, $contextRows));
-                    $this->allocator->assertWithinAssignment($allocation, $row, $contextRows);
+                    $this->allocator->assertWithinAssignment($allocation, $row, $contextRows, $this->cachedOwnership);
                     if ($case->status === DailyPhotoCase::STATUS_COLLECTING) {
                         foreach (['regular_minutes', 'lunch_minutes', 'ot_afternoon_minutes', 'ot_evening_minutes'] as $key) {
                             if ($allocation[$key] === 0) {
@@ -112,6 +121,13 @@ class DailyPhotoSyncService
                             // Relationship repair preserves historical payload; automatic sync must not clear it
                             // when there is deliberately no assignment to allocate against.
                             if ($row->machine_assignment_id === null) {
+                                $result['protected']++;
+
+                                continue;
+                            }
+                            $day = $this->cachedOwnership->resolve($row->machine_id, $row->work_date->toDateString());
+                            if (! $day['assignment'] || (int) $day['assignment']->id !== (int) $row->machine_assignment_id) {
+                                // Repair must resolve identity before automatic sync can replace any business payload.
                                 $result['protected']++;
 
                                 continue;
@@ -167,10 +183,12 @@ class DailyPhotoSyncService
                         }
                     }, 3);
 
+                    $this->cachedOwnership = null;
                     $this->cachedSources = null;
                     $this->cachedCases = null;
                 });
         } finally {
+            $this->cachedOwnership = null;
             $this->cachedSources = null;
             $this->cachedCases = null;
         }
@@ -204,6 +222,10 @@ class DailyPhotoSyncService
                     if ($cases->isEmpty()) {
                         return;
                     }
+                    $ownership = new DayBasedAssignmentOwnership(DB::table('machine_assignments as a')
+                        ->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')
+                        ->whereIn('a.machine_id', $machineIds)->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]),
+                        DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
                     $occupied = DB::table('reconciliation_rows')->where('reconciliation_period_id', $period->id)
                         ->whereIn('machine_id', $machineIds)->whereBetween('work_date', [$workDates->min(), $workDates->max().' 23:59:59'])
                         ->get(['machine_id', 'machine_assignment_id', 'work_date', 'segment_start', 'segment_end'])
@@ -215,14 +237,17 @@ class DailyPhotoSyncService
                     $inserts = [];
 
                     foreach ($cases as $case) {
-                        $assignment = $case->machineAssignment;
+                        $assignment = $ownership->resolve($case->machine_id, $case->work_date->toDateString())['assignment'];
+                        if (! $assignment || (int) $assignment->id !== (int) $case->machine_assignment_id) {
+                            continue;
+                        }
                         $key = $case->machine_id.'|'.$case->work_date->toDateString().'|';
                         $alreadyExists = $existing->has($key.$assignment?->id);
                         if (! $assignment || $alreadyExists) {
                             continue;
                         }
-                        $start = $assignment->time_in->isSameDay($case->work_date) ? $assignment->time_in->format('H:i:s') : '00:00:00';
-                        $end = $assignment->time_out?->isSameDay($case->work_date) ? $assignment->time_out->format('H:i:s') : '23:59:59';
+                        $start = '00:00:00';
+                        $end = '23:59:59';
                         if (! AssignmentInterval::contains($assignment, (object) ['segment_start' => $start, 'segment_end' => $end], $case->work_date->toDateString())
                             || ReconciliationIdentityGuard::occupied($occupied->get($case->machine_id.'|'.$case->work_date->toDateString(), collect())->all(), $assignment->id, $start, $end)) {
                             continue;
@@ -231,9 +256,9 @@ class DailyPhotoSyncService
                             'reconciliation_period_id' => $period->id,
                             'machine_id' => $case->machine_id, 'machine_assignment_id' => $assignment->id,
                             'work_date' => $case->work_date->toDateString(), 'project_id' => $assignment->project_id,
-                            'command_center_id' => $assignment->command_center_id,
-                            'segment_start' => $assignment->time_in->isSameDay($case->work_date) ? $assignment->time_in->format('H:i:s') : '00:00:00',
-                            'segment_end' => $assignment->time_out?->isSameDay($case->work_date) ? $assignment->time_out->format('H:i:s') : '23:59:59',
+                            'command_center_id' => $assignment->source_bch_id ?? $assignment->command_center_id,
+                            'segment_start' => '00:00:00',
+                            'segment_end' => '23:59:59',
                             'status' => 'DRAFT', 'created_at' => $now, 'updated_at' => $now,
                         ];
                     }
@@ -263,6 +288,10 @@ class DailyPhotoSyncService
         $minimumDate = $rows->min(fn (ReconciliationRow $row) => $row->work_date->toDateString());
         $maximumDate = $rows->max(fn (ReconciliationRow $row) => $row->work_date->toDateString());
 
+        $this->cachedOwnership = new DayBasedAssignmentOwnership(
+            DB::table('machine_assignments as a')->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')
+                ->whereIn('a.machine_id', $machineIds)->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]),
+            DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
         $this->cachedSources = OcrJob::query()->where('document_type', 'DAILY_TIMEMARK')
             ->whereIn('machine_id', $machineIds)->whereIn('extracted_date', $workDates)
             ->where('status', 'COMPLETED')->where('review_status', '!=', 'REJECTED')->whereNotNull('extracted_time')

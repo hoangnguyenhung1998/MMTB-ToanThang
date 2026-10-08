@@ -1,3 +1,59 @@
+# Phase 17.3 — Final fix: day-based BCH assignment
+
+- Updated: 2026-10-08. Existing Phase 17.3 only; dependencies 17.1 / 17.2 and canonical Daily Photo 16.10.1–16.10.4.
+- Baseline VERIFIED locally: clean `phase17-3-final-fix`, HEAD `e997531`, tracking `origin/phase17-3-final-fix`. PR #62 deployment is owner-reported; this session has not accessed production.
+- Status: LOCAL CODE VERIFIED; mandatory local checks PASS; REPORT → STOP for owner review. Production/MySQL NOT VERIFIED. No commit/push/PR/merge/deploy/data repair performed. STOP after final report.
+- The owner's whole-day rule explicitly supersedes all earlier timestamp-splitting/narrowing acceptance statements below for daily BCH ownership. Physical source history remains authoritative evidence and is never rewritten by this fix.
+
+## Scope and acceptance
+
+A machine has one BCH per work date. A valid new assignment starting at any time on D owns every journal entry, OCR photo and reconciliation row on D. Old ownership ends on D-1. A return with no new assignment retains old ownership through D. Completely uncovered dates retain their existing NULL relationships. Multiple chronological, non-overlapping transfers on the same date use the final assignment; genuine source overlap, malformed/reversed timestamps, missing final BCH/project or contradictory lifecycle remain review blockers. Missing final BCH never falls back to the predecessor.
+
+No hardcoded machine or row identity, hourly split, source timestamp rewrite, provider/worker/parser change, dependency update or schema migration. Automatic row/canonical correction protects manual/HUMAN OCR, reviewed/confirmed/locked data and shared protected periods. Different populated payloads or canonical selections remain blocked; no automatic hour addition or evidence merge.
+
+## Audit evidence and precise root causes
+
+Owner supplied `phase17-3-residual-audit.json` (local evidence only, not versioned): SHA256 `32A9B245D133C02476A3FC23B2CBEE582E9FD5E6173F705857C21E5A24473D9A`. Snapshot has 6046 period rows, 131 inspected focus/NULL rows, 126 normalized NULL (9 genuine gap, 117 AFTER_RETURN), five whole-day DRAFT focus rows and three empty automatic siblings. No focus source overlap, manual edit, review or confirmation is present in the snapshot.
+
+| Row / date | Physical source and evidence | Previous blocker | Daily outcome |
+|---|---|---|---|
+| 85904 / Sep10 / T-XL0345 | #256 ME HLX OUT Sep10 15:00; next #420 starts Sep11 15:00; no canonical case proving an hourly narrowing | Whole-day row extends beyond OUT, `NO_SINGLE_CANONICAL_CASE` narrowing reason | #256 / ME HLX #17, whole Sep10 |
+| 85905 / Sep11 / T-XL0345 | Stale #256; #420 ME 10 IN 15:00; case #1950 contains 11:18–13:24 and 17:45–18:01 pairs; five OCR IDs; raw last photo 22:02; empty sibling #98926 | Canonical pairs cross physical IN, `CANONICAL_TIME_CONFLICT`; materialized overlap | #420 / ME 10 #28, all Sep11 evidence preserved |
+| 86442 / Sep8 / SGC-T-3C0466 | Stale #274 HTTQ ended **Aug27 15:25**, new #422 starts Sep8 15:25; case #1633 PAIRING_AMBIGUOUS with 14 OCR photos 06:22–21:39 and no pairs; empty #99036 | `CANONICAL_INTERVALS_MISSING` narrowing and `CANONICAL_TIME_CONFLICT`; materialized overlap | #422 / TĐXD 10.4 #35, all Sep8 photos; pairing ambiguity itself remains visible |
+| 87577 / Sep3 / VT-3C0664 | Stale #148 is absent from selected machine history; #423 IN Sep3 15:26; no canonical case; empty #99166 | Whole-day containment cannot prove hourly narrowing; materialized overlap | #423 / TĐXD 10.4 #35; no invented predecessor OUT/history |
+| 89197 / Sep3 / VT-3C0696 | #296 OUT / RETURN Sep3 16:45, no new BCH on Sep3 and no narrowing case | Whole-day row extends beyond OUT; `NO_SINGLE_CANONICAL_CASE` | #296 / TĐXD 10.4 #35, whole return day |
+
+Source gaps (including Aug27–Sep8) are real. They are not filled by this rule; only a day with a valid assignment starting/ending on that date changes ownership interpretation. The three overlap warnings refer to reconciliation siblings, not simultaneous source assignments.
+
+## Execution path and implementation
+
+1. `MachineAssignment` / existing timeline and BCH resolution records remain unchanged. New `DayBasedAssignmentOwnership` consumes batch snapshots, checks actual timestamp overlap and lifecycle, and returns an immutable virtual daily interval with separate `physical_time_in/out`; it caches machine/date decisions without database calls. Malformed timestamps block the machine when their scope cannot safely be inferred. Reversed intervals retain existing scoped diagnostics; empty legacy zero-duration records retain their existing non-coverage semantics.
+2. `DailyPhotoCaseService` uses daily ownership for captures on both sides of a transfer. A stale case is relinked through `CanonicalAssignmentRelinker` when safe, preserving case/member/pair IDs, raw capture times and opaque OCR JSON. Canonical database identity takes precedence over stale OCR scope metadata, so replay cannot create a second case or delete pairing. Replay with unchanged membership and no requested recompute is a no-op. The relinker rejects HUMAN/manual/reviewed OCR and shared protected rows, keeps pairing states and updates only relationship metadata. Distinct populated canonical targets remain conflicts.
+3. `DailyPhotoResyncService` and backlog BCH scoping use the final daily owner. Resync reuses a batch ownership/lifecycle snapshot. `DailyPhotoSyncService` generates only one whole-day row from a matching canonical owner and protects stale identity before replacing any payload. Explicit overnight selection and `DailyTimeAllocator` use ownership of the destination date rather than physical OUT time; crossing another BCH's day remains invalid.
+4. `ReconciliationGenerator` selects one assignment per machine/day and aggregates the same day's approved journal entries before/after transfer without splitting them. Append occupancy still preserves existing NULL/manual rows and cannot create an extra row against an occupied day. Invalid ownership aborts generation transactionally; missing BCH is never guessed.
+5. `ReconciliationLinkRepairService` uses the same cached day decisions. Automatic relationships/segments are corrected to the selected owner and 00:00–23:59:59 without changing business payload. Existing atomic batch writes/audits and safe duplicate policy remain: discard only proven empty/equivalent automatic siblings, preserve rich source identity against empty targets, retain distinct populated conflicts and all protected rows. Canonical consistency is checked even for already-correct row relationships. `AssignmentRelationshipPropagation` and historical BCH resolution delegate to the same daily policy/Repair guards.
+6. `ReconciliationExportValidator` checks daily owner, source validity, duplicate machine/day identity, and assigned/NULL canonical references. It retains true blockers; time transfer alone no longer blocks a valid whole-day row. Residual audit now exposes `day_ownership` beside the unchanged physical diagnostics and marks manual protection. UI and `ReconciliationBchWorkbookExport`/`ReconciliationBchSheet` consume stored row BCH and canonical links, so corrected relationships flow to both; no UI/export rewrite was needed. Existing NULL UI/export regressions remain.
+
+## Tests and evidence limits
+
+- New `DayBasedBchOwnershipTest`: transfer at 15:00, actual approved journal entries before/after it, old ownership on D-1, photos/pairs before and after transfer, preserved row/business/history/attachment/member/pair identities, empty duplicate collapse and repeat Repair with no audit, return-day ownership and next-day NULL, manual/reviewed/locked/HUMAN OCR protection, multiple same-day transfers, overlap/same-IN/malformed timestamps/missing final BCH.
+- Sanitized `tests/Fixtures/reconciliation/phase17-3-day-boundaries.json` contains only snapshot relationship IDs, dates, physical assignment ranges and lifecycle events. No photos, attachment paths/checksums, chassis, notes, raw OCR, credentials or opaque metadata. Resolver replay verifies the five exact expected assignments/BCH IDs and all 126 days (9/117). A DB regression seeds the 126 normalized dates with those histories and verifies two Repair runs preserve every row/history and add no audit. Focus Validator regressions exercise each projected physical boundary; they do not claim a full 6046-row production database replay. Source #148's absent history is not fabricated.
+- Earlier tests were updated only where the owner superseded hourly split/return/gap acceptance or automatic manual correction. Shared automatic fixtures no longer carry manual timestamps; explicit manual and reviewed protection tests remain. Distinct payload, rollback, no-N+1, idempotency, UI and workbook checks are retained.
+- Large Daily Photo read budget rises from 130 to 140 SELECTs for 500 rows because assignment/lifecycle snapshots add two batched reads per 100-row batch; no per-row allocator history query. Repair's batched zero-model-hydration checks remain.
+- Final targeted reconciliation/canonical/workflow: **214 tests / 2040 assertions PASS / 35.16 s**; final canonical identity/metadata subset **36 / 453 PASS / 4.02 s**; new daily ownership suite **11 / 351 PASS / 2.65 s**, including scoped Resync. Final full Laravel: **475 tests / 3624 assertions PASS / 75.44 s**, APP_ENV=testing, SQLite `:memory:`. **Pint --test and PHP syntax PASS on all 25 changed/new PHP files**; `git diff --check` PASS. No migration changes; full tests rebuild the existing schema in isolated SQLite.
+- Final full-run benchmarks: content reassignment, assigned/unassigned canonical relink and long-gap cleanup retain bounded reads and zero row/case/OCR model hydration; canonical **147 queries**, ordinary Repair **23**, long-gap **23**. Residual audit **1200 rows / 18 queries / 524.21 ms**, same query count as one row. Ordinary Repair **408.29 ms**, long-gap **283.05 ms**. Local SQLite timings are not a production SLA; timeout/concurrency unchanged.
+- Final diff reviewed: 13 service PHP files (one new shared resolver), 12 test PHP files (one new regression suite), one sanitized JSON fixture and four Phase/checkpoint/runbook documents. User-provided full audit JSON remains unmodified/untracked local evidence. No secret, runtime artifact, migration or unrelated module change is part of the deliverable. No production/MySQL execution or historical payload-preservation claim is made from snapshot counts alone.
+
+## Risks, deployment and rollback
+
+See [residual audit runbook](../runbooks/PHASE-17.3-RESIDUAL-AUDIT.md) for the exact later operator verification sequence. No schema migration is required. This is a cross-service daily ownership change, so review protected/legacy populated duplicates and run on a restored MySQL copy before separately authorizing production Repair. Existing PAIRING_AMBIGUOUS OCR remains a pairing review issue, not permission to recalculate evidence during relink. MySQL concurrency and live full-period results remain NOT VERIFIED. Code rollback does not reverse an already-applied data Repair; before snapshots and audit are required for separately reviewed restoration.
+
+NEXT ACTION: owner reviews the uncommitted local diff and the runbook's restored-MySQL verification plan. Local work is complete; REPORT → STOP. No commit, push, PR, merge, deploy, production access/writes, migration or worker restart authorized.
+
+## Historical diagnostic milestone (superseded daily ownership acceptance)
+
+The following prior documentation is preserved for history. Its old timestamp rule and STOP/checkpoint are not current acceptance or session status.
+
 # Phase 17.3 — Final Reconciliation Ambiguity Resolution & Production Residual Audit
 
 - Updated: 2026-10-08; continuation of 17.3, no new Phase.

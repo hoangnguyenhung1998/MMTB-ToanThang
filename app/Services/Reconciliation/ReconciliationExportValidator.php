@@ -41,10 +41,12 @@ class ReconciliationExportValidator
             ->orderBy('asset_code')
             ->get(['id', 'asset_code']);
         $ids = $unassignedMachines->pluck('id')->merge($rows->pluck('machine_id'))->unique();
-        $history = $ids->isEmpty() ? collect() : DB::table('machine_assignments')->whereIn('machine_id', $ids)->get();
+        $history = $ids->isEmpty() ? collect() : DB::table('machine_assignments as a')->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')
+            ->whereIn('a.machine_id', $ids)->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]);
         $events = $ids->isEmpty() ? collect() : DB::table('machine_events')->whereIn('machine_id', $ids)
             ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->get(['id', 'machine_id', 'type', 'occurred_at']);
         $states = new AssignmentTimelineState($history, $events);
+        $ownership = new DayBasedAssignmentOwnership($history, $events);
         $timeline = $history->filter(fn ($a) => AssignmentInterval::valid($a) && (string) $a->time_in <= $period->date_to->toDateString().' 23:59:59'
             && (! $a->time_out || (string) $a->time_out >= $period->date_from->toDateString().' 00:00:00'))->groupBy('machine_id');
         foreach ($unassignedMachines as $machine) {
@@ -54,18 +56,18 @@ class ReconciliationExportValidator
             }
         }
 
-        $referenceIds = $rows->whereNull('machine_assignment_id')->flatMap(fn ($row) => collect($row->daily_intervals ?? [])->pluck('canonical_interval_id'))->filter()->unique();
+        $referenceIds = $rows->flatMap(fn ($row) => collect($row->daily_intervals ?? [])->pluck('canonical_interval_id'))->filter()->unique();
         $canonicalReferences = $referenceIds->isEmpty() ? collect() : DB::table('daily_photo_intervals as i')
             ->join('daily_photo_cases as c', 'c.id', '=', 'i.daily_photo_case_id')->whereIn('i.id', $referenceIds)
             ->get(['i.id', 'i.raw_start_at', 'i.raw_end_at', 'c.machine_id', 'c.work_date', 'c.machine_assignment_id'])->keyBy('id');
-        $jobIds = $rows->whereNull('machine_assignment_id')->flatMap(fn ($row) => $row->daily_ocr_job_ids ?? [])->unique();
+        $jobIds = $rows->flatMap(fn ($row) => $row->daily_ocr_job_ids ?? [])->unique();
         $jobReferences = $jobIds->isEmpty() ? collect() : DB::table('ocr_jobs as j')
             ->leftJoin('daily_photo_cases as c', 'c.id', '=', 'j.daily_photo_case_id')->whereIn('j.id', $jobIds)
-            ->get(['j.id', 'j.machine_id', 'j.extracted_date', 'c.machine_assignment_id'])->keyBy('id');
+            ->get(['j.id', 'j.machine_id', 'j.extracted_date', 'j.daily_photo_case_id', 'c.machine_assignment_id'])->keyBy('id');
         foreach ($rows as $row) {
             $label = $this->rowLabel($row);
-            $context = $states->context($row->machine_id, $row->work_date->toDateString().' '.($row->segment_start ?: '00:00:00'),
-                $row->work_date->toDateString().' '.($row->segment_end ?: '23:59:59'));
+            $day = $ownership->resolve($row->machine_id, $row->work_date->toDateString());
+            $context = $day['context'];
             $unassigned = AssignmentTimelineState::isUnassigned($context['timeline_context']);
             $normalized = $unassigned && $row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null;
             if ($normalized) {
@@ -122,33 +124,44 @@ class ReconciliationExportValidator
             if ($row->machine_assignment_id && ! $row->assignment) {
                 $blocking->push($label.': không tìm thấy phân công nguồn.');
             }
-            if ($assignment = $row->assignment) {
-                $sourceBchId = $assignment->command_center_id ?: $assignment->bchResolution?->command_center_id;
-                $date = $row->work_date;
-                if (! AssignmentInterval::contains($assignment, $row, $date->toDateString())
-                    || (int) $row->machine_id !== $assignment->machine_id
-                    || (int) $row->project_id !== (int) $assignment->project_id
-                    || (int) $row->command_center_id !== (int) $sourceBchId) {
-                    $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn; cần kiểm tra lịch điều chuyển/trả máy.');
+            if ($row->machine_assignment_id !== null) {
+                foreach ($row->daily_intervals ?? [] as $part) {
+                    if ($id = $part['canonical_interval_id'] ?? null) {
+                        $reference = $canonicalReferences->get($id);
+                        if (! $reference || (int) $reference->machine_assignment_id !== (int) $row->machine_assignment_id
+                            || (int) $reference->machine_id !== (int) $row->machine_id
+                            || substr($reference->work_date, 0, 10) !== $row->work_date->toDateString()) {
+                            $blocking->push($label.': CANONICAL_CONFLICT #'.$id);
+                        }
+                    }
                 }
-                foreach ($timeline->get($row->machine_id, collect()) as $candidate) {
-                    if ((int) $candidate->id === (int) $assignment->id || ! AssignmentInterval::onDate($assignment, $date->toDateString()) || ! AssignmentInterval::onDate($candidate, $date->toDateString())) {
-                        continue;
-                    }
-                    if (! AssignmentInterval::valid($candidate)) {
-                        $blocking->push($label.': lịch phân công nguồn không hợp lệ.');
-
-                        continue;
-                    }
-                    [$start, $end] = AssignmentInterval::segment($assignment, $date->toDateString());
-                    [$otherStart, $otherEnd] = AssignmentInterval::segment($candidate, $date->toDateString());
-                    if (AssignmentInterval::overlaps(max($start, $row->segment_start ?: $start), min($end, $row->segment_end ?: $end), $otherStart, $otherEnd)) {
-                        $warnings->push($label.': phân công nguồn thực sự chồng lấn, cần kiểm tra.');
-                        $blocking->push($label.': TRUE_ASSIGNMENT_OVERLAP #'.$assignment->id.' / #'.$candidate->id);
+                foreach ($row->daily_ocr_job_ids ?? [] as $id) {
+                    $reference = $jobReferences->get($id);
+                    if ($reference && $reference->daily_photo_case_id !== null
+                        && ((int) $reference->machine_assignment_id !== (int) $row->machine_assignment_id
+                            || (int) $reference->machine_id !== (int) $row->machine_id
+                            || ($reference->extracted_date && substr($reference->extracted_date, 0, 10) !== $row->work_date->toDateString()))) {
+                        $blocking->push($label.': CANONICAL_OCR_CONFLICT #'.$id);
                     }
                 }
             }
-
+            if ($assignment = $row->assignment) {
+                $owner = $day['assignment'];
+                $sourceBchId = $owner?->source_bch_id ?? $owner?->command_center_id;
+                if (! $owner || (int) $owner->id !== (int) $assignment->id
+                    || ! AssignmentInterval::contains($owner, $row, $row->work_date->toDateString())
+                    || (int) $row->machine_id !== (int) $owner->machine_id
+                    || (int) $row->project_id !== (int) $owner->project_id
+                    || (int) $row->command_center_id !== (int) $sourceBchId) {
+                    $blocking->push($label.': dòng đối chiếu không còn khớp phân công nguồn theo BCH phụ trách ngày; cần Repair hoặc review dữ liệu được bảo vệ.');
+                }
+            }
+            if ($day['reason'] !== null) {
+                $blocking->push($label.': '.$day['reason']);
+                if ($day['reason'] === 'TRUE_ASSIGNMENT_OVERLAP') {
+                    $warnings->push($label.': phân công nguồn thực sự chồng lấn, cần kiểm tra.');
+                }
+            }
             if (! $row->command_center_id && ! $normalized) {
                 $blocking->push($label.': chưa xác định BCH.');
             }
@@ -188,11 +201,8 @@ class ReconciliationExportValidator
                         $first = $dailyRows[$left];
                         $second = $dailyRows[$right];
 
-                        if ($first->command_center_id !== null && $first->command_center_id === $second->command_center_id) {
-                            continue;
-                        }
-
                         $pairLabel = $this->pairLabel($first, $second);
+                        $blocking->push($pairLabel.': DAY_OWNERSHIP_DUPLICATE máy/ngày có nhiều dòng BCH.');
                         [$firstStart, $firstEnd] = $this->effectiveRange($first);
                         [$secondStart, $secondEnd] = $this->effectiveRange($second);
 

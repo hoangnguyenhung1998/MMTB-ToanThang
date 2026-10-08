@@ -113,13 +113,18 @@ class DailyTimeAllocator
         throw ValidationException::withMessages(['intervals' => $message]);
     }
 
-    public function assertWithinAssignment(array $allocation, ReconciliationRow $row, ?Collection $contextRows = null): void
+    public function assertWithinAssignment(array $allocation, ReconciliationRow $row, ?Collection $contextRows = null, ?DayBasedAssignmentOwnership $ownership = null): void
     {
-        $unassignedTimeline = null;
-        if ($row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null) {
-            $unassignedTimeline = new AssignmentTimelineState(
-                DB::table('machine_assignments')->where('machine_id', $row->machine_id)->get(),
-                DB::table('machine_events')->where('machine_id', $row->machine_id)->get(['id', 'machine_id', 'type', 'occurred_at']));
+        $ownership ??= new DayBasedAssignmentOwnership(
+            DB::table('machine_assignments as a')->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')
+                ->where('a.machine_id', $row->machine_id)->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]),
+            DB::table('machine_events')->where('machine_id', $row->machine_id)->get(['id', 'machine_id', 'type', 'occurred_at']));
+        $day = $ownership->resolve($row->machine_id, $row->work_date->toDateString());
+        $owner = $day['assignment'];
+        $normalized = $row->machine_assignment_id === null && $row->project_id === null && $row->command_center_id === null;
+        if (($normalized && ($owner || ! AssignmentTimelineState::isUnassigned($day['context']['timeline_context'])))
+            || (! $normalized && (! $owner || (int) $owner->id !== (int) $row->machine_assignment_id))) {
+            $this->invalid('BCH phụ trách theo ngày chưa khớp; cần Repair hoặc review trước khi tính công.');
         }
         foreach (self::KINDS as $kind) {
             if (empty($allocation[$kind.'_start'])) {
@@ -130,17 +135,20 @@ class DailyTimeAllocator
             if ($end->lt($start) && $kind === 'overtime_evening') {
                 $end->addDay();
             }
-            $assignment = $row->assignment;
-            if ($unassignedTimeline) {
-                $context = $unassignedTimeline->context($row->machine_id, $start->toDateTimeString(), $end->toDateTimeString());
-                if (! AssignmentTimelineState::isUnassigned($context['timeline_context'])
+            if ($normalized) {
+                $endDay = $ownership->resolve($row->machine_id, $end->toDateString());
+                if (! AssignmentTimelineState::isUnassigned($endDay['context']['timeline_context'])
                     || ! $row->segment_start || ! $row->segment_end
                     || $start->toDateTimeString() < $row->work_date->toDateString().' '.$row->segment_start
                     || $end->toDateTimeString() > $row->work_date->toDateString().' '.$row->segment_end) {
-                    $this->invalid('Giờ Không BCH vượt khoảng không phân công đã được timeline xác minh.');
+                    $this->invalid('Giờ Không BCH vượt ngày không phân công đã được timeline xác minh.');
                 }
-            } elseif (! $assignment || $start->lt($assignment->time_in) || ($assignment->time_out && $end->gt($assignment->time_out))) {
-                $this->invalid('Giờ tính công vượt khoảng phân công máy/BCH. Kiểm tra ca và lịch điều chuyển.');
+            } else {
+                $lastDay = $end->copy()->subSecond()->toDateString();
+                $lastOwner = $ownership->resolve($row->machine_id, $lastDay)['assignment'];
+                if (! $lastOwner || (int) $lastOwner->id !== (int) $owner->id) {
+                    $this->invalid('Giờ qua đêm đi sang ngày do BCH khác phụ trách.');
+                }
             }
         }
         $otherRows = $contextRows === null

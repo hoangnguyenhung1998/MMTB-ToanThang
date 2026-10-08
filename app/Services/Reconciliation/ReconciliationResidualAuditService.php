@@ -27,6 +27,7 @@ class ReconciliationResidualAuditService
                 ->get(['a.*', 'b.id as source_bch_id', 'b.name as bch_name', 'p.id as source_project_id']);
             $events = DB::table('machine_events')->whereIn('machine_id', $machineIds)->orderBy('occurred_at')->orderBy('id')->get();
             $states = new AssignmentTimelineState($history, $events);
+            $ownership = new DayBasedAssignmentOwnership($history, $events);
             $byMachine = $history->groupBy('machine_id');
             $bchNames = DB::table('command_centers')->whereIn('id', $rows->pluck('command_center_id')->filter()->unique())->pluck('name', 'id');
             $canonical = new CanonicalAssignmentRelinker($machineIds, $period->date_from->toDateString(), $period->date_to->toDateString(), false);
@@ -87,6 +88,13 @@ class ReconciliationResidualAuditService
                 $details[] = [
                     'row' => $this->snapshot($row, $this->rowFields()),
                     'machine' => (array) $machines->get($row->machine_id), 'timeline' => $context,
+                    'day_ownership' => (function () use ($ownership, $row, $canonical): array {
+                        $day = $ownership->resolve((int) $row->machine_id, $row->work_date);
+
+                        return ['policy' => 'BUSINESS_DAY', 'assignment_id' => $day['assignment']?->id, 'bch_id' => $day['assignment']?->source_bch_id,
+                            'reason' => $day['reason'], 'timeline_context' => $day['context']['timeline_context'],
+                            'canonical_reason' => $day['assignment'] ? $canonical->reason($row, $day['assignment']) : null];
+                    })(),
                     'existing_bch_name' => $bchNames->get($row->command_center_id),
                     'candidates' => $proofs, 'source_overlap_pairs' => $sourceOverlaps,
                     'materialized_overlap_row_ids' => $rowOverlaps,
@@ -95,7 +103,7 @@ class ReconciliationResidualAuditService
                     'timeline_proves_unassigned' => AssignmentTimelineState::isUnassigned($context['timeline_context']),
                     'unassigned_canonical_reason' => AssignmentTimelineState::isUnassigned($context['timeline_context']) ? $canonical->reason($row, $target) : null,
                     'protected' => ! in_array($period->status, ['DRAFT', 'GENERATED', 'REVIEWING'], true)
-                        || $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null,
+                        || $row->manually_edited_at !== null || $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null,
                     'disposition' => 'READ_ONLY_REVIEW_REQUIRED; candidate proof is not permission to mutate or split',
                 ];
             }

@@ -448,26 +448,25 @@ class DailyPhotoBacklogService
 
         $scopeRequested = filled($filters['command_center_id'] ?? null) || filled($filters['project_id'] ?? null);
         $dates = $rows->pluck('recovered_date')->filter();
-        $assignments = $dates->isEmpty() ? collect() : MachineAssignment::query()
+        $assignments = $dates->isEmpty() ? collect() : MachineAssignment::query()->with('bchResolution')
             ->whereIn('machine_id', $rows->pluck('machine.id')->filter()->unique())
-            ->where('time_in', '<=', $dates->max().' 23:59:59')
-            ->where(fn (Builder $query) => $query->whereNull('time_out')->orWhere('time_out', '>', $dates->min().' 00:00:00'))
             ->get()->groupBy('machine_id');
 
-        return $rows->map(function (array $row) use ($scopeRequested, $assignments, $filters): array {
+        $ownership = new \App\Services\Reconciliation\DayBasedAssignmentOwnership($assignments->flatten(1), DB::table('machine_events')->whereIn('machine_id', $rows->pluck('machine.id')->filter()->unique())->get(['id', 'machine_id', 'type', 'occurred_at']));
+
+        return $rows->map(function (array $row) use ($scopeRequested, $assignments, $filters, $ownership): array {
             $date = $row['recovered_date'];
             $activeAssignments = $row['machine'] && $date
                 ? ($assignments->get($row['machine']->id) ?? collect())->filter(
                     fn (MachineAssignment $assignment): bool => $assignment->time_in->lte($date.' 23:59:59')
-                        && (! $assignment->time_out || $assignment->time_out->gt($date.' 00:00:00'))
+                        && (! $assignment->time_out || $assignment->time_out->gte($date.' 00:00:00'))
                 )->values()
                 : collect();
-            $inScope = ! $scopeRequested || $activeAssignments->contains(
-                fn (MachineAssignment $assignment): bool => (! filled($filters['command_center_id'] ?? null)
-                        || $assignment->command_center_id === (int) $filters['command_center_id'])
-                    && (! filled($filters['project_id'] ?? null)
-                        || $assignment->project_id === (int) $filters['project_id'])
-            );
+            $day = $ownership->resolve((int) ($row['machine']?->id ?? 0), $date ?? '1970-01-01');
+            $owner = $day['assignment'];
+            $inScope = ! $scopeRequested || ($owner
+                && (! filled($filters['command_center_id'] ?? null) || (int) ($owner->source_bch_id ?? $owner->command_center_id) === (int) $filters['command_center_id'])
+                && (! filled($filters['project_id'] ?? null) || (int) $owner->project_id === (int) $filters['project_id']));
             $row['candidate_assignments'] = $activeAssignments;
             $row['auto_recoverable'] = ! $row['protected'] && $inScope && $row['recoverable_fields'];
             $row['in_scope'] = $inScope;

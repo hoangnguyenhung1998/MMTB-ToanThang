@@ -60,7 +60,7 @@ class CanonicalAssignmentRelinker
         $protected = DB::table('reconciliation_rows as r')->join('reconciliation_periods as p', 'p.id', '=', 'r.reconciliation_period_id')
             ->whereIn('r.machine_id', $machineIds)->whereBetween('r.work_date', [$from, $to.' 23:59:59'])
             ->where(fn ($q) => $q->whereNotIn('p.status', ['DRAFT', 'GENERATED', 'REVIEWING'])
-                ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at'))
+                ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at')->orWhereNotNull('r.manually_edited_at'))
             ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
         foreach ($protected as $row) {
             $this->blocked[$this->key($row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id)] = true;
@@ -89,6 +89,16 @@ class CanonicalAssignmentRelinker
         }
         $sourceId = $sourceIds[0] ?? null;
         $targetId = $targetIds[0] ?? null;
+        if ($sourceId && $sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
+            return 'PROTECTED_CANONICAL_RELATIONSHIP';
+        }
+        if ($sourceId && $sourceId !== $targetId) {
+            foreach ($this->jobs[$sourceId] ?? [] as $job) {
+                if ($job->reviewed_at !== null || ($job->machine_resolution_method ?? null) === 'HUMAN' || ($job->ocr_final_source ?? null) === 'MANUAL' || in_array($job->review_status, ['APPROVED', 'CORRECTED'], true)) {
+                    return 'PROTECTED_CANONICAL_RELATIONSHIP';
+                }
+            }
+        }
         if ($target->id === null && $sourceId !== $targetId) {
             if ($sourceId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
                 return 'PROTECTED_CANONICAL_RELATIONSHIP';
@@ -234,7 +244,7 @@ class CanonicalAssignmentRelinker
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
         $sourceId = $this->byScope[$sourceKey][0] ?? null;
         $targetId = $this->byScope[$targetKey][0] ?? null;
-        if (! $sourceId || $sourceId === $targetId || ($target->id !== null && $this->emptyCase($sourceId))) {
+        if (! $sourceId || $sourceId === $targetId || ($target->id !== null && $this->emptyCase($sourceId) && $targetId && ! $this->emptyCase($targetId))) {
             return;
         }
         if ($targetId) {
@@ -251,8 +261,8 @@ class CanonicalAssignmentRelinker
                 $links = (object) $metadata->case_materialization;
                 $links->machine_assignment_id = $target->id;
                 $links->scope_key = $changes['scope_key'];
-                if ($target->id === null && isset($links->assignment_resolution_status)) {
-                    $links->assignment_resolution_status = 'NOT_FOUND';
+                if (isset($links->assignment_resolution_status)) {
+                    $links->assignment_resolution_status = $target->id === null ? 'NOT_FOUND' : 'MATCHED';
                 }
                 $links->candidate_machine_assignment_ids = $target->id === null ? [] : [$target->id];
                 $metadata->case_materialization = $links;
@@ -329,6 +339,11 @@ class CanonicalAssignmentRelinker
 
     private function containsStamp(object $target, string $stamp, bool $intervalEnd = false): bool
     {
+        if (($target->ownership_policy ?? null) === 'BUSINESS_DAY') {
+            return $stamp >= (string) $target->time_in && (! $target->time_out
+                || ($intervalEnd ? $stamp <= (string) $target->time_out : $stamp < (string) $target->time_out));
+        }
+
         return $stamp >= (string) $target->time_in && (! $target->time_out
             || (($target->id !== null || $intervalEnd) ? $stamp <= (string) $target->time_out : $stamp < (string) $target->time_out));
     }

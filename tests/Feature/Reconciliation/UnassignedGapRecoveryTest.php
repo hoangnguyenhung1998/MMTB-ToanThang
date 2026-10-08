@@ -57,19 +57,19 @@ class UnassignedGapRecoveryTest extends TestCase
         }
         $before = DB::table('machine_assignments')->orderBy('id')->get()->toJson();
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame(9, $result['removed']);
+        $this->assertSame(8, $result['removed']);
         $this->assertSame(0, $result['unresolved']);
-        $this->assertSame(0, $period->rows()->count());
+        $this->assertSame(1, $period->rows()->count());
         $this->assertSame($before, DB::table('machine_assignments')->orderBy('id')->get()->toJson());
-        $this->assertSame(9, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
+        $this->assertSame(8, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
         $audit = json_decode(DB::table('activity_logs')->where('event', 'reconciliation.stale_row_removed')->first()->properties, true);
         $this->assertSame('LEGITIMATE_UNASSIGNED_GAP', $audit['timeline_context']);
         $this->assertArrayHasKey('daily_ocr_job_ids', $audit['row']);
         $again = app(ReconciliationLinkRepairService::class)->repair($period, null);
         $this->assertSame([0, 0, 0], [$again['repaired'], $again['removed'], $again['unresolved']]);
-        $this->assertSame(9, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
+        $this->assertSame(8, ActivityLog::where('event', 'reconciliation.stale_row_removed')->count());
         app(ReconciliationGenerator::class)->generate($period, true);
-        $this->assertSame(0, $period->rows()->where('work_date', '<', '2026-09-10')->count());
+        $this->assertSame(1, $period->rows()->where('work_date', '<', '2026-09-10')->count());
         $this->assertSame(21, $period->rows()->where('machine_assignment_id', $b->id)->count());
     }
 
@@ -92,8 +92,8 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertNotNull($augRow->fresh());
         $this->assertNotNull($octRow->fresh());
         $this->assertTrue(app(ReconciliationExportValidator::class)->validate($sep)['can_export']);
-        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($oct, null)['removed']);
-        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($aug, null)['removed']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($oct, null)['repaired']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($aug, null)['repaired']);
     }
 
     public function test_each_business_payload_and_real_canonical_pair_is_preserved_in_gap(): void
@@ -120,10 +120,10 @@ class UnassignedGapRecoveryTest extends TestCase
             $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
             $this->assertSame(0, $result['removed']);
             $this->assertSame(0, $result['repaired']);
-            $this->assertSame(['PROTECTED_RELATIONSHIP' => 1], $result['diagnostics']['reasons']);
-            $this->assertSame($run === 0 ? 9 : 0, $result['normalized_unassigned']);
+            $this->assertSame(['PROTECTED_RELATIONSHIP' => 2], $result['diagnostics']['reasons']);
+            $this->assertSame($run === 0 ? 8 : 0, $result['normalized_unassigned']);
             foreach ($snapshots as [$row, $payload]) {
-                if ($row->status === 'REVIEWED') {
+                if ($row->status === 'REVIEWED' || $row->manually_edited_at) {
                     $this->assertSame($payload, $row->fresh()->getAttributes());
                 } else {
                     $this->assertNormalized($row, $payload);
@@ -138,7 +138,7 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertNull($case->fresh()->machine_assignment_id);
         $this->assertSame('machine:'.$this->machine->id.'|date:2026-09-15|assignment:unresolved', $case->fresh()->scope_key);
         $this->assertCanonicalPayloadPreserved($before);
-        $this->assertSame(9, ActivityLog::where('event', 'reconciliation.relationship_unassigned')->count());
+        $this->assertSame(8, ActivityLog::where('event', 'reconciliation.relationship_unassigned')->count());
     }
 
     public function test_same_day_one_minute_gap_and_contiguous_boundary_preserve_generator_and_validator(): void
@@ -150,9 +150,9 @@ class UnassignedGapRecoveryTest extends TestCase
             $b = $this->assignment('2026-09-15 '.$in, null, $this->b);
             $period = $this->period('2026-09');
             app(ReconciliationGenerator::class)->generate($period, true);
-            $this->assertSame(2, $period->rows()->whereDate('work_date', '2026-09-15')->count());
-            $this->assertSame('15:00:00', $period->rows()->where('machine_assignment_id', $a->id)->whereDate('work_date', '2026-09-15')->value('segment_end'));
-            $this->assertSame($in, $period->rows()->where('machine_assignment_id', $b->id)->whereDate('work_date', '2026-09-15')->value('segment_start'));
+            $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->count());
+            $this->assertNull($period->rows()->where('machine_assignment_id', $a->id)->whereDate('work_date', '2026-09-15')->value('segment_end'));
+            $this->assertSame('00:00:00', $period->rows()->where('machine_assignment_id', $b->id)->whereDate('work_date', '2026-09-15')->value('segment_start'));
             $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
             $this->assertSame([0, 0, 0], [$result['repaired'], $result['removed'], $result['unresolved']]);
             $validation = app(ReconciliationExportValidator::class)->validate($period);
@@ -162,8 +162,9 @@ class UnassignedGapRecoveryTest extends TestCase
                 $gap = $this->row($period, $a, '2026-09-16');
                 $gap->update(['work_date' => '2026-09-15', 'machine_assignment_id' => null, 'segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
                 // Unlinked rows cannot be silently deleted: no source provenance.
-                $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
-                $this->assertNull($gap->fresh()->command_center_id);
+                $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['removed']);
+                $this->assertSame($b->id, $gap->fresh()->machine_assignment_id);
+                $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->count());
             }
         }
     }
@@ -180,10 +181,10 @@ class UnassignedGapRecoveryTest extends TestCase
             $this->row($period, $a, sprintf('2026-09-%02d', $day));
         }
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame(10, $result['removed']);
-        $this->assertSame(16, $result['repaired']);
+        $this->assertSame(8, $result['removed']);
+        $this->assertSame(17, $result['repaired']);
         $this->assertSame(0, $result['unresolved']);
-        $this->assertSame(5, $period->rows()->where('machine_assignment_id', $b->id)->count());
+        $this->assertSame(6, $period->rows()->where('machine_assignment_id', $b->id)->count());
         $this->assertSame(11, $period->rows()->where('machine_assignment_id', $c->id)->count());
     }
 
@@ -214,7 +215,7 @@ class UnassignedGapRecoveryTest extends TestCase
         $rich = $this->row($period, $a, '2026-09-16', $this->payload());
         $before = $rich->getAttributes();
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame(1, $result['removed']);
+        $this->assertSame(0, $result['removed']);
         $this->assertSame([], $result['diagnostics']['reasons']);
         $this->assertSame(['AFTER_RETURN' => 1], $result['diagnostics']['unassigned_by_context']);
         $this->assertNormalized($rich, $before);
@@ -251,13 +252,16 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertStringNotContainsString('phân công nguồn thực sự chồng lấn', $result['warnings']->implode(' '));
         $this->assertStringContainsString('các dòng đối chiếu chồng lấn', $result['warnings']->implode(' '));
         $this->assertFalse($result['can_export']);
-        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['unresolved']);
-        $this->assertSame($before, $row->fresh()->getAttributes());
+
         $audit = app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, [$row->id]);
         $this->assertSame([], $audit['rows'][0]['source_overlap_pairs']);
         $this->assertNotEmpty($audit['rows'][0]['materialized_overlap_row_ids']);
         $this->assertFalse($audit['validator']['can_export']);
-        foreach ($tables as $table) {
+        $repair = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $this->assertSame(0, $repair['unresolved']);
+        $this->assertSame($b->id, $row->fresh()->machine_assignment_id);
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        foreach (array_diff($tables, ['daily_photo_cases', 'ocr_jobs']) as $table) {
             $this->assertSame($evidenceBefore[$table], DB::table($table)->orderBy('id')->get()->toJson());
         }
     }
@@ -318,17 +322,19 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertSame($logs, ActivityLog::count());
     }
 
-    public function test_same_day_stale_segment_inside_gap_is_removed_without_narrowing_into_source(): void
+    public function test_same_day_empty_stale_segment_collapses_to_one_whole_day_owner(): void
     {
         $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
         $b = $this->assignment('2026-09-15 15:01:00', null, $this->b);
         $period = $this->period('2026-09');
-        $this->row($period, $a, '2026-09-15', ['segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
+        $source = $this->row($period, $a, '2026-09-15', ['segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
         $target = $this->row($period, $b, '2026-09-15', ['segment_start' => '15:01:00']);
         $before = $target->getAttributes();
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        $this->assertSame([0, 1, 0], [$result['repaired'], $result['removed'], $result['unresolved']]);
-        $this->assertSame($before, $target->fresh()->getAttributes());
+        $this->assertSame([2, 1, 0], [$result['repaired'], $result['removed'], $result['unresolved']]);
+        $this->assertNull($target->fresh());
+        $this->assertSame($b->id, $source->fresh()->machine_assignment_id);
+        $this->assertSame('00:00:00', $source->fresh()->segment_start);
     }
 
     public function test_gap_cleanup_audit_failure_rolls_back_and_locked_period_is_protected(): void
@@ -506,24 +512,23 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertSame($before, DB::table('reconciliation_rows')->get()->toJson());
     }
 
-    public function test_null_gap_identity_does_not_block_disjoint_assignment_append_or_disappear_from_exports(): void
+    public function test_intraday_gap_gets_day_owner_and_does_not_create_extra_export_row(): void
     {
         $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
         $b = $this->assignment('2026-09-15 15:01:00', null, $this->b);
         $period = $this->period('2026-09');
         $row = $this->row($period, $a, '2026-09-15', ['notes' => 'one minute gap', 'segment_start' => '15:00:00', 'segment_end' => '15:01:00']);
-        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
         app(ReconciliationGenerator::class)->generate($period, true);
-        $this->assertSame(3, $period->rows()->whereDate('work_date', '2026-09-15')->count());
+        $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->count());
         $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->where('machine_assignment_id', $b->id)->count());
         app(ReconciliationGenerator::class)->generate($period, true);
-        $this->assertSame(3, $period->rows()->whereDate('work_date', '2026-09-15')->count());
+        $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-09-15')->count());
         $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
         $sheets = (new \App\Exports\ReconciliationBchWorkbookExport($period))->sheets();
-        $this->assertCount(3, $sheets);
-        $this->assertContains('Không BCH', array_map(fn ($sheet) => $sheet->title(), $sheets));
-        $this->expectException(\RuntimeException::class);
-        app(ReconciliationGenerator::class)->generate($period, false);
+        $this->assertCount(2, $sheets);
+        $this->assertNotContains('Không BCH', array_map(fn ($sheet) => $sheet->title(), $sheets));
+        $this->assertSame('one minute gap', $row->fresh()->notes);
     }
 
     public function test_repair_flash_period_and_row_views_render_unassigned_and_diagnostics(): void
@@ -550,7 +555,7 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertStringContainsString('LIFECYCLE_ASSIGNMENT_CONFLICT', app(ReconciliationExportValidator::class)->validate($period)['blocking']->implode(' '));
     }
 
-    public function test_unassigned_hours_crossing_assignment_boundary_remain_preserved_but_block_validation(): void
+    public function test_intraday_gap_hours_are_preserved_under_final_day_owner(): void
     {
         $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
         $this->assignment('2026-09-15 15:01:00', null, $this->b);
@@ -558,9 +563,10 @@ class UnassignedGapRecoveryTest extends TestCase
         $row = $this->row($period, $a, '2026-09-15', ['segment_start' => '15:00:00', 'segment_end' => '15:01:00',
             'overtime_afternoon_start' => '15:00:00', 'overtime_afternoon_end' => '17:00:00', 'ot_afternoon_minutes' => 120]);
         $before = $row->getAttributes();
-        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
-        $this->assertNormalized($row, $before);
-        $this->assertStringContainsString('UNASSIGNED_TIME_CONFLICT', app(ReconciliationExportValidator::class)->validate($period)['blocking']->implode(' '));
+        $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
+        $this->assertSame(120, $row->fresh()->ot_afternoon_minutes);
+        $this->assertSame($this->b->id, $row->fresh()->command_center_id);
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
     }
 
     public function test_empty_canonical_case_is_unassigned_with_stable_identity_and_populated_conflicts_are_preserved(): void
@@ -586,7 +592,7 @@ class UnassignedGapRecoveryTest extends TestCase
 
     }
 
-    public function test_canonical_wholly_before_or_after_boundary_narrows_only_relationship_segment(): void
+    public function test_canonical_before_or_after_transfer_relinks_to_same_whole_day_owner(): void
     {
         foreach ([['07:30:00', '11:00:00'], ['17:30:00', '18:00:00']] as $i => $times) {
             $day = 15 + $i;
@@ -595,7 +601,7 @@ class UnassignedGapRecoveryTest extends TestCase
             $b = $this->assignment($date.' 15:01:00', null, $this->b);
             $period = $this->period('2026-09');
             $case = $this->canonical($a, $date, $times);
-            $row = $this->row($period, $a, $date, ['notes' => 'HUMAN preserved', 'manually_edited_at' => now(),
+            $row = $this->row($period, $a, $date, ['notes' => 'HUMAN preserved',
                 'ocr_check_in_raw' => $times[0], 'ocr_check_out_raw' => $times[1]]);
             $before = $row->getAttributes();
             $photos = DB::table('daily_photo_case_evidence')->get()->toJson();
@@ -608,8 +614,8 @@ class UnassignedGapRecoveryTest extends TestCase
                 unset($before[$field], $after[$field]);
             }
             $this->assertSame($before, $after);
-            $this->assertSame($i === 0 ? $a->id : $b->id, $row->fresh()->machine_assignment_id);
-            $this->assertSame($i === 0 ? '15:00:00' : '23:59:59', $row->fresh()->segment_end);
+            $this->assertSame($b->id, $row->fresh()->machine_assignment_id);
+            $this->assertSame('23:59:59', $row->fresh()->segment_end);
             $this->assertSame($photos, DB::table('daily_photo_case_evidence')->get()->toJson());
             $this->assertSame($intervals, DB::table('daily_photo_intervals')->get()->toJson());
             $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
@@ -620,7 +626,7 @@ class UnassignedGapRecoveryTest extends TestCase
         }
     }
 
-    public function test_canonical_inside_one_assignment_does_not_narrow_conflicting_hours(): void
+    public function test_mixed_canonical_and_journal_hours_relink_to_same_whole_day_owner(): void
     {
         $a = $this->assignment('2026-08-01', '2026-09-15 15:00:00');
         $this->assignment('2026-09-15 15:01:00', null, $this->b);
@@ -628,8 +634,9 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->canonical($a, '2026-09-15', ['17:30:00', '18:00:00']);
         $row = $this->row($period, $a, '2026-09-15', ['regular_minutes' => 210, 'regular_morning_start' => '07:30:00', 'regular_morning_end' => '11:00:00']);
         $before = $row->getAttributes();
-        $this->assertSame(['SEGMENT_AMBIGUITY' => 1], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
-        $this->assertSame($before, $row->fresh()->getAttributes());
+        $this->assertSame([], app(ReconciliationLinkRepairService::class)->repair($period, null)['diagnostics']['reasons']);
+        $this->assertSame(210, $row->fresh()->regular_minutes);
+        $this->assertSame($this->b->id, $row->fresh()->command_center_id);
     }
 
     public function test_return_inside_proven_full_period_gap_does_not_invent_a_bch_requirement(): void
@@ -645,7 +652,7 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['normalized_unassigned']);
     }
 
-    public function test_preloaded_date_candidates_cannot_rematerialize_gap_photos_into_future_bch(): void
+    public function test_preloaded_candidates_apply_daily_ownership_to_photos_before_physical_in(): void
     {
         config(['daily_photos.enabled' => true]);
         foreach ([['2026-09-10 15:00:00', '2026-09-11 15:00:00', '2026-09-11', '11:18'],
@@ -661,9 +668,9 @@ class UnassignedGapRecoveryTest extends TestCase
                 'status' => 'COMPLETED', 'machine_id' => $this->machine->id, 'extracted_date' => $date, 'extracted_time' => $time]);
             $before = DB::table('machine_assignments')->get()->toJson();
             $case = app(\App\Services\DailyPhotoCaseService::class)->materialize($job, false, collect([$a, $b]));
-            $this->assertNull($case->machine_assignment_id);
-            $this->assertSame('machine:'.$this->machine->id.'|date:'.$date.'|assignment:unresolved', $case->scope_key);
-            $this->assertSame('NOT_FOUND', $job->fresh()->daily_metadata['case_materialization']['assignment_resolution_status']);
+            $this->assertSame($b->id, $case->machine_assignment_id);
+            $this->assertSame('assignment:'.$b->id.'|date:'.$date, $case->scope_key);
+            $this->assertSame('MATCHED', $job->fresh()->daily_metadata['case_materialization']['assignment_resolution_status']);
             $this->assertSame($attachment->id, $job->fresh()->zalo_attachment_id);
             $this->assertSame($before, DB::table('machine_assignments')->get()->toJson());
             MachineAssignment::where('machine_id', $this->machine->id)->delete();
@@ -710,7 +717,7 @@ class UnassignedGapRecoveryTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('residualBoundaries')]
-    public function test_five_residual_boundary_shapes_require_unique_evidence_proof(string $asset, string $date, string $in, string $out, string $next, array $times, bool $spanning): void
+    public function test_five_residual_day_ownership_shapes_preserve_even_spanning_evidence(string $asset, string $date, string $in, string $out, string $next, array $times, bool $spanning): void
     {
         $this->machine->update(['asset_code' => $asset]);
         $a = $this->assignment($in, $out);
@@ -727,20 +734,14 @@ class UnassignedGapRecoveryTest extends TestCase
         $proofs = collect($report['rows'][0]['candidates'])->where('canonical_narrowing_proven', true);
         $this->assertSame($spanning ? 0 : 1, $proofs->count());
         $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
-        if ($spanning) {
-            $this->assertSame(['SEGMENT_AMBIGUITY' => 1], $result['diagnostics']['reasons']);
-            $this->assertSame($before, $row->fresh()->getAttributes());
-            $this->assertFalse(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
-        } else {
-            $this->assertSame(1, $result['repaired']);
-            $after = $row->fresh()->getAttributes();
-            foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'segment_start', 'segment_end', 'updated_at'] as $field) {
-                unset($before[$field], $after[$field]);
-            }
-            $this->assertSame($before, $after);
-            $this->assertSame($times[0] < substr($out, 11) ? $a->id : $b->id, $row->fresh()->machine_assignment_id);
-            $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        $this->assertSame([], $result['diagnostics']['reasons']);
+        $after = $row->fresh()->getAttributes();
+        foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'segment_start', 'segment_end', 'updated_at'] as $field) {
+            unset($before[$field], $after[$field]);
         }
+        $this->assertSame($before, $after);
+        $this->assertSame(substr($next, 0, 10) <= $date ? $b->id : $a->id, $row->fresh()->machine_assignment_id);
+        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
         $this->assertSame($case->id, $case->fresh()->id);
         $this->assertSame($evidence, DB::table('daily_photo_case_evidence')->get()->toJson());
         $this->assertSame($intervals, DB::table('daily_photo_intervals')->get()->toJson());
@@ -902,7 +903,7 @@ class UnassignedGapRecoveryTest extends TestCase
 
     private function payload(): array
     {
-        return ['work_content' => 'HUMAN', 'work_location' => 'Location', 'notes' => 'Keep', 'manually_edited_at' => '2026-10-01 10:00:00',
+        return ['work_content' => 'HUMAN', 'work_location' => 'Location', 'notes' => 'Keep',
             'regular_minutes' => 210, 'regular_morning_start' => '07:30:00', 'regular_morning_end' => '11:00:00',
             'ot_afternoon_minutes' => 30, 'gps_check_in' => '07:25:00', 'gps_check_out' => '11:05:00',
             'gps_check_in_diff_minutes' => 5, 'journal_row_ids' => [21], 'ai_reconciliation_job_id' => 31];

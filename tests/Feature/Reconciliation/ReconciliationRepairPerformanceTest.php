@@ -31,8 +31,7 @@ class ReconciliationRepairPerformanceTest extends TestCase
             foreach (range(1, 30) as $day) {
                 $seed[] = $base + ['reconciliation_period_id' => $period->id, 'machine_assignment_id' => $old->id,
                     'work_date' => sprintf('2026-09-%02d', $day), 'segment_start' => '00:00:00', 'segment_end' => '23:59:59',
-                    'status' => 'DRAFT', 'regular_minutes' => 321, 'work_content' => 'HUMAN', 'daily_ocr_job_ids' => '[12,13]',
-                    'manually_edited_at' => '2026-09-30 12:00:00'];
+                    'status' => 'DRAFT', 'regular_minutes' => 321, 'work_content' => 'OCR content', 'daily_ocr_job_ids' => '[12,13]'];
             }
         }
         foreach (array_chunk($seed, 100) as $chunk) {
@@ -55,7 +54,7 @@ class ReconciliationRepairPerformanceTest extends TestCase
         $this->assertLessThan(100, count($queries));
         $this->assertSame(0, $hydrated);
         $this->assertCount(1, array_filter($queries, fn ($query) => str_contains($query['query'], 'from "machine_assignments"')));
-        $this->assertSame(1200, $period->rows()->where('regular_minutes', 321)->where('work_content', 'HUMAN')->where('daily_ocr_job_ids', '[12,13]')->count());
+        $this->assertSame(1200, $period->rows()->where('regular_minutes', 321)->where('work_content', 'OCR content')->where('daily_ocr_job_ids', '[12,13]')->count());
         $this->assertSame(1200, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
         $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
     }

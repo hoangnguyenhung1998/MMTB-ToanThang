@@ -157,7 +157,7 @@ class CanonicalDailyPhotoFoundationTest extends TestCase
         );
     }
 
-    public function test_same_machine_can_have_separate_cases_for_two_assignments_on_one_day(): void
+    public function test_same_machine_has_one_case_for_final_assignment_on_transfer_day(): void
     {
         $machine = $this->machine('T-XL0034');
         $morning = $this->assignment($machine, '2026-09-09 00:00:00', '2026-09-09 12:00:00');
@@ -166,10 +166,10 @@ class CanonicalDailyPhotoFoundationTest extends TestCase
         $first = $this->complete($this->pendingJob(), '2026-09-09', '07:00:00', 'T-XL0034');
         $second = $this->complete($this->pendingJob(), '2026-09-09', '17:00:00', 'T-XL0034');
 
-        $this->assertNotSame($first->daily_photo_case_id, $second->daily_photo_case_id);
-        $this->assertSame($morning, $first->dailyPhotoCase->machine_assignment_id);
+        $this->assertSame($first->daily_photo_case_id, $second->daily_photo_case_id);
+        $this->assertSame($afternoon, $first->dailyPhotoCase->machine_assignment_id);
         $this->assertSame($afternoon, $second->dailyPhotoCase->machine_assignment_id);
-        $this->assertDatabaseCount('daily_photo_cases', 2);
+        $this->assertDatabaseCount('daily_photo_cases', 1);
     }
 
     public function test_human_correction_records_resolution_provenance_and_materializes_case(): void
