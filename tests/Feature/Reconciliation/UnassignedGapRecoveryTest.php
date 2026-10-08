@@ -253,6 +253,10 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertFalse($result['can_export']);
         $this->assertSame(1, app(ReconciliationLinkRepairService::class)->repair($period, null)['unresolved']);
         $this->assertSame($before, $row->fresh()->getAttributes());
+        $audit = app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, [$row->id]);
+        $this->assertSame([], $audit['rows'][0]['source_overlap_pairs']);
+        $this->assertNotEmpty($audit['rows'][0]['materialized_overlap_row_ids']);
+        $this->assertFalse($audit['validator']['can_export']);
         foreach ($tables as $table) {
             $this->assertSame($evidenceBefore[$table], DB::table($table)->orderBy('id')->get()->toJson());
         }
@@ -683,6 +687,183 @@ class UnassignedGapRecoveryTest extends TestCase
         $this->assertInstanceOf(\stdClass::class, $after->ai_rescue_payload->result);
         $this->assertSame([], $after->ai_rescue_payload->items);
         $this->assertSame($metadata->ocr_content, $after->ocr_content);
+    }
+
+    public static function residualBoundaries(): array
+    {
+        // Only supplied boundaries are production facts. Other ranges/evidence are isolated test fixtures.
+        $cases = [
+            '85904' => ['T-XL0345', '2026-09-10', '2026-04-09 10:58:00', '2026-09-10 15:00:00', '2026-09-11 15:00:00', ['13:00:00', '14:00:00']],
+            '85905' => ['T-XL0345', '2026-09-11', '2026-04-09 10:58:00', '2026-09-10 15:00:00', '2026-09-11 15:00:00', ['17:00:00', '18:00:00']],
+            '86442' => ['SGC-T-3C0466', '2026-09-08', '2026-08-01 00:00:00', '2026-09-08 15:25:00', '2026-09-08 15:25:00', ['17:00:00', '18:00:00']],
+            '87577' => ['VT-3C0664', '2026-09-03', '2026-08-01 00:00:00', '2026-09-03 15:26:00', '2026-09-03 15:26:00', ['17:00:00', '18:00:00']],
+            '89197' => ['VT-3C0696', '2026-09-03', '2026-08-01 00:00:00', '2026-09-03 16:45:00', '2026-10-01 00:00:00', ['13:00:00', '14:00:00']],
+        ];
+        $datasets = [];
+        foreach ($cases as $id => $case) {
+            foreach ([false, true] as $spanning) {
+                $datasets[$id.($spanning ? '-crossing' : '-unique-proof')] = [...$case, $spanning];
+            }
+        }
+
+        return $datasets;
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('residualBoundaries')]
+    public function test_five_residual_boundary_shapes_require_unique_evidence_proof(string $asset, string $date, string $in, string $out, string $next, array $times, bool $spanning): void
+    {
+        $this->machine->update(['asset_code' => $asset]);
+        $a = $this->assignment($in, $out);
+        $b = $this->assignment($next, null, $this->b);
+        $period = $this->period('2026-09');
+        $case = $this->canonical($a, $date, $spanning ? ['13:00:00', '14:00:00', '17:00:00', '18:00:00'] : $times);
+        $row = $this->row($period, $a, $date);
+        $before = $row->getAttributes();
+        $evidence = DB::table('daily_photo_case_evidence')->get()->toJson();
+        $intervals = DB::table('daily_photo_intervals')->get()->toJson();
+        $source = DB::table('machine_assignments')->get()->toJson();
+        $report = app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, [$row->id]);
+        $this->assertSame([], $report['rows'][0]['source_overlap_pairs']);
+        $proofs = collect($report['rows'][0]['candidates'])->where('canonical_narrowing_proven', true);
+        $this->assertSame($spanning ? 0 : 1, $proofs->count());
+        $result = app(ReconciliationLinkRepairService::class)->repair($period, null);
+        if ($spanning) {
+            $this->assertSame(['SEGMENT_AMBIGUITY' => 1], $result['diagnostics']['reasons']);
+            $this->assertSame($before, $row->fresh()->getAttributes());
+            $this->assertFalse(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        } else {
+            $this->assertSame(1, $result['repaired']);
+            $after = $row->fresh()->getAttributes();
+            foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'segment_start', 'segment_end', 'updated_at'] as $field) {
+                unset($before[$field], $after[$field]);
+            }
+            $this->assertSame($before, $after);
+            $this->assertSame($times[0] < substr($out, 11) ? $a->id : $b->id, $row->fresh()->machine_assignment_id);
+            $this->assertTrue(app(ReconciliationExportValidator::class)->validate($period)['can_export']);
+        }
+        $this->assertSame($case->id, $case->fresh()->id);
+        $this->assertSame($evidence, DB::table('daily_photo_case_evidence')->get()->toJson());
+        $this->assertSame($intervals, DB::table('daily_photo_intervals')->get()->toJson());
+        $this->assertSame($source, DB::table('machine_assignments')->get()->toJson());
+        $logs = DB::table('activity_logs')->get()->toJson();
+        $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['repaired']);
+        $this->assertSame($logs, DB::table('activity_logs')->get()->toJson());
+    }
+
+    public function test_residual_audit_is_select_only_preserves_all_payload_and_reports_normalized_return_and_gap(): void
+    {
+        $a = $this->assignment('2026-01-01', '2026-08-01');
+        $this->assignment('2026-10-01', null, $this->b);
+        $period = $this->period('2026-09');
+        $case = $this->canonical($a, '2026-09-01');
+        $gap = $this->row($period, $a, '2026-09-01', ['notes' => 'SECRET_SENTINEL_NO_OUTPUT']);
+        MachineEvent::create(['machine_id' => $this->machine->id, 'type' => 'RETURN', 'occurred_at' => '2026-09-02 00:00:00']);
+        $returned = $this->row($period, $a, '2026-09-03', ['notes' => 'preserve return business']);
+        app(ReconciliationLinkRepairService::class)->repair($period, null);
+        $tables = ['reconciliation_rows', 'daily_photo_cases', 'daily_photo_case_evidence', 'daily_photo_intervals', 'ocr_jobs', 'zalo_attachments', 'machine_assignments', 'machine_events', 'activity_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->orderBy('id')->get()->toJson();
+        }
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $report = app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, [$gap->id, 999999]);
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        foreach ($queries as $query) {
+            $this->assertMatchesRegularExpression('/^select\b/i', $query['query']);
+            $this->assertStringNotContainsString('for update', strtolower($query['query']));
+        }
+        $this->assertSame([999999], $report['missing_focus_row_ids']);
+        $this->assertSame(['LEGITIMATE_UNASSIGNED_GAP' => 1, 'AFTER_RETURN' => 1], $report['summary']['unassigned_context_counts']);
+        $this->assertTrue($report['validator']['can_export']);
+        $this->assertCount(2, $report['normalization_audits']);
+        $this->assertStringNotContainsString('SECRET_SENTINEL_NO_OUTPUT', json_encode($report));
+        foreach ($report['rows'] as $detail) {
+            $this->assertTrue($detail['relationship_keys_null']);
+            $this->assertTrue($detail['timeline_proves_unassigned']);
+            $this->assertNull($detail['unassigned_canonical_reason']);
+        }
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson());
+        }
+        $this->artisan('reconciliation:residual-audit', ['period' => $period->id, '--row' => [$gap->id]])->assertSuccessful();
+        $this->artisan('reconciliation:residual-audit', ['period' => $period->id, '--row' => ['invalid']])->assertFailed();
+        $this->artisan('reconciliation:residual-audit', ['period' => 999999])->assertFailed();
+        $readOnly = new \App\Services\Reconciliation\CanonicalAssignmentRelinker([$this->machine->id], '2026-09-01', '2026-09-30', false);
+        $this->expectException(\LogicException::class);
+        $readOnly->flush(now()->toDateTimeString());
+    }
+
+    public function test_residual_audit_queries_remain_bounded_for_1200_unassigned_rows(): void
+    {
+        $period = $this->period('2026-09');
+        $machineIds = [$this->machine->id];
+        for ($i = 1; $i < 40; $i++) {
+            $machineIds[] = Machine::create(['asset_code' => 'AUDIT-'.$i, 'chassis_no' => 'AUDIT-'.$i, 'company' => 'SGC', 'status' => 'ACTIVE', 'created_at' => '2026-01-01'])->id;
+        }
+        $assignments = [];
+        foreach ($machineIds as $id) {
+            $assignments[] = ['machine_id' => $id, 'project_id' => $this->project->id, 'command_center_id' => $this->a->id, 'time_in' => '2026-01-01 00:00:00', 'time_out' => '2026-08-01 00:00:00'];
+            $assignments[] = ['machine_id' => $id, 'project_id' => $this->project->id, 'command_center_id' => $this->b->id, 'time_in' => '2026-10-01 00:00:00', 'time_out' => null];
+        }
+        DB::table('machine_assignments')->insert($assignments);
+        $row = $period->rows()->create(['machine_id' => $this->machine->id, 'work_date' => '2026-09-01',
+            'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'notes' => 'preserved business', 'status' => 'DRAFT'])->fresh();
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, []);
+        $singleQueries = count(DB::getQueryLog());
+        DB::disableQueryLog();
+        $template = $row->getAttributes();
+        unset($template['id']);
+        $inserts = [];
+        foreach ($machineIds as $machineId) {
+            for ($day = 1; $day <= 30; $day++) {
+                if ($machineId === $this->machine->id && $day === 1) {
+                    continue;
+                }
+                $inserts[] = array_replace($template, ['machine_id' => $machineId, 'work_date' => sprintf('2026-09-%02d', $day)]);
+            }
+        }
+        foreach (array_chunk($inserts, 100) as $chunk) {
+            DB::table('reconciliation_rows')->insert($chunk);
+        }
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $started = microtime(true);
+        $report = app(\App\Services\Reconciliation\ReconciliationResidualAuditService::class)->audit($period, []);
+        $elapsed = (microtime(true) - $started) * 1000;
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        $this->assertCount(1200, $report['rows']);
+        $this->assertSame(['LEGITIMATE_UNASSIGNED_GAP' => 1200], $report['summary']['unassigned_context_counts']);
+        $this->assertTrue($report['validator']['can_export']);
+        $this->assertSame($singleQueries, count($queries));
+        $this->assertLessThan(35, count($queries));
+        foreach ($queries as $query) {
+            $this->assertMatchesRegularExpression('/^select\b/i', $query['query']);
+        }
+        fwrite(STDERR, sprintf("\nResidual audit benchmark: 1200 rows; %.2f ms; %d queries (same as 1 row)\n", $elapsed, count($queries)));
+    }
+
+    public function test_read_only_residual_runbook_selects_match_existing_schema(): void
+    {
+        $runbook = file_get_contents(base_path('docs/runbooks/PHASE-17.3-RESIDUAL-AUDIT.md'));
+        preg_match('/```sql\r?\n(.*?)\r?\n```/s', $runbook, $match);
+        $this->assertNotEmpty($match[1] ?? null);
+        $sql = preg_replace('/^--.*$/m', '', $match[1]);
+        $count = 0;
+        foreach (explode(';', $sql) as $statement) {
+            $statement = trim($statement);
+            if ($statement === '' || $statement === 'START TRANSACTION READ ONLY' || $statement === 'COMMIT') {
+                continue;
+            }
+            $this->assertMatchesRegularExpression('/^SELECT\b/i', $statement);
+            DB::select($statement);
+            $count++;
+        }
+        $this->assertSame(12, $count);
     }
 
     private function assertCanonicalPayloadPreserved(array $before): void

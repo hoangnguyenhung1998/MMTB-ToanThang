@@ -1,10 +1,58 @@
-# Phase 17.3 — Unassigned Relationship Completion & Production Residual Stabilization
+# Phase 17.3 — Final Reconciliation Ambiguity Resolution & Production Residual Audit
 
-- Updated: 2026-10-08; same Phase 17.3 continuation, no Phase 17.4.
-- Status: CODE COMPLETE — local only; mandatory local checks PASS; STOP for review. Production NOT independently VERIFIED by this session.
-- Verified local baseline: clean `phase17-3-unassigned-gap-reconciliation`, HEAD `f690ecf`, upstream `origin/phase17-3-unassigned-gap-reconciliation`, ahead/behind 0/0 at start. No Git writes or fetch/pull.
-- User-reported production merge: `6b6a4cc68c4b6a622ba13e15b883fb323d2fceac`. The commit object is unavailable locally; merge equivalence NOT VERIFIED. `rev-parse` printing a SHA did not establish object existence; reading the object failed.
-- User-reported September production run: 6046 inspected, 5825 correct, 0 relinks/cleanup, 221 residual = 39 UNASSIGNED_GAP_REQUIRES_REVIEW + 5 SEGMENT_AMBIGUITY + 60 INVALID_TIMELINE (30 each machines 79/261) + 117 AFTER_RETURN_REQUIRES_REVIEW; validator 317 blockers / 3 overlap warnings. No production access or action in this session.
+- Updated: 2026-10-08; continuation of 17.3, no new Phase.
+- Current status: LOCAL DIAGNOSTICS VERIFIED; mandatory local checks PASS; REPORT → STOP. Production case diagnosis and 126-row verification PENDING EVIDENCE, NOT COMPLETED.
+- Verified baseline: clean `phase17-3-final-fix`, HEAD `1587f5a1b0ade3ad949dd6f94775688d5a630b96`, upstream `origin/production`, cached ahead/behind 0/0. No fetch/pull/Git writes. This supersedes the previous uncommitted f690ecf checkpoint below.
+- User reports PR #61 deployed and September results: 6046 inspected, 5915 correct, 126 normalized (9 LEGITIMATE_UNASSIGNED_GAP / 117 AFTER_RETURN), 5 SEGMENT_AMBIGUITY, 5 validator blockers, 3 warnings, zero invalid timelines. The commit exists locally; live deployment and counts are NOT independently VERIFIED.
+
+## Current AUDIT → ROOT CAUSE → DESIGN outcome
+
+The baseline already has evidence-proven segment narrowing, nullable row/canonical representation, protection/identity conflict guards, idempotency, generator occupancy, automatic Daily Photo NULL-payload preservation, capture-time membership filtering and NULL-safe UI/export. Repair cannot safely narrow when business/canonical intervals span the boundary, timestamps are missing, references disagree, allocated endpoints are outside the candidate or journal timing is not proven. These are code paths verified with real DB fixtures, not proof of which path each production row follows.
+
+The source timestamps supplied for machine 25 prove a real [Sep10 15:00, Sep11 15:00) gap and do not prove source overlap. An overlap warning names a materialized relationship layer unless full source histories demonstrate source overlap. For machines 55/135/221, even the complete neighboring assignment history is missing. The exact row segments, source of work hours, OCR/canonical evidence and locks for all five rows are absent. No new auto-fix or split rule is justified yet. Existing Validator blockers are retained.
+
+### Five-case audit table (production facts versus missing evidence)
+
+| Row ID | Machine | Date | Existing BCH | Candidate BCH | Evidence interval | Boundary | Root cause | Safe auto-fix? | Expected outcome |
+|---|---|---|---|---|---|---|---|---|---|
+| 85904 | 25 / T-XL0345 | 2026-09-10 | NOT VERIFIED | #256 catalog needs collection | NOT PROVIDED | #256 OUT 15:00; #420 IN Sep11 15:00 | NOT VERIFIED; source gap is supplied | NOT VERIFIED | Keep review until canonical/business times uniquely fit source or gap |
+| 85905 | 25 / T-XL0345 | 2026-09-11 | NOT VERIFIED; warning mentions ME HLX / ME 10 | #420 catalog needs collection | NOT PROVIDED | #420 IN 15:00; old OUT previous day | NOT VERIFIED; warning alone is not source overlap | NOT VERIFIED | Unique after-IN evidence may narrow; before/after mixed evidence stays blocked |
+| 86442 | 55 / SGC-T-3C0466 | 2026-09-08 | NOT VERIFIED; warning mentions HTTQ / TĐXD 10.4 | #422 plus missing neighbors | NOT PROVIDED | #422 IN 15:25 | NOT VERIFIED; full source history absent | NOT VERIFIED | Distinguish source/materialized overlap; never fabricate predecessor OUT |
+| 87577 | 135 / VT-3C0664 | 2026-09-03 | NOT VERIFIED; warning mentions HTTQ / TĐXD 10.4 | #423 plus missing neighbors | NOT PROVIDED | #423 IN 15:26 | NOT VERIFIED; full source history absent | NOT VERIFIED | Same proof/protection checks; conflicting evidence remains manual |
+| 89197 | 221 / VT-3C0696 | 2026-09-03 | NOT VERIFIED | #296 plus missing neighbors | NOT PROVIDED | #296 OUT 16:45 | NOT VERIFIED; later assignment/lifecycle absent | NOT VERIFIED | Before-OUT proof may narrow; after-OUT needs actual uncovered/lifecycle proof |
+
+### Implementation justified by the evidence
+
+1. `CanonicalAssignmentRelinker::narrowingReason` explains the exact existing proof failure (case/interval missing, journal timing unproven, canonical time/reference/protection conflict, business endpoint outside candidate, missing allocation endpoints). `canNarrow` delegates to that same proof; acceptance conditions are unchanged.
+2. Constructor defaults retain all original Repair locks. Explicit read-only snapshots omit locks and reject `plan`/`flush` with LogicException. The audit never calls Repair, generation, sync or pairing.
+3. `ReconciliationResidualAuditService` reads period rows, full source/lifecycle histories, canonical case/member/pair IDs, OCR times/references, referenced journal times, attachment checksums, same-day siblings and shared period protection. It lists both source and materialized overlaps, per-candidate reasons, nullable relationship consistency, unassigned contexts and prior normalization audits, then independently invokes the existing read-only Validator. SELECT queries are batched, with no query per row.
+4. `reconciliation:residual-audit <period> [--row=...]` emits JSON for the five default focus IDs and every row with any NULL relationship in that period. Missing focus IDs are explicit, not silently substituted. No repair simulation or mutation option exists. Sensitive opaque metadata/raw OCR/notes are not emitted; selected payload snapshots are hashed.
+5. `docs/runbooks/PHASE-17.3-RESIDUAL-AUDIT.md` provides 12 SELECT statements inside a MySQL READ ONLY transaction usable on the existing deployment, and the new command after separately approved deployment. SQL SELECT fields are regression-checked against the existing local schema. MySQL transaction syntax/execution on production was not run by this session.
+
+### 126 normalized rows
+
+The supplied 9/117 figures describe successfully normalized contexts, not 126 remaining errors. Current read-only audit separately reports actual NULL assignment counts, all-three-NULL consistency, timeline proof, canonical conflict reasons, audit history and Validator results. AFTER_RETURN derives from full coverage/lifecycle proof; a contradictory active assignment after RETURN remains blocking. Existing tests cover payload preservation, canonical identity, double Repair/no new audit, Generator disjoint append/full-rebuild protection, capture-time materialization, automatic Daily Photo preservation and NULL UI/workbook export. No exact production row-level result is claimed without the collected report.
+
+Current snapshots prove current stored state only. Historical evidence preservation since a prior production Repair requires the pre-repair snapshot or relevant existing audit; counts and current hashes alone cannot prove it.
+
+### Regression additions and current results
+
+- Ten datasets cover each supplied boundary with uniquely contained real canonical evidence and with two real pairs spanning the boundary. Missing neighboring production ranges are explicitly synthetic test fixtures. No fabricated production Row/Assignment IDs or root causes.
+- Tests compare original row business attributes, pairing/member/interval snapshots and full source history, retain mixed evidence/blocking and verify repeated Repair creates no new mutation/audit. Audit overlaps are checked against a stale materialized sibling while sources remain disjoint.
+- SELECT-only audit regression verifies no data mutation, no locking SELECT, missing IDs/input errors, NULL gap/RETURN classifications, raw-note exclusion and read-only flush rejection.
+- Performance audit: 1200 rows / 40 machines / 30 days has the same **18 queries** as 1 row; targeted run **492.91 ms**. Diagnostic service intentionally reuses the existing Validator's Eloquent read path; the zero-model-hydration guarantee applies to Repair, not the full diagnostic report.
+- Final targeted reconciliation: **147 tests / 1417 assertions PASS / 16.60 s**. Full Laravel: **464 tests / 3283 assertions PASS / 119.89 s**. Pint --test and PHP syntax PASS on all 4 changed/new PHP files; git diff --check PASS. Final full-run audit: **428.32 ms / 18 queries**, same count as 1 row. Final Repair: assigned **403.12 ms / 147 queries / 0 models**, unassigned **507.60 ms / 147 / 0**, long gap **129.97 ms / 23 / 0 row models**. All tests use APP_ENV=testing / SQLite :memory:, no live provider/production DB.
+- Retained Repair canonical benchmarks: assigned **449.75 ms**, unassigned **650.81 ms**, both **147 queries / 0 row/case/OCR models**. Long-gap repair **140.68 ms / 23 queries / 0 row models**. Timing is local SQLite host-dependent, not production latency. Timeout unchanged.
+
+### Current safety, deployment and STOP
+
+No migration/dependency/provider/worker/Collector/lifecycle/source assignment change; no altered auto-fix/business acceptance or Validator bypass. No production access/repair/split/merge/hour redistribution. No commit/push/PR/merge/deploy/restart. Reviewed/locked/canonical protection and atomic Repair writes retain defaults. Real production root causes, exact 126-row payload history and MySQL concurrency remain NOT VERIFIED.
+
+NEXT ACTION (local checks complete): review the local diagnostic diff, then collect the runbook's read-only production evidence under operator control. Diagnose each five-case row against actual source/evidence intervals before designing any further mutation. Keep Phase 17.3 open. REPORT → STOP; future Git/deploy/production writes need explicit separate authorization.
+
+## Prior continuation milestone — historical record
+
+The following sections record the already-merged implementation and its prior local verification. Their f690ecf baseline, counts, file list and STOP checkpoint are historical; current verified Git and the section above take precedence.
 
 ## Goal, scope and continuity
 
