@@ -1,5 +1,45 @@
 # Phase 17.3 — October root cause and guarded fixes
 
+## Current checkpoint — 2026-10-08 audit contract and production evidence
+
+This section supersedes the stale local/remote status below; earlier implementation/test totals are historical. Phase remains open. Goal: fix the proven audit tool defect and collect evidence for the reported `3` repairs, without changing any repair rules.
+
+- Actual branch `phase17-3-audit-details-fix`; initially clean; HEAD `3d27a76bd8100433ac63b16b910f1913b801128c`; no upstream configured. Cached/local production match. `git ls-remote origin refs/heads/production refs/heads/phase17-3-final-fix` independently returned `3d27a76` and `8f8b6fa`. Local history includes PR64 merge `4baa0e3` and PR65 implementation `8f8b6fa`. GitHub code is verified; hosting code/DB are NOT VERIFIED.
+- Proven defect: `collect(..., bool $details, ...)` reassigned `$details=[]` per group and appended row summaries. With rows, the final group array was truthy even with `details=false`, selecting schema2 and exposing the detailed evidence/release label by default. Empty scopes retained the boolean. Minimal correction: use `$rowSummaries` in three places; public signature, schema defaults, dispositions and business rules unchanged.
+- Test gap: OctoberResidualFixTest asserted detailed schema2 and invalid release handling, but never asserted default schema1 on a populated scope. New ConsistencyAuditContractTest covers service/CLI empty/nonempty/multiple groups, absence of evidence/release by default, empty detailed evidence, last-group protection independence, forbidden values and SELECT-only queries. Baseline matrix **4 FAIL / 8 PASS /253 assertions**, exactly nonempty default service/CLI single/multiple-group failures; after correction matrix **12 PASS /287**, final test file **13 PASS /307**. SQLite in-memory; no live DB used.
+- Requested regression command `php artisan test --compact --filter='OctoberResidualFixTest|CrossPeriodConsistencyTest|DayBasedBchOwnershipTest'`: **30 PASS /494 assertions**,3.16s. Final audit-only command **13 PASS /307**,0.98s. Existing detailed canonical regression also asserts all observed queries are SELECT. Audit path invokes only read methods (`reason`, `needsRelink`, `protectedEvidence`, classifier, Validator, evidence collection), never `plan`/`flush`/repair. Transactions are control statements; no application table writes. No full suite repeated for this narrow audit fix.
+- Final checks: scoped Pint `--test` **2 files PASS**; PHP syntax service/test **PASS**; extracted hosting collector PHP syntax and hosting block `bash -n` **PASS**; `git diff --check` **PASS**. Final diff contains only the three variable-use replacements, the direct contract test and four documentation files. Hosting/MySQL execution of the collection block is **NOT VERIFIED**; syntax validation is not a production run.
+
+### Verified execution path; limits of the counter
+
+`UI repairLinks → ReconciliationLinkRepairService::repair → locked period/batch rows → full assignment/lifecycle history → daily owner → source/segment/project/BCH/overlap guards → CanonicalAssignmentRelinker::reason → relationship/protection check → target occupants → duplicate classifier → guarded plan/batch writes → counters/diagnostics → UI`. Validator separately compares references to the stored row and daily ownership; period page shows it, and export refuses blockers (warnings require acknowledgement). Generator runs canonical preflight and guarded append/Repair; Sync runs preflight, occupied-day checks and refuses conflicted duplicate-day allocation; replay materialize uses daily ownership and relationship guards. These are possible writer entry points, not proof of the writer of any existing production row.
+
+Canonical guards can stop before duplicate handling: multiple populated cases/scopes, protected/shared locked evidence, wrong machine/date/case/member, out-of-owner capture/interval, or foreign/missing reference. Target handling permits only proven empty source/target, identical complete payload, or category C independent complementary descriptors. Different hours/intervals remain category D / DUPLICATE_PAYLOAD_CONFLICT; multiple target occupants yield TARGET_DUPLICATE. No survivor is selected by this investigation. `reason=null` against projected owner does not prove stored-row compatibility or safe duplicate merge.
+
+| Repair result key | Verified code meaning | Current production observation |
+|---|---|---|
+| repaired | Incremented for canonical plan when row links need no changes, or a guarded row-link/segment update; not number of fields or total affected rows | User reports 3; original result/diagnostics absent |
+| removed | Proven empty/equal/descriptor-consolidated row removals and stale draft cleanup; separate counter | NOT VERIFIED |
+| normalized_unassigned | Rich deterministic gap/return relationship normalization | NOT VERIFIED |
+| unresolved | Inspected unresolved rows with reasons/row diagnostics; not duplicate-pair count | NOT VERIFIED |
+| diagnostics.already_correct | Row with no link change and no canonical relink needed | NOT VERIFIED |
+
+**Production cause: chưa xác minh nguyên nhân production.** Possible skip classes above are code-supported hypotheses until mapped to actual rows/diagnostics. Historic 129 D/672 OCR/220 canonical/21 identical/108 warnings cannot be substituted for a current audit. No current evidence establishes why exactly three plans/updates occurred. Need original repair result including diagnostics, scope/time, actual hosting SHA/deployment timeline, fresh full/focus audit and retained activity/action records. Never rerun Repair on live DB just to recreate counters. Missing writer logs means UNKNOWN; equal hashes/reference IDs do not prove interval equivalence.
+
+### Checklist, risks, rollback, next action
+
+- [x] Baseline/status/history/upstream checked; GitHub refs independently verified.
+- [x] Contract regression FAIL before minimal fix and PASS after; requested regression PASS.
+- [x] Default/detailed empty/nonempty and multiple-group behavior covered; SELECT-only/redaction verified.
+- [x] Hosting fail-fast collection block prepared in residual runbook; no hosting command executed.
+- [ ] Hosting release and production diagnostics supplied and classified by actual evidence.
+
+Only changed service, direct tests and Phase/state/index/runbook documentation. No schema/migration, worker/runtime restart, ownership/repair/Validator/OCR/time/GPS/assignment-history change. Rollback is reverting these local audit/test/docs hunks; there is no data repair to undo. Deployment is separate and currently unauthorized; old deployed code must fail the default-mode check in the collection block rather than silently collect unintended detailed data. Separate command snapshots may differ while production writers run; capture UTC times and use an authorized consistent snapshot for before/after claims.
+
+NEXT ACTION: review local diff; an authorized operator, after the audit fix is separately released, supplies the runbook packet and original Repair result/deployment timeline. Validate checksums/schema/scope, split duplicate/single-row days and stored-row/owner compatibility, then join each unresolved reason to actual reference/time/protection evidence. Stop with production NOT VERIFIED if packet/original result is missing. No commit/push/PR/merge/deploy/live Repair/Sync/Generator/replay/repair-preview is authorized.
+
+## Historical implementation checkpoint (superseded status)
+
 - Updated 2026-10-08. Local code/tests/docs COMPLETE FOR REVIEW; production NOT VERIFIED. This checkpoint supersedes the previous audit-only continuation. No new Phase.
 - Verified local branch `phase17-3-final-fix`, HEAD `21f458d` (PR #64 implementation commit). Owner-reported production merge `4baa0e3` is absent in local Git. No fetch/pull or hosting access. JSON schema 1 matches the local command contract, but does not identify the executable/deployed release. Hosting must report HEAD separately.
 - Evidence: user-provided `october-consistency.json`, period **9**, full October, SHA256 `33630a14688fc3740f129190ff6460b323bf1605f7a7c700ab4542a77ca1c32f`. Preserve this local evidence unmodified/unversioned. September evidence is used only for the existing 126-day regression.

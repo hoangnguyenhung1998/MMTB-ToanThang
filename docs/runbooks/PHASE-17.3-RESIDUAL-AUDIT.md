@@ -2,6 +2,163 @@
 
 This runbook collects evidence; it does not change assignments or reconciliation rows. Use the existing production schema, under the operator's control. This session did not access production.
 
+## Current October collection — fail-fast, after the audit fix is released
+
+This block supersedes the abbreviated October examples below. The GitHub production ref was independently observed at `3d27a76bd8100433ac63b16b910f1913b801128c` on 2026-10-08, containing PR64/65; hosting is NOT VERIFIED. That baseline has the audit shadowing defect. An authorized operator runs this block only after a separately authorized release with the audit fix. It does not deploy code. Default-mode schema verification stops an old checkout. No new credentials, password, token or `.env` are requested.
+
+Set the two actual absolute directory paths. The private base must already exist, be writable, not publicly served by another site, and outside the **entire project** (thus outside its webroot); the block creates a restricted evidence subdirectory there. It requires a clean hosting Git checkout on branch `production`, PHP83, MySQL/MariaDB and existing Laravel dependencies/config. A non-Git deployment, another branch, dirty checkout, missing mapping, wrong period dates or error requires operator verification, not bypassing the guard. No APP_ENV/config/source changes. MySQL `SET SESSION TRANSACTION READ ONLY` is connection-local transaction control, not a data write; every new transaction on the audit connection is read-only. A reconnect loses this setting, so the helper also verifies its connection ID before/after each command and rejects changed connections. Laravel's before-execution callback rejects non-SELECT application queries before they can execute, in addition to the DB transaction guard.
+
+```bash
+set -Eeuo pipefail
+umask 077
+PROJECT='/home/REPLACE_WITH_ACCOUNT/REPLACE_WITH_LARAVEL_ROOT'
+PRIVATE_BASE='/home/REPLACE_WITH_ACCOUNT/private-audits'
+PHP='/opt/alt/php83/usr/bin/php'
+test -x "$PHP"
+test -d "$PROJECT" && test -d "$PRIVATE_BASE" && test -w "$PRIVATE_BASE"
+PROJECT=$(realpath -e -- "$PROJECT")
+PRIVATE_BASE=$(realpath -e -- "$PRIVATE_BASE")
+case "$PRIVATE_BASE/" in "$PROJECT/"*) echo 'Private output is inside project; STOP' >&2; exit 1;; esac
+cd -- "$PROJECT"
+test -f artisan && test -f bootstrap/app.php && test -f vendor/autoload.php
+test "$(git rev-parse --show-toplevel)" = "$PROJECT"
+BRANCH=$(git branch --show-current)
+test "$BRANCH" = production
+STATUS=$(git status --porcelain=v1)
+test -z "$STATUS" || { echo 'Dirty checkout; STOP for review' >&2; exit 1; }
+HEAD=$(git rev-parse --verify HEAD)
+[[ "$HEAD" =~ ^[0-9a-f]{40}$ ]]
+OUT=$(mktemp -d "$PRIVATE_BASE/october-audit-XXXXXXXX")
+chmod 700 "$OUT"
+trap 'echo "Collection failed; partial files are NOT evidence. Private output: $OUT" >&2' ERR
+export MMTB_AUDIT_PROJECT="$PROJECT"
+printf 'branch=%s\nobserved_sha=%s\noperator_reported_release=%s\ncollected_at_utc=%s\n' \
+  "$BRANCH" "$HEAD" "$HEAD" "$(date -u +%FT%TZ)" > "$OUT/observed-release.txt"
+git status --short --branch > "$OUT/git-status.txt"
+"$PHP" artisan reconciliation:consistency-audit --help > "$OUT/command-help.txt" 2> "$OUT/help.stderr"
+grep -q -- '--details' "$OUT/command-help.txt"
+
+# Temporary collector lives outside webroot, never in the deployed source tree.
+cat > "$OUT/collect.php" <<'PHP'
+<?php
+require getenv('MMTB_AUDIT_PROJECT').'/vendor/autoload.php';
+$app = require getenv('MMTB_AUDIT_PROJECT').'/bootstrap/app.php';
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+$db = Illuminate\Support\Facades\DB::connection();
+if ($db->getDriverName() !== 'mysql') { throw new RuntimeException('MySQL required'); }
+foreach ([$db->getPdo(), $db->getReadPdo()] as $pdo) {
+    $pdo->exec('SET SESSION TRANSACTION READ ONLY');
+}
+$db->beforeExecuting(function ($query) {
+    if (! preg_match('/^select\b/i', ltrim($query))) {
+        throw new RuntimeException('Non-SELECT application query; STOP');
+    }
+});
+$connectionIds = function () use ($db): array {
+    return array_map(fn ($pdo) => (int) $pdo->query('SELECT CONNECTION_ID()')->fetchColumn(), [$db->getPdo(), $db->getReadPdo()]);
+};
+$before = $connectionIds();
+$mode = $argv[1] ?? '';
+if ($mode === 'preflight') {
+    $data = $db->transaction(function () use ($db): array {
+        $period = $db->table('reconciliation_periods')->where('id', 9)->first(['id', 'type', 'date_from', 'date_to', 'status']);
+        if (! $period || $period->type !== 'MONTHLY' || substr($period->date_from, 0, 10) !== '2026-10-01' || substr($period->date_to, 0, 10) !== '2026-10-31') {
+            throw new RuntimeException('Period9 is not full October2026');
+        }
+        $machines = $db->table('machines')->whereIn('asset_code', ['T-XL0034', 'T-XL0345'])->orderBy('id')->get(['id', 'asset_code']);
+        foreach (['T-XL0034', 'T-XL0345'] as $code) {
+            if ($machines->where('asset_code', $code)->count() !== 1) { throw new RuntimeException('Asset mapping missing/ambiguous'); }
+        }
+        if ($db->table('machines')->whereIn('id', [16, 255])->count() !== 2) { throw new RuntimeException('Focus IDs missing'); }
+        return ['period' => $period, 'asset_mappings' => $machines->all(),
+            'focus_machines' => $db->table('machines')->whereIn('id', [16, 255])->get(['id', 'asset_code'])->all()];
+    });
+    $output = json_encode($data, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+} elseif ($mode === 'audit') {
+    $args = ['period' => 9, '--from' => '2026-10-01', '--to' => '2026-10-31', '--release' => $argv[3]];
+    if ($argv[2] === 'detailed') { $args['--details'] = true; }
+    elseif ($argv[2] !== 'default') { throw new RuntimeException('Invalid mode'); }
+    if (isset($argv[4])) {
+        if (! ctype_digit($argv[4]) || (int) $argv[4] < 1) { throw new RuntimeException('Invalid machine'); }
+        $args['--machine'] = (int) $argv[4];
+    }
+    if ($kernel->call('reconciliation:consistency-audit', $args) !== 0) { throw new RuntimeException('Audit command failed'); }
+    $output = $kernel->output();
+} elseif ($mode === 'provenance') {
+    $data = $db->transaction(function () use ($db): array {
+        $rowIds = $db->table('reconciliation_rows')->where('reconciliation_period_id', 9)->select('id');
+        // Safe numeric relationship/counter projections; never full properties/description/raw OCR.
+        return $db->table('activity_logs')->where('event', 'like', 'reconciliation.%')
+            ->where(function ($q) use ($rowIds) {
+                $q->whereIn('machine_id', function ($q) { $q->select('machine_id')->from('reconciliation_rows')->where('reconciliation_period_id', 9); })
+                    ->orWhere(function ($q) use ($rowIds) { $q->where('subject_type', App\Models\ReconciliationRow::class)->whereIn('subject_id', $rowIds); })
+                    ->orWhere(function ($q) { $q->where('subject_type', App\Models\ReconciliationPeriod::class)->where('subject_id', 9); });
+            })->orderBy('id')->get(['id', 'event', 'machine_id', 'subject_type', 'subject_id', 'occurred_at',
+                $db->raw("JSON_EXTRACT(properties, '$.old.machine_assignment_id') AS old_assignment_id"),
+                $db->raw("JSON_EXTRACT(properties, '$.new.machine_assignment_id') AS new_assignment_id"),
+                $db->raw("JSON_EXTRACT(properties, '$.repaired') AS repaired"),
+                $db->raw("JSON_EXTRACT(properties, '$.removed') AS removed"),
+                $db->raw("JSON_EXTRACT(properties, '$.normalized_unassigned') AS normalized_unassigned"),
+                $db->raw("JSON_EXTRACT(properties, '$.unresolved') AS unresolved")])->all();
+    });
+    $output = json_encode(['reconciliation_activity' => $data, 'writer_inference' => 'UNKNOWN_UNTIL_ACTION_AND_DEPLOYMENT_CORRELATION'], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+} else { throw new RuntimeException('Unknown collector action'); }
+if ($before !== $connectionIds()) { throw new RuntimeException('DB reconnect; read-only session not proven'); }
+echo $output, PHP_EOL;
+PHP
+
+"$PHP" -l "$OUT/collect.php" > "$OUT/collector-syntax.txt"
+json_ok() {
+  test -s "$1"
+  "$PHP" -r 'json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);' "$1"
+}
+run_collect() {
+  local file=$1; shift
+  printf '%s start %s\n' "$(date -u +%FT%TZ)" "$file" >> "$OUT/timeline.txt"
+  "$PHP" "$OUT/collect.php" "$@" > "$OUT/$file.partial" 2> "$OUT/$file.stderr"
+  json_ok "$OUT/$file.partial"
+  mv -- "$OUT/$file.partial" "$OUT/$file"
+  printf '%s end %s\n' "$(date -u +%FT%TZ)" "$file" >> "$OUT/timeline.txt"
+}
+check_audit() {
+  "$PHP" -r '
+    $j=json_decode(file_get_contents($argv[1]),true,512,JSON_THROW_ON_ERROR);
+    $schema=(int)$argv[2]; $machine=$argv[4]==="all"?null:(int)$argv[4];
+    if ($j["schema_version"]!==$schema || $j["read_only"]!==true || $j["period_id"]!==9 ||
+        $j["scope"]!==["machine_id"=>$machine,"from"=>"2026-10-01","to"=>"2026-10-31"]) { exit(1); }
+    if ($schema===1 && (array_key_exists("evidence",$j) || array_key_exists("operator_reported_release",$j))) { exit(1); }
+    if ($schema===2 && (($j["operator_reported_release"]??null)!==$argv[3] || ($j["evidence"]["mode"]??null)!=="SELECT_ONLY" || !is_array($j["evidence"]["rows"]??null))) { exit(1); }
+  ' "$OUT/$1" "$2" "$HEAD" "$3"
+}
+run_collect preflight.json preflight
+run_collect october-default.json audit default "$HEAD"
+check_audit october-default.json 1 all
+run_collect october-full.json audit detailed "$HEAD"
+check_audit october-full.json 2 all
+for MACHINE in 16 255; do
+  run_collect "machine-$MACHINE.json" audit detailed "$HEAD" "$MACHINE"
+  check_audit "machine-$MACHINE.json" 2 "$MACHINE"
+done
+for CODE in T-XL0034 T-XL0345; do
+  MACHINE=$("$PHP" -r '$j=json_decode(file_get_contents($argv[1]),true,512,JSON_THROW_ON_ERROR); foreach($j["asset_mappings"] as $m) { if($m["asset_code"]===$argv[2]) { echo $m["id"]; exit; } } exit(1);' "$OUT/preflight.json" "$CODE")
+  [[ "$MACHINE" =~ ^[1-9][0-9]*$ ]]
+  run_collect "$CODE.json" audit detailed "$HEAD" "$MACHINE"
+  check_audit "$CODE.json" 2 "$MACHINE"
+done
+run_collect provenance.json provenance
+test "$(git rev-parse HEAD)" = "$HEAD"
+test "$(git branch --show-current)" = "$BRANCH"
+test -z "$(git status --porcelain=v1)"
+( cd -- "$OUT"; sha256sum -- *.json *.txt collect.php > SHA256SUMS; sha256sum -c SHA256SUMS )
+find "$OUT" -maxdepth 1 -type f -exec chmod 600 {} +
+printf 'Validated private packet: %s\n' "$OUT"
+```
+
+`--release` is the **operator label** taken from observed Git HEAD; it does not attest loaded PHP/opcache, DB contents or the original Repair release. Capture deployment logs/manifests and the original operation time separately. Full/focus queries intentionally use all October, including single-row days; machine16/255 Oct1–7 are present within these scopes. Each command uses a separate read snapshot, so concurrent writers may change data between files. Retain partial/failed files privately for diagnosis, but never interpret them as valid reports. Empty scope is valid JSON only if schema/scope checks pass; an empty output file is always failure. No Repair/Sync/Generator/replay/preview, migration or service restart appears in this block.
+
+Minimum additional evidence: original repair result with all four counters, `diagnostics.reasons`, `diagnostics.rows`, scope and operation timestamp; actual release/deployment history at that time; retained action/activity logs. The current audit alone cannot reconstruct the historical result. The safe activity projection may be empty or lack counters; that means missing evidence, not zero repairs or proof of a writer. Morph aliases/custom action logs must be inspected securely if model-class subject names do not match. Classify per row reference: existence, machine/date/case/assignment, stored-row compatibility versus daily-owner compatibility, duplicate-day versus single-row-day, time/interval values and protection. Keep genuinely differing populated intervals in HUMAN_REVIEW; missing sources UNSAFE; no automatic winner. Historic 129/672/220/21/108 are comparison context only. **Chưa xác minh nguyên nhân production** until those diagnostics are supplied.
+
 ## Collection before any new deployment
 
 Execute the SQL below in a MySQL client on the intended database and save all result sets locally. Check period #8 dates and the four machine identities first. No new code deployment is needed. Missing rows or changed IDs must be reported, not replaced by assumptions. If any query fails, end the read-only transaction with `ROLLBACK`; fix the query against the actual schema before interpreting partial results.
