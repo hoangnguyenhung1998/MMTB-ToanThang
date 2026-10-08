@@ -105,19 +105,30 @@ class DailyPhotoSyncService
         abort_unless(in_array($period->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
         $result = ['updated' => 0, 'protected' => 0, 'changed' => 0, 'partial' => 0, 'exception' => 0];
         $updatedDays = [];
+        $blockedDays = app(DayBasedCanonicalRepairService::class)->repair($period, $machineId, $workDate, $commandCenterId);
         $this->ensureRows($period, $machineId, $workDate, $commandCenterId);
 
         try {
             $this->scopedRows($period, $machineId, $workDate, $commandCenterId)
-                ->select('id')->chunkById(self::BATCH_SIZE, function ($rowIds) use ($period, &$result, &$updatedDays): void {
-                    DB::transaction(function () use ($period, $rowIds, &$result, &$updatedDays): void {
+                ->select('id')->chunkById(self::BATCH_SIZE, function ($rowIds) use ($period, &$result, &$updatedDays, $blockedDays): void {
+                    DB::transaction(function () use ($period, $rowIds, &$result, &$updatedDays, $blockedDays): void {
                         $lockedPeriod = ReconciliationPeriod::query()->lockForUpdate()->findOrFail($period->id);
                         abort_unless(in_array($lockedPeriod->status, ['GENERATED', 'REVIEWING'], true), 409, 'Kỳ không cho phép đồng bộ.');
                         $rows = ReconciliationRow::query()->with(['assignment', 'period'])
                             ->whereKey($rowIds->modelKeys())->orderBy('id')->lockForUpdate()->get();
                         $contextByMachine = $this->cacheBatch($lockedPeriod, $rows);
+                        $duplicateDays = $contextByMachine->flatten(1)
+                            ->groupBy(fn ($r) => $r->machine_id.'|'.$r->work_date->toDateString())
+                            ->filter(fn ($siblings) => $siblings->count() > 1);
 
                         foreach ($rows as $row) {
+                            if (isset($blockedDays[$row->machine_id.'|'.$row->work_date->toDateString()])
+                                || $duplicateDays->has($row->machine_id.'|'.$row->work_date->toDateString())) {
+                                $result['protected']++;
+
+                                continue;
+                            }
+
                             // Relationship repair preserves historical payload; automatic sync must not clear it
                             // when there is deliberately no assignment to allocate against.
                             if ($row->machine_assignment_id === null) {
@@ -144,7 +155,7 @@ class DailyPhotoSyncService
                             if ($signature === $row->evidence_signature) {
                                 continue;
                             }
-                            if ($row->manually_edited_at || in_array($row->status, ['REVIEWED', 'CONFIRMED', 'REJECTED'], true)) {
+                            if ($row->manually_edited_at || $row->reviewed_at || $row->confirmed_at || $row->reviewed_by || $row->confirmed_by || in_array($row->status, ['REVIEWED', 'CONFIRMED', 'REJECTED'], true)) {
                                 if (! $row->has_evidence_changes) {
                                     $row->update(['has_evidence_changes' => true]);
                                 }

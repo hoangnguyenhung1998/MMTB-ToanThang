@@ -11,6 +11,8 @@ class CanonicalAssignmentRelinker
 
     private array $byScope = [];
 
+    private array $byDay = [];
+
     private array $members = [];
 
     private array $intervals = [];
@@ -23,6 +25,8 @@ class CanonicalAssignmentRelinker
 
     private array $blocked = [];
 
+    private array $blockedCases = [];
+
     private array $updates = [];
 
     private array $deletes = [];
@@ -31,16 +35,22 @@ class CanonicalAssignmentRelinker
 
     private array $logs = [];
 
-    public function __construct(array $machineIds, string $from, string $to, private readonly bool $lock = true)
+    public function __construct(array $machineIds, string $from, string $to, private readonly bool $lock = true, array $referenceJobIds = [])
     {
         $cases = DB::table('daily_photo_cases')->whereIn('machine_id', $machineIds)
             ->whereBetween('work_date', [$from, $to.' 23:59:59'])->orderBy('id')->when($lock, fn ($q) => $q->lockForUpdate())->get();
         foreach ($cases as $case) {
             $case->work_date = substr($case->work_date, 0, 10);
             $this->cases[$case->id] = $case;
+            $this->byDay[$case->machine_id.'|'.$case->work_date][$case->id] = $case;
             $this->byScope[$this->key($case->machine_id, $case->work_date, $case->machine_assignment_id)][] = $case->id;
         }
         if ($cases->isEmpty()) {
+            if ($referenceJobIds) {
+                $this->jobsById = DB::table('ocr_jobs')->whereIn('id', $referenceJobIds)
+                    ->when($lock, fn ($q) => $q->lockForUpdate())->get()->keyBy('id')->all();
+            }
+
             return;
         }
         $ids = $cases->pluck('id')->all();
@@ -52,7 +62,7 @@ class CanonicalAssignmentRelinker
             $this->caseIntervals[$interval->daily_photo_case_id][] = $interval;
         }
         $memberJobIds = collect($this->members)->flatten(1)->pluck('ocr_job_id')->all();
-        $jobs = DB::table('ocr_jobs')->where(fn ($q) => $q->whereIn('daily_photo_case_id', $ids)->orWhereIn('id', $memberJobIds))
+        $jobs = DB::table('ocr_jobs')->where(fn ($q) => $q->whereIn('daily_photo_case_id', $ids)->orWhereIn('id', $memberJobIds)->orWhereIn('id', $referenceJobIds))
             ->when($lock, fn ($q) => $q->lockForUpdate())->get();
         $this->jobs = $jobs->groupBy('daily_photo_case_id')->all();
         $this->jobsById = $jobs->keyBy('id')->all();
@@ -60,11 +70,42 @@ class CanonicalAssignmentRelinker
         $protected = DB::table('reconciliation_rows as r')->join('reconciliation_periods as p', 'p.id', '=', 'r.reconciliation_period_id')
             ->whereIn('r.machine_id', $machineIds)->whereBetween('r.work_date', [$from, $to.' 23:59:59'])
             ->where(fn ($q) => $q->whereNotIn('p.status', ['DRAFT', 'GENERATED', 'REVIEWING'])
-                ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at')->orWhereNotNull('r.manually_edited_at'))
-            ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
+                ->orWhere('r.status', '!=', 'DRAFT')->orWhereNotNull('r.reviewed_at')->orWhereNotNull('r.confirmed_at')->orWhereNotNull('r.manually_edited_at')->orWhereNotNull('r.reviewed_by')->orWhereNotNull('r.confirmed_by'))
+            ->select(['r.machine_id', 'r.work_date', 'r.machine_assignment_id', 'r.daily_ocr_job_ids', 'r.daily_intervals'])->when($lock, fn ($q) => $q->lockForUpdate())->get();
         foreach ($protected as $row) {
             $this->blocked[$this->key($row->machine_id, substr($row->work_date, 0, 10), $row->machine_assignment_id)] = true;
+            // A protected row can itself have a stale assignment while referencing this case.
+            foreach (json_decode($row->daily_ocr_job_ids ?? '[]', true) ?? [] as $id) {
+                if ($caseId = $this->jobsById[$id]->daily_photo_case_id ?? null) {
+                    $this->blockedCases[$caseId] = true;
+                }
+            }
+            foreach (json_decode($row->daily_intervals ?? '[]', true) ?? [] as $part) {
+                if ($caseId = $this->intervals[$part['canonical_interval_id'] ?? 0]->daily_photo_case_id ?? null) {
+                    $this->blockedCases[$caseId] = true;
+                }
+            }
+
         }
+    }
+
+    public function protectedEvidence(object $row): bool
+    {
+        $ids = json_decode($row->daily_ocr_job_ids ?? '[]', true) ?? [];
+        foreach ($this->byScope[$this->key($row->machine_id, $row->work_date, $row->machine_assignment_id)] ?? [] as $caseId) {
+            foreach ($this->jobs[$caseId] ?? [] as $job) {
+                $ids[] = $job->id;
+            }
+        }
+        foreach ($ids as $id) {
+            $job = $this->jobsById[$id] ?? null;
+            if ($job && ($job->reviewed_at !== null || ($job->machine_resolution_method ?? null) === 'HUMAN'
+                || ($job->ocr_final_source ?? null) === 'MANUAL' || in_array($job->review_status, ['APPROVED', 'CORRECTED'], true))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function hasContent(object $row): bool
@@ -80,8 +121,13 @@ class CanonicalAssignmentRelinker
 
     public function reason(object $row, object $target): ?string
     {
-        $sourceKey = $this->key($row->machine_id, $row->work_date, $row->machine_assignment_id);
+        $sourceRow = $this->sourceRow($row, $target);
+        $sourceKey = $this->key($row->machine_id, $row->work_date, $sourceRow->machine_assignment_id);
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
+        if (($target->ownership_policy ?? null) === 'BUSINESS_DAY' && $target->id !== null
+            && count($this->populatedDayCases($row)) > 1) {
+            return 'CANONICAL_CONFLICT';
+        }
         $sourceIds = $this->byScope[$sourceKey] ?? [];
         $targetIds = $this->byScope[$targetKey] ?? [];
         if (count($sourceIds) > 1 || count($targetIds) > 1) {
@@ -89,7 +135,7 @@ class CanonicalAssignmentRelinker
         }
         $sourceId = $sourceIds[0] ?? null;
         $targetId = $targetIds[0] ?? null;
-        if ($sourceId && $sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
+        if ($sourceId && $sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]) || isset($this->blockedCases[$sourceId]) || isset($this->blockedCases[$targetId]))) {
             return 'PROTECTED_CANONICAL_RELATIONSHIP';
         }
         if ($sourceId && $sourceId !== $targetId) {
@@ -100,7 +146,7 @@ class CanonicalAssignmentRelinker
             }
         }
         if ($target->id === null && $sourceId !== $targetId) {
-            if ($sourceId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
+            if ($sourceId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]) || isset($this->blockedCases[$sourceId]) || isset($this->blockedCases[$targetId]))) {
                 return 'PROTECTED_CANONICAL_RELATIONSHIP';
             }
             if ($targetId && ! $this->emptyCase($targetId)) {
@@ -108,7 +154,7 @@ class CanonicalAssignmentRelinker
             }
         }
         if ($sourceId && ! $this->emptyCase($sourceId)) {
-            if ($sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]))) {
+            if ($sourceId !== $targetId && (isset($this->blocked[$sourceKey]) || isset($this->blocked[$targetKey]) || isset($this->blockedCases[$sourceId]) || isset($this->blockedCases[$targetId]))) {
                 return 'PROTECTED_CANONICAL_RELATIONSHIP';
             }
             if ($targetId && $targetId !== $sourceId && ! $this->emptyCase($targetId)) {
@@ -138,6 +184,13 @@ class CanonicalAssignmentRelinker
                 if (! $this->containsStamp($target, $interval->raw_start_at) || ! $this->containsStamp($target, $interval->raw_end_at, true)) {
                     return 'CANONICAL_TIME_CONFLICT';
                 }
+            }
+        }
+        foreach (json_decode($row->daily_ocr_job_ids ?? '[]', true) ?? [] as $id) {
+            $job = $this->jobsById[$id] ?? null;
+            if ($job && $job->daily_photo_case_id !== null
+                && ! in_array((int) $job->daily_photo_case_id, array_map('intval', array_filter([$sourceId, $targetId])), true)) {
+                return 'CANONICAL_OCR_CONFLICT';
             }
         }
         foreach (json_decode($row->daily_intervals ?? '[]', true) ?? [] as $part) {
@@ -240,7 +293,8 @@ class CanonicalAssignmentRelinker
             throw new \LogicException('Read-only canonical snapshot cannot plan writes.');
         }
 
-        $sourceKey = $this->key($row->machine_id, $row->work_date, $row->machine_assignment_id);
+        $sourceRow = $this->sourceRow($row, $target);
+        $sourceKey = $this->key($row->machine_id, $row->work_date, $sourceRow->machine_assignment_id);
         $targetKey = $this->key($row->machine_id, $row->work_date, $target->id);
         $sourceId = $this->byScope[$sourceKey][0] ?? null;
         $targetId = $this->byScope[$targetKey][0] ?? null;
@@ -320,6 +374,36 @@ class CanonicalAssignmentRelinker
 
         return $end >= (strlen($from) > 10 ? $from : $from.' 00:00:00')
             && (! $to || $start < (strlen($to) > 10 ? $to : $to.' 23:59:59'));
+    }
+
+    private function populatedDayCases(object $row): array
+    {
+        return array_values(array_filter($this->byDay[$row->machine_id.'|'.$row->work_date] ?? [], fn ($case) => ! isset($this->deletes[$case->id])
+            && (int) $case->machine_id === (int) $row->machine_id && $case->work_date === $row->work_date
+            && ! $this->emptyCase($case->id)));
+    }
+
+    private function sourceRow(object $row, object $target): object
+    {
+        if (($target->ownership_policy ?? null) !== 'BUSINESS_DAY' || $target->id === null) {
+            return $row;
+        }
+        $cases = $this->populatedDayCases($row);
+        if (count($cases) === 1) {
+            $source = clone $row;
+            $source->machine_assignment_id = $cases[0]->machine_assignment_id;
+
+            return $source;
+        }
+
+        return $row;
+    }
+
+    public function needsRelink(object $row, object $target): bool
+    {
+        $source = $this->sourceRow($row, $target);
+
+        return $this->hasContent($source) && (int) $source->machine_assignment_id !== (int) $target->id;
     }
 
     private function emptyCase(int $id): bool

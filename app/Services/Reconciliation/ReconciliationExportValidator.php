@@ -9,9 +9,17 @@ use Illuminate\Support\Facades\DB;
 
 class ReconciliationExportValidator
 {
-    public function validate(ReconciliationPeriod $period): array
+    public function validate(ReconciliationPeriod $period, ?int $machineId = null, ?string $from = null, ?string $to = null): array
     {
+        // A scoped audit clones the period; it never updates stored dates or export behavior.
+        if ($from !== null || $to !== null) {
+            $period = clone $period;
+            $period->date_from = $from ?? $period->date_from;
+            $period->date_to = $to ?? $period->date_to;
+        }
         $rows = $period->rows()
+            ->when($machineId, fn ($q) => $q->where('machine_id', $machineId))
+            ->whereDate('work_date', '>=', $period->date_from)->whereDate('work_date', '<=', $period->date_to)
             ->with(['machine:id,asset_code', 'commandCenter:id,name', 'assignment.bchResolution'])
             ->orderBy('machine_id')
             ->orderBy('work_date')
@@ -26,6 +34,7 @@ class ReconciliationExportValidator
         }
 
         $unassignedMachines = Machine::query()
+            ->when($machineId, fn ($q) => $q->whereKey($machineId))
             ->where('status', 'ACTIVE')
             ->where(function ($query) use ($period): void {
                 $query->whereNull('created_at')

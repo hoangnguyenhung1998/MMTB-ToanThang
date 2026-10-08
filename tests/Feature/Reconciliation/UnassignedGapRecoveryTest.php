@@ -101,7 +101,7 @@ class UnassignedGapRecoveryTest extends TestCase
         $a = $this->assignment('2026-01-01', '2026-08-08 14:24:00');
         $this->assignment('2026-10-13 14:24:00', null, $this->b);
         $period = $this->period('2026-09');
-        $states = [['ocr_check_in_raw' => '11:18:00'], ['daily_ocr_job_ids' => [1, 2]], ['gps_check_in' => '11:00:00'],
+        $states = [['ocr_check_in_raw' => '11:18:00'], ['daily_ocr_job_ids' => [9001, 9002]], ['gps_check_in' => '11:00:00'],
             ['regular_minutes' => 90], ['manually_edited_at' => now()], ['notes' => 'HUMAN'],
             ['journal_row_ids' => [21]], ['ai_reconciliation_job_id' => 31], ['status' => 'REVIEWED']];
         foreach ($states as $i => $state) {
