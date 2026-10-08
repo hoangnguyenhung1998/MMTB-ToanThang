@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 
 class ReconciliationConsistencyAudit extends Command
 {
-    protected $signature = 'reconciliation:consistency-audit {period} {--machine=} {--from=} {--to=}';
+    protected $signature = 'reconciliation:consistency-audit {period} {--machine=} {--from=} {--to=} {--details} {--release=}';
 
     protected $description = 'SELECT-only scoped machine/day duplicate and canonical proof; no sensitive payload values';
 
@@ -18,6 +18,12 @@ class ReconciliationConsistencyAudit extends Command
         $machine = $this->option('machine');
         if ($periodId === false || ($machine !== null && filter_var($machine, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false)) {
             $this->error('Period/machine phải là số nguyên dương.');
+
+            return self::FAILURE;
+        }
+        $release = $this->option('release');
+        if ($release !== null && ! preg_match('/^[0-9a-f]{7,40}$/i', $release)) {
+            $this->error('Release must be an operator-reported Git SHA (7-40 hex characters).');
 
             return self::FAILURE;
         }
@@ -41,7 +47,7 @@ class ReconciliationConsistencyAudit extends Command
 
             return self::FAILURE;
         }
-        $this->line(json_encode($service->audit($period, $machine === null ? null : (int) $machine, $from, $to), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        $this->line(json_encode($service->audit($period, $machine === null ? null : (int) $machine, $from, $to, (bool) $this->option('details'), $this->option('release')), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
 
         return self::SUCCESS;
     }

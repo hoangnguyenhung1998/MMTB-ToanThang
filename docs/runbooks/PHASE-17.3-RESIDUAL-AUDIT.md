@@ -148,3 +148,177 @@ Use the same scoped command for T-XL0034 Oct1–3, T-XL0345 Oct2–3 and the act
 6. Only after owner review and separately authorized commit/release/deployment and data-repair window, deploy via the existing Laravel procedure. No new migration or OCR/Collector worker update. Canonical preflight is part of Generator/Sync, so controlled scheduling and before backup are required before resuming those operations. Obtain fresh production before audit, authorize period-limited Repair separately, repeat preservation/idempotence/export checks and collect after audit. Stop automatic cleanup at genuine D conflicts; do not force a target row count.
 
 If October evidence is still unavailable, report exact classifications/sample outcomes as NOT VERIFIED; deliver the reviewed read-only tool and wait for the snapshot. No blanket deletion of 794 rows is justified.
+
+
+## Post-PR #64 residual investigation — SELECT-only evidence packet
+
+Owner reports production merge `4baa0e3`: August/September clear, October 6484 rows / 6355 correct / 129 DUPLICATE_PAYLOAD_CONFLICT / 1171 blockers / 108 overlap warnings. These are reported totals, not a classified snapshot. This session has no October JSON and has not run a production command. Local HEAD is `21f458d`; merge object `4baa0e3` is absent locally. Do not infer release equivalence or repair dispositions until the production release is confirmed by an operator. No fetch/pull/deploy is required for this collection if the approved commands are already installed.
+
+### 1. Identify period and representative machines (operator-controlled read-only client)
+
+```sql
+START TRANSACTION READ ONLY;
+SELECT id, name, type, date_from, date_to, status
+FROM reconciliation_periods
+WHERE type = 'MONTHLY' AND date_from = '2026-10-01' AND date_to = '2026-10-31';
+SELECT id, asset_code, status FROM machines
+WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345')
+ORDER BY id;
+COMMIT;
+```
+
+Resolve the actual October `PERIOD_ID`, `ID_XL0034`, `ID_XL0345`; do not assume any value. Capture deployed commit/PHP command as release metadata without dumping `.env` or credentials. If no unique period or machine is returned, stop and clarify identity. SQL/CLI IDs here are diagnostic selection only, never hardcoded business rules.
+
+### 2. Collect the existing SELECT-only consistency command
+
+Replace the uppercase placeholders below with the verified integer IDs; use the hosting's established PHP binary. Save outputs in a private operator directory outside public web storage.
+
+```sh
+php artisan reconciliation:consistency-audit PERIOD_ID > october-consistency.json
+php artisan reconciliation:consistency-audit PERIOD_ID --machine=ID_XL0034 --from=2026-10-01 --to=2026-10-31 > xl0034-consistency.json
+php artisan reconciliation:consistency-audit PERIOD_ID --machine=ID_XL0345 --from=2026-10-01 --to=2026-10-31 > xl0345-consistency.json
+php artisan reconciliation:consistency-audit PERIOD_ID --machine=16 --from=2026-10-01 --to=2026-10-07 > machine16-consistency.json
+php artisan reconciliation:consistency-audit PERIOD_ID --machine=255 --from=2026-10-01 --to=2026-10-07 > machine255-consistency.json
+```
+
+Whole-month scopes for the two asset codes avoid guessing remaining affected dates. Full-period output supplies `blocking_by_reason` and warning totals; focused reports identify daily owners, siblings, differing technical/business/conflicting fields, canonical reasons, protected rows and hashes. It emits **pair** classifications, not the 129 conflict row dispositions. Reconcile the actual remaining Repair diagnostic row IDs against groups, with each conflict row counted once; do not sum pair counts as 129. Preserve the existing Repair diagnostic output that reported 129; do not rerun a writer merely to obtain diagnostics. If it is unavailable, record that limitation.
+
+### 3. Collect selected-row residual detail
+
+Obtain **all** representative row IDs (including siblings) in the same read-only SQL client:
+
+```sql
+START TRANSACTION READ ONLY;
+SELECT r.id, r.machine_id, r.work_date, r.machine_assignment_id,
+       r.command_center_id, r.status
+FROM reconciliation_rows r
+WHERE r.reconciliation_period_id = PERIOD_ID
+  AND r.work_date BETWEEN '2026-10-01' AND '2026-10-31'
+  AND r.machine_id IN (
+      SELECT id FROM machines
+      WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345')
+  )
+ORDER BY r.machine_id, r.work_date, r.id;
+COMMIT;
+```
+
+Replace `ROW_ID_A`, `ROW_ID_B` with actual IDs and repeat `--row=...` for every selected representative row. An explicit list replaces the historical five September defaults:
+
+```sh
+php artisan reconciliation:residual-audit PERIOD_ID --row=ROW_ID_A --row=ROW_ID_B > october-focus-residual.json
+```
+
+This command is also SELECT-only; it includes period NULL rows automatically. It exports full assignment history, lifecycle events, daily ownership, row/sibling hour buckets and GPS times, canonical case/member/pair IDs and capture times, selected OCR relationship metadata, attachment checksums, journal references and shared protected periods. No raw OCR or note text is emitted. It contains business identifiers/times; retain it within project reviewers. Its legacy physical `contains_segment`/narrowing fields do not supersede `day_ownership`.
+
+### 4. Supplement OCR protection/provenance (SELECT-only)
+
+The residual command currently omits `machine_resolution_method` and `ocr_final_source`, and row reviewer/confirmation IDs. Obtain these existing fields directly without changing audit code. The following selects focus-machine OCR in October plus canonical/member/row-referenced OCR even if its stored machine/date is inconsistent:
+
+```sql
+START TRANSACTION READ ONLY;
+SELECT j.id, j.machine_id, j.extracted_date, j.extracted_time,
+       j.document_type, j.status, j.review_status, j.reviewed_at,
+       j.machine_resolution_method, j.ocr_final_source,
+       j.daily_photo_case_id, c.machine_id AS case_machine_id,
+       c.work_date AS case_date, c.machine_assignment_id AS case_assignment_id,
+       c.scope_key AS actual_scope_key,
+       JSON_UNQUOTE(JSON_EXTRACT(j.daily_metadata, '$.case_materialization.scope_key')) AS metadata_scope_key,
+       JSON_EXTRACT(j.daily_metadata, '$.case_materialization.machine_assignment_id') AS metadata_assignment_id,
+       SHA2(COALESCE(j.raw_text, ''), 256) AS raw_ocr_sha256,
+       SHA2(COALESCE(CAST(JSON_REMOVE(j.daily_metadata, '$.case_materialization') AS CHAR), ''), 256) AS non_relationship_metadata_sha256
+FROM ocr_jobs j
+LEFT JOIN daily_photo_cases c ON c.id = j.daily_photo_case_id
+WHERE (
+    j.machine_id IN (SELECT id FROM machines WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345'))
+    AND j.extracted_date >= '2026-10-01' AND j.extracted_date < '2026-11-01'
+) OR EXISTS (
+    SELECT 1 FROM daily_photo_case_evidence e
+    JOIN daily_photo_cases ec ON ec.id = e.daily_photo_case_id
+    WHERE e.ocr_job_id = j.id AND ec.work_date BETWEEN '2026-10-01' AND '2026-10-31'
+      AND ec.machine_id IN (SELECT id FROM machines WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345'))
+) OR EXISTS (
+    SELECT 1 FROM reconciliation_rows r
+    WHERE r.reconciliation_period_id = PERIOD_ID AND r.work_date BETWEEN '2026-10-01' AND '2026-10-31'
+      AND r.machine_id IN (SELECT id FROM machines WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345'))
+      AND JSON_CONTAINS(COALESCE(r.daily_ocr_job_ids, JSON_ARRAY()), CAST(j.id AS CHAR), '$')
+)
+ORDER BY j.machine_id, j.extracted_date, j.id;
+
+SELECT r.id, r.reconciliation_period_id, p.status AS period_status,
+       r.machine_id, r.work_date, r.machine_assignment_id, r.command_center_id,
+       r.status, r.manually_edited_at, r.reviewed_at, r.reviewed_by,
+       r.confirmed_at, r.confirmed_by, r.daily_ocr_job_ids, r.daily_intervals,
+       r.gps_check_in, r.gps_check_out, r.gps_check_in_diff_minutes, r.gps_check_out_diff_minutes
+FROM reconciliation_rows r
+JOIN reconciliation_periods p ON p.id = r.reconciliation_period_id
+WHERE r.work_date BETWEEN '2026-10-01' AND '2026-10-31'
+  AND r.machine_id IN (SELECT id FROM machines WHERE id IN (16, 255) OR asset_code IN ('T-XL0034', 'T-XL0345'))
+ORDER BY r.machine_id, r.work_date, r.reconciliation_period_id, r.id;
+COMMIT;
+```
+
+Use the existing production schema. If a query fails, ROLLBACK the read-only transaction and report the exact missing field/version; do not add columns or guess a result. Hash differences in opaque metadata do not alone prove business conflicts; evaluate the actual reference/date/time/protection and differing field names securely. `ocr_final_source=MANUAL`, `machine_resolution_method=HUMAN`, reviewed OCR and locked/shared rows must remain protected. The full-period audit is still needed to classify all 1171 messages, beyond these four samples.
+
+### 5. Decision gate and acceptance
+
+Stop at evidence collection until snapshots are supplied. For every affected machine/date, record owner assignment/BCH, each row and conflicting field, canonical scopes/member/pair IDs, row-job references versus actual job-case/metadata links, hour/GPS bundles and protection sources. Classify proven code defect, safely repairable historical relationship-only/empty/equivalent data, or genuine/unsupported/protected conflict requiring human review. A missing snapshot is UNCLASSIFIED, not evidence of a business conflict.
+
+A later generic fix is accepted only with a production-derived sanitized regression for the confirmed defect, unchanged August/September behavior and 126 genuine NULL rows, no change to raw assignment events/time/hour/GPS/OCR/photo/pairing values, no protected/shared record mutation, one intended daily owner, no extra row/case/photo on Generator/Sync replay, second Repair with no extra changes/audits, and Validator/UI/export consistent. Genuine conflicts remain explicit blockers until reviewed. Any cleanup requires separately approved backup, restored-copy verification and a period-limited production action; no preview writer, Repair, Sync, Generator or pairing operation belongs to this read-only collection.
+
+
+## October definitive-fix evidence packet (period9)
+
+Schema1 October totals are confirmed from the supplied local JSON; its129 D pairs are not approved for merge. New `--details` adds schema2 values and actual reference-versus-stored-row / versus-day-owner proof. Default command remains SELECT-only without payload values; detailed mode remains SELECT-only and has **no apply option**. Do not invoke Repair/Sync/Resync/Replay/Generate on hosting during evidence collection.
+
+After an explicitly approved release containing the new audit flag is available, an operator runs from the hosting Laravel root (these commands do not deploy it). Keep outputs outside public web directories, restrict file access, and supply local paths. The release argument is a separately observed operator label, not executable provenance verified by the command.
+
+```bash
+git rev-parse HEAD
+php artisan reconciliation:consistency-audit --help
+php artisan reconciliation:consistency-audit 9 --details --release=4baa0e3 > /private/audit/october-evidence.json
+php artisan reconciliation:consistency-audit 9 --details --machine=16 --from=2026-10-01 --to=2026-10-07 > /private/audit/october-machine16.json
+php artisan reconciliation:consistency-audit 9 --details --machine=255 --from=2026-10-01 --to=2026-10-07 > /private/audit/october-machine255.json
+```
+
+Replace `4baa0e3` with the actually observed deployed SHA containing the new flag; `/private/audit` is an example existing private writable operator directory, not a directory this session created. Capture command help, actual HEAD/deployment manifest, time and report checksum. If no Git checkout is on hosting, record the approved release manifest separately and leave the flag absent when unknown. Do not report PR#64 as the running new patch merely from the example argument. Before the new tool is approved/deployed, run the existing schema1 command and the preceding supplemental SELECTs; never edit hosting code directly.
+
+Read-only SQL to establish the remaining asset mappings:
+
+```sql
+SELECT id, asset_code FROM machines WHERE asset_code IN ('T-XL0034','T-XL0345');
+SELECT id, machine_id, work_date, machine_assignment_id, project_id, command_center_id,
+       created_at, updated_at
+FROM reconciliation_rows
+WHERE reconciliation_period_id=9
+  AND machine_id IN (16,255)
+  AND work_date >= '2026-10-01' AND work_date < '2026-10-08'
+ORDER BY machine_id, work_date, id;
+```
+
+Use each returned asset machine ID with `--machine=ID --from=2026-10-01 --to=2026-10-31`; full October is required for T-XL0034 because canonical errors must be examined on single-row days too. Schema2 reports:
+
+- Every selected row's allocation/check-in/out/GPS time summaries and safe interval fields; omitted interval field names require secure inspection before a merge decision.
+- Full assignment timestamp history and lifecycle events, actual canonical scope/status/pairing, member/photo-job IDs, canonical raw interval/endpoints, journal reference time fields, source OCR date/time/HUMAN/MANUAL/review flags and materialized relationship IDs.
+- `matches_stored_row` separately from `matches_daily_owner`; missing references marked UNSAFE; reference mismatch counts by OCR/INTERVAL and daily-owner compatibility. They are comparisons per row reference, not an exact replacement for Validator's deduplicated diagnostics or normalized-NULL/lifecycle logic.
+- Shared row/period protection, row/case/job creation timestamps. No opaque OCR, work/driver/notes text, source paths, images, session data or coordinates.
+
+For creation provenance, query matching reconciliation activity logs with the existing runbook SELECTs and inspect securely, comparing created timestamps to the release/deployment timeline and Generator/Sync/Repair audit events. Timestamp chronology and hashes alone cannot name the writer. If action logs were not retained, record that origin as UNKNOWN; do not invent Generator as the cause of all129pairs.
+
+Disposition is conservative per row: SAFE = no demonstrated impediment/candidate for existing guarded preview; HUMAN_REVIEW = any duplicate, protected scope, ownership/canonical or reference conflict; UNSAFE = missing canonical/job/interval. No write authorization follows from these labels. Map every one of129pairs to actual interval/time values and evidence sources. Map672 OCR and220 interval diagnostics separately, splitting duplicate-row versus single-row dates and owner-compatible stale materialization versus wrong machine/date/case/missing/protected source. Retain all108 warnings until source-versus-materialized overlap is established.
+
+### Historical repair rehearsal and rollback
+
+1. Verified database backup and an isolated restored copy are mandatory. Include reconciliation periods/rows, canonical cases/evidence/intervals, OCR jobs, journals, GPS, assignment/lifecycle/audit history. Disable all workers and external side effects on the copy. Do not redirect the production app to it or change live APP_ENV.
+2. Run SELECT-only detailed audit on the copy, then the existing dry-run:
+
+```bash
+php artisan reconciliation:repair-preview 9 > /private/audit/october-repair-preview.json
+```
+
+`repair-preview` executes actual guarded writes in a transaction/savepoint then always rolls back. It is refused with APP_ENV=production. It is **not** a SELECT-only operation and must not run on hosting's live DB. Before/after row counts and repair diagnostics are included; category-D hours/intervals cannot be merged. Take reference/time/protection snapshots before and after to prove rollback, including activity logs and metadata.
+
+3. Review proposed A/B/proven-C/relationship-only changes and every retained D. Run repeated repair on the isolated copy, compare row/case/member/job IDs, intervals, time/GPS aggregates, protected records, original handover timestamps and August/September/126NULL baselines. Existing relationship/audit transactions are atomic and idempotent; no new destructive historical writer added.
+4. Obtain separate approval for any eventual production repair, with scope/backups reviewed. This session authorizes neither apply nor cleanup. Unknown or conflicting hour/evidence records require a case-specific HUMAN decision and preserved original snapshots.
+5. Rollback without migration: reviewed code revert if needed. If a separately approved writer was executed, stop writers and restore verified data backup or guarded old relationships from audit snapshots. A code revert cannot recover changed data on its own. Metadata repair audit records only old/new relationship; opaque OCR and photos/pairing are preserved.
+
+Acceptance: all newly generated days stay unique on repeated Generate/Sync/Resync/Replay; metadata-only Repair no-ops on second run; August/September,126 genuine NULL days and HUMAN/manual/reviewed/locked sources unchanged. Historical blockers must be explained and reviewed/resolved with evidence; count reduction alone is not proof. No automatic winner, dropped evidence, altered handover timestamp or disabled Validator permitted.
