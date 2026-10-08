@@ -7,10 +7,9 @@ use App\Models\CommandCenter;
 use App\Models\Machine;
 use App\Models\MachineAssignment;
 use App\Models\Project;
-use App\Models\ReconciliationPeriod;
-use App\Services\Reconciliation\ReconciliationPeriodService;
-use App\Services\Reconciliation\ReconciliationLinkRepairService;
 use App\Services\Reconciliation\ReconciliationAssignmentBchResolutionService;
+use App\Services\Reconciliation\ReconciliationLinkRepairService;
+use App\Services\Reconciliation\ReconciliationPeriodService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -25,7 +24,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $first = $this->assignment('2026-09-01');
         $service->syncMonthly($period);
         $row = $period->rows()->first();
-        $row->update(['regular_minutes' => 321, 'manually_edited_at' => now(), 'status' => 'REVIEWED']);
+        $row->update(['regular_minutes' => 321, 'status' => 'REVIEWED']);
         $snapshot = $row->fresh()->getAttributes();
         $period->update(['status' => 'REVIEWING']);
         $new = $this->assignment('2026-09-20');
@@ -55,7 +54,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $period = $service->ensureMonthly('2026-09');
         $service->syncMonthly($period);
         $row = $period->rows()->first();
-        $row->update(['command_center_id' => null, 'regular_minutes' => 321, 'manually_edited_at' => now()]);
+        $row->update(['command_center_id' => null, 'regular_minutes' => 321]);
         $result = array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved']));
         $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], $result);
         $this->assertEquals(321, $row->fresh()->regular_minutes);
@@ -70,9 +69,9 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $assignment->update(['command_center_id' => null]);
         $service = app(ReconciliationPeriodService::class);
         $period = $service->ensureMonthly('2026-09');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('NO_BCH_RESOLUTION');
         $service->syncMonthly($period);
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
-        $this->assertNull($period->rows()->first()->command_center_id);
     }
 
     public function test_append_does_not_duplicate_orphaned_legacy_rows(): void
@@ -93,7 +92,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $period = $service->ensureMonthly('2026-09');
         $service->syncMonthly($period);
         $row = $period->rows()->orderByDesc('work_date')->first();
-        $row->update(['status' => 'REVIEWED', 'regular_minutes' => 321, 'manually_edited_at' => now()]);
+        $row->update(['status' => 'REVIEWED', 'regular_minutes' => 321]);
         $assignment->update(['time_out' => '2026-09-29 12:00:00']);
         $service->syncMonthly($period->fresh());
         $result = app(\App\Services\Reconciliation\ReconciliationExportValidator::class)->validate($period);
@@ -127,7 +126,6 @@ class ReconciliationAppendAndRepairTest extends TestCase
             'project_id' => $otherProject->id,
             'command_center_id' => $otherBch->id,
             'regular_minutes' => 321,
-            'manually_edited_at' => now(),
         ]);
 
         $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], array_intersect_key(app(ReconciliationLinkRepairService::class)->repair($period, null), array_flip(['repaired', 'removed', 'unresolved'])));
@@ -224,8 +222,10 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $result = app(ReconciliationAssignmentBchResolutionService::class)->resolve($period, $old, $bch, null);
         $this->assertSame(1, $result['updated']);
         $this->assertSame($bch->id, $oldRow->fresh()->command_center_id);
-        $this->assertSame('09:39:00', $oldRow->fresh()->segment_end);
-        $this->assertSame('21:39:00', $currentRow->fresh()->segment_start);
+        $this->assertSame($current->id, $oldRow->fresh()->machine_assignment_id);
+        $this->assertSame('00:00:00', $oldRow->fresh()->segment_start);
+        $this->assertSame('23:59:59', $oldRow->fresh()->segment_end);
+        $this->assertNull($currentRow->fresh());
         $this->assertNull($old->fresh()->command_center_id);
         $this->assertDatabaseHas('machine_assignment_bch_resolutions', ['machine_assignment_id' => $old->id, 'command_center_id' => $bch->id]);
         $validation = app(\App\Services\Reconciliation\ReconciliationExportValidator::class)->validate($period);
@@ -238,6 +238,7 @@ class ReconciliationAppendAndRepairTest extends TestCase
         $machine = Machine::create(['asset_code' => $key, 'chassis_no' => $key, 'company' => 'SGC', 'status' => 'ACTIVE']);
         $project = Project::firstOrCreate(['name' => 'Dự án']);
         $bch = CommandCenter::firstOrCreate(['name' => 'BCH']);
+
         return MachineAssignment::create(['machine_id' => $machine->id, 'project_id' => $project->id, 'command_center_id' => $bch->id, 'time_in' => $date.' 07:00:00']);
     }
 }

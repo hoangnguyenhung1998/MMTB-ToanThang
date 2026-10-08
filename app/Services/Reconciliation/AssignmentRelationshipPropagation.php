@@ -33,18 +33,19 @@ class AssignmentRelationshipPropagation
         }
         // Canonical cases may exist before a reconciliation period is generated.
         $canonical = new CanonicalAssignmentRelinker([$machineId], $from, $to);
-        $assignments = DB::table('machine_assignments')->where('machine_id', $machineId)->orderBy('id')->lockForUpdate()->get();
-        $timeline = new AssignmentTimelineState($assignments, DB::table('machine_events')->where('machine_id', $machineId)
+        $assignments = DB::table('machine_assignments as a')->leftJoin('machine_assignment_bch_resolutions as br', 'br.machine_assignment_id', '=', 'a.id')->where('a.machine_id', $machineId)->orderBy('a.id')->lockForUpdate()->get(['a.*', DB::raw('COALESCE(a.command_center_id, br.command_center_id) as source_bch_id')]);
+        $timeline = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')->where('machine_id', $machineId)
             ->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])->lockForUpdate()->get(['id', 'machine_id', 'type', 'occurred_at']));
         $now = now()->toDateTimeString();
-        $days = [];
+
         foreach ($canonical->caseRows() as $case) {
-            if (! $canonical->touchesWindow($case, $windowFrom, $windowTo)) {
+            if ($case->work_date < $from || $case->work_date > $to) {
                 continue;
             }
             $row = (object) ['id' => null, 'machine_id' => $machineId, 'work_date' => $case->work_date,
                 'machine_assignment_id' => $case->machine_assignment_id, 'daily_intervals' => null];
-            $context = $timeline->context($machineId, $case->work_date.' 00:00:00', $case->work_date.' 23:59:59');
+            $day = $timeline->resolve($machineId, $case->work_date);
+            $context = $day['context'];
             if (AssignmentTimelineState::isUnassigned($context['timeline_context'])) {
                 if ($case->machine_assignment_id === null) {
                     continue;
@@ -64,29 +65,13 @@ class AssignmentRelationshipPropagation
 
                 continue;
             }
-            if (! isset($days[$case->work_date])) {
-                $days[$case->work_date] = $assignments->filter(fn ($a) => AssignmentInterval::valid($a) && AssignmentInterval::onDate($a, $case->work_date))->sortBy('time_in')->values();
-            }
-            $dayCandidates = $days[$case->work_date];
-            $candidates = $dayCandidates->filter(fn ($a) => AssignmentInterval::valid($a) && $canonical->reason($row, $a) === null)->values();
-            // Adjacent segments are valid; evidence must never resolve true overlap.
-            $overlap = false;
-            $previousEnd = null;
-            foreach ($dayCandidates as $a) {
-                [$start, $end] = AssignmentInterval::segment($a, $case->work_date);
-                if (! AssignmentInterval::valid($a) || ($previousEnd !== null && $start < $previousEnd)) {
-                    $overlap = true;
-                }
-                $previousEnd = max($previousEnd ?? $end, $end);
-            }
-            if ($candidates->count() !== 1 || $overlap) {
-                $context = $timeline->context($machineId, $case->work_date.' 00:00:00', $case->work_date.' 23:59:59');
-                $result['canonical_review'][] = ['case_id' => $case->id, 'reason' => $dayCandidates->isEmpty()
-                    ? ($context['timeline_context'] ?? 'NO_EFFECTIVE_ASSIGNMENT') : 'CANONICAL_CONFLICT'] + $context;
+            $reason = null;
+            if (! $day['assignment'] || ($reason = $canonical->reason($row, $day['assignment']))) {
+                $result['canonical_review'][] = ['case_id' => $case->id, 'reason' => $reason ?? $day['reason'] ?? 'NO_EFFECTIVE_ASSIGNMENT'] + $context;
 
                 continue;
             }
-            $target = $candidates->first();
+            $target = $day['assignment'];
             if ((int) $target->id !== (int) $case->machine_assignment_id) {
                 $canonical->plan($row, $target, $actor, $now);
             }

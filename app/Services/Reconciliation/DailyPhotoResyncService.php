@@ -21,8 +21,8 @@ class DailyPhotoResyncService
         $exceptions = [];
 
         $this->candidateJobs($period, $commandCenterId)
-            ->chunkById(self::BATCH_SIZE, function ($candidateJobs) use ($period, $commandCenterId, &$exceptions): void {
-                DB::transaction(function () use ($candidateJobs, $period, $commandCenterId, &$exceptions): void {
+            ->chunkById(self::BATCH_SIZE, function ($candidateJobs) use ($commandCenterId, &$exceptions): void {
+                DB::transaction(function () use ($candidateJobs, $commandCenterId, &$exceptions): void {
                     $jobs = OcrJob::query()->with('machine')->whereKey($candidateJobs->modelKeys())
                         ->orderBy('id')->lockForUpdate()->get();
                     $resolved = [];
@@ -39,27 +39,19 @@ class DailyPhotoResyncService
 
                     $machineIds = $jobs->map(fn (OcrJob $job) => $job->machine_id
                         ?? data_get($resolved, $job->id.'.machine.id'))->filter()->unique();
-                    $assignmentsByMachine = MachineAssignment::query()
+                    $assignmentsByMachine = MachineAssignment::query()->with('bchResolution')
                         ->whereIn('machine_id', $machineIds)
-                        ->where('time_in', '<=', $period->date_to->copy()->endOfDay())
-                        ->where(fn ($query) => $query->whereNull('time_out')
-                            ->orWhere('time_out', '>', $period->date_from->copy()->startOfDay()))
                         ->orderBy('id')->lockForUpdate()->get()->groupBy('machine_id');
+                    $ownership = new DayBasedAssignmentOwnership($assignmentsByMachine->flatten(1), DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
                     $caseIdsToRecompute = collect();
 
                     foreach ($jobs as $job) {
                         $resolution = $resolved[$job->id] ?? null;
                         $machine = $job->machine ?? ($resolution['machine'] ?? null);
                         $date = $job->extracted_date->format('Y-m-d');
-                        $at = $job->extracted_time ? $date.' '.$job->extracted_time : null;
-                        $upperBound = \Carbon\Carbon::parse($at ?? $date.' 23:59:59');
-                        $lowerBound = \Carbon\Carbon::parse($at ?? $date.' 00:00:00');
-                        $assignments = $machine
-                            ? collect($assignmentsByMachine->get($machine->id, []))
-                                ->filter(fn (MachineAssignment $assignment) => $assignment->time_in->lte($upperBound)
-                                    && (! $assignment->time_out || $assignment->time_out->gt($lowerBound)))
-                                ->values()
-                            : collect();
+                        $history = $machine ? collect($assignmentsByMachine->get($machine->id, [])) : collect();
+                        $day = $ownership->resolve((int) ($machine?->id ?? 0), $date);
+                        $assignments = $day['assignment'] ? $history->where('id', $day['assignment']->id)->values() : $history;
 
                         if ($commandCenterId) {
                             if (! $assignments->contains('command_center_id', $commandCenterId)) {
@@ -94,7 +86,7 @@ class DailyPhotoResyncService
                         }
 
                         $caseIdsToRecompute->push($job->daily_photo_case_id);
-                        $case = app(DailyPhotoCaseService::class)->materialize($job, false, $assignments);
+                        $case = app(DailyPhotoCaseService::class)->materialize($job, false, $history, $ownership);
                         $caseIdsToRecompute->push($case?->id);
                         if ($assignments->count() !== 1) {
                             $exceptions[$machine->id.'|'.$date] = true;
@@ -123,7 +115,7 @@ class DailyPhotoResyncService
                 $query->whereNull('machine_id')->orWhereHas('machine.assignments', fn ($query) => $query
                     ->where('command_center_id', $commandCenterId)
                     ->where('time_in', '<=', $period->date_to->copy()->endOfDay())
-                    ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>', $period->date_from->copy()->startOfDay())));
+                    ->where(fn ($query) => $query->whereNull('time_out')->orWhere('time_out', '>=', $period->date_from->copy()->startOfDay())));
             }))
             ->orderBy('id');
     }

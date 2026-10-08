@@ -24,7 +24,7 @@ class ReconciliationExportValidatorTest extends TestCase
         $this->assertStringContainsString('giống hệt nhau', $result['blocking']->implode(' '));
     }
 
-    public function test_different_non_overlapping_hours_at_two_bch_are_allowed(): void
+    public function test_multiple_bch_rows_on_same_day_block_even_when_hours_do_not_overlap(): void
     {
         [$period, $machine, $project, $firstBch, $secondBch] = $this->baseData();
         $this->row($period, $machine, $project, $firstBch, '07:00:00', '11:00:00');
@@ -32,8 +32,8 @@ class ReconciliationExportValidatorTest extends TestCase
 
         $result = app(ReconciliationExportValidator::class)->validate($period);
 
-        $this->assertTrue($result['can_export']);
-        $this->assertTrue($result['blocking']->isEmpty());
+        $this->assertFalse($result['can_export']);
+        $this->assertStringContainsString('DAY_OWNERSHIP_DUPLICATE', $result['blocking']->implode(' '));
     }
 
     public function test_partially_overlapping_hours_create_warning(): void

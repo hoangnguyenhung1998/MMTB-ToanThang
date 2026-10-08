@@ -69,6 +69,13 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $row = $this->row($old, '2026-09-20', $payload);
         $before = $row->getAttributes();
         $result = $this->repair();
+        if (isset($payload['manually_edited_at'])) {
+            $this->assertSame(['PROTECTED_RELATIONSHIP' => 1], $result['diagnostics']['reasons']);
+            $this->assertSame($before, $row->fresh()->getAttributes());
+            $this->assertSame(0, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
+
+            return;
+        }
         $this->assertSame(1, $result['repaired']);
         $this->assertSame(0, $result['unresolved']);
         $this->assertSame(1, $result['diagnostics']['repairable_stale_links']);
@@ -89,17 +96,18 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->assertStringNotContainsString('không còn khớp phân công nguồn', app(ReconciliationExportValidator::class)->validate($this->period)['blocking']->implode(' '));
     }
 
-    public function test_same_day_orphans_and_stale_same_date_sources_resolve_by_segment(): void
+    public function test_distinct_same_day_payloads_are_not_merged_while_final_owner_is_determined(): void
     {
         $a = $this->assignment('2026-09-01', '2026-09-15 11:30:00');
         $b = $this->assignment('2026-09-15 13:30:00');
         $morning = $this->row(null, '2026-09-15', ['segment_start' => '07:30:00', 'segment_end' => '11:30:00', 'work_content' => 'Morning']);
         $afternoon = $this->row($a, '2026-09-15', ['segment_start' => '13:30:00', 'segment_end' => '17:00:00', 'work_content' => 'Afternoon']);
         $result = $this->repair();
-        $this->assertSame(2, $result['repaired']);
-        $this->assertSame($a->id, (int) $morning->fresh()->machine_assignment_id);
-        $this->assertSame($b->id, (int) $afternoon->fresh()->machine_assignment_id);
-        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
+        $this->assertSame(1, $result['repaired']);
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 1], $result['diagnostics']['reasons']);
+        $this->assertSame($b->id, $morning->fresh()->machine_assignment_id);
+        $this->assertSame($a->id, (int) $afternoon->fresh()->machine_assignment_id);
+        $this->assertFalse(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
     }
 
     public function test_empty_same_day_stale_source_relinks_instead_of_narrowing_to_an_empty_segment(): void
@@ -109,8 +117,8 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $row = $this->row($a, '2026-09-15', ['segment_start' => '13:30:00', 'segment_end' => '17:00:00']);
         $this->assertSame(1, $this->repair()['repaired']);
         $this->assertSame($b->id, (int) $row->fresh()->machine_assignment_id);
-        $this->assertSame('13:30:00', $row->fresh()->segment_start);
-        $this->assertSame('17:00:00', $row->fresh()->segment_end);
+        $this->assertSame('00:00:00', $row->fresh()->segment_start);
+        $this->assertSame('23:59:59', $row->fresh()->segment_end);
     }
 
     public function test_whole_period_diagnostics_classify_every_row_and_endpoint_exposes_reasons(): void
@@ -180,7 +188,7 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->row($a, '2026-09-11', ['work_content' => 'After return']);
         $before = $boundary->getAttributes();
         $result = $this->repair();
-        $this->assertEquals(['SEGMENT_AMBIGUITY' => 1], $result['diagnostics']['reasons']);
+        $this->assertEquals([], $result['diagnostics']['reasons']);
         $this->assertSame(1, $result['normalized_unassigned']);
         $this->assertNull($this->period->rows()->whereDate('work_date', '2026-09-11')->first()->command_center_id);
         $this->assertSame('After return', $this->period->rows()->whereDate('work_date', '2026-09-11')->first()->work_content);
@@ -297,14 +305,16 @@ class ReconciliationRepairStabilizationTest extends TestCase
         }
     }
 
-    public function test_touching_boundary_does_not_overlap_and_empty_source_narrows_once(): void
+    public function test_touching_source_boundary_still_blocks_distinct_materialized_payloads(): void
     {
         $a = $this->assignment('2026-09-01', '2026-09-15 12:00:00');
         $b = $this->assignment('2026-09-15 12:00:00');
         $morning = $this->row($a, '2026-09-15', ['segment_start' => '07:00:00', 'segment_end' => '12:00:00', 'work_content' => 'Morning']);
         $afternoon = $this->row($b, '2026-09-15', ['segment_start' => '12:00:00', 'segment_end' => '17:00:00', 'work_content' => 'Afternoon']);
-        $this->assertSame(2, $this->repair()['diagnostics']['already_correct']);
-        $this->assertTrue(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
+        $result = $this->repair();
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 1], $result['diagnostics']['reasons']);
+        $this->assertSame(0, $result['removed']);
+        $this->assertFalse(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
         $this->assertSame('Morning', $morning->fresh()->work_content);
         $this->assertSame('Afternoon', $afternoon->fresh()->work_content);
     }
@@ -327,19 +337,19 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $this->assertSame(0, ActivityLog::where('event', 'reconciliation.links_repaired')->count());
     }
 
-    public function test_handover_day_content_relinks_without_changing_the_segment(): void
+    public function test_handover_day_content_relinks_with_whole_day_segment(): void
     {
         $a = $this->assignment('2026-09-15 07:30:00');
         $row = $this->row(null, '2026-09-15', ['segment_start' => '07:30:00', 'segment_end' => '11:30:00', 'work_content' => 'Handover']);
         $this->assertSame(1, $this->repair()['repaired']);
         $this->assertSame($a->id, (int) $row->fresh()->machine_assignment_id);
-        $this->assertSame('07:30:00', $row->fresh()->segment_start);
-        $this->assertSame('11:30:00', $row->fresh()->segment_end);
+        $this->assertSame('00:00:00', $row->fresh()->segment_start);
+        $this->assertSame('23:59:59', $row->fresh()->segment_end);
         $this->assertSame('Handover', $row->fresh()->work_content);
         $this->assertTrue(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
     }
 
-    public function test_three_assignment_dependency_chain_is_completed_in_one_atomic_repair(): void
+    public function test_three_same_day_assignments_preserve_distinct_payload_conflicts(): void
     {
         $a = $this->assignment('2026-09-15', '2026-09-15 08:00:00');
         $b = $this->assignment('2026-09-15 08:00:00', '2026-09-15 16:00:00');
@@ -347,8 +357,10 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $first = $this->row(null, '2026-09-15', ['segment_start' => '00:00:00', 'segment_end' => '08:00:00', 'work_content' => 'First']);
         $second = $this->row($a, '2026-09-15', ['segment_start' => '08:00:00', 'segment_end' => '16:00:00', 'work_content' => 'Second']);
         $third = $this->row($b, '2026-09-15', ['segment_start' => '16:00:00', 'segment_end' => '23:59:59', 'work_content' => 'Third']);
-        $this->assertSame(3, $this->repair()['repaired']);
-        foreach ([[$first, $a], [$second, $b], [$third, $c]] as [$row, $target]) {
+        $result = $this->repair();
+        $this->assertSame(1, $result['repaired']);
+        $this->assertSame(2, $result['unresolved']);
+        foreach ([[$first, $c], [$second, $a], [$third, $b]] as [$row, $target]) {
             $this->assertSame($target->id, (int) $row->fresh()->machine_assignment_id);
         }
         $this->assertSame(0, $this->repair()['repaired']);
@@ -361,8 +373,10 @@ class ReconciliationRepairStabilizationTest extends TestCase
         $first = $this->row($a, '2026-09-15', ['segment_start' => '12:00:00', 'segment_end' => '17:00:00', 'work_content' => 'First']);
         $second = $this->row($b, '2026-09-15', ['segment_start' => '07:00:00', 'segment_end' => '12:00:00', 'work_content' => 'Second']);
         $before = [$first->getAttributes(), $second->getAttributes()];
-        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 2], $this->repair()['diagnostics']['reasons']);
-        $this->assertSame($before, [$first->fresh()->getAttributes(), $second->fresh()->getAttributes()]);
+        $this->assertSame(['DUPLICATE_PAYLOAD_CONFLICT' => 1], $this->repair()['diagnostics']['reasons']);
+        $this->assertSame($before[0], $first->fresh()->getAttributes());
+        $this->assertSame('Second', $second->fresh()->work_content);
+        $this->assertSame('00:00:00', $second->fresh()->segment_start);
     }
 
     public function test_reassignment_audit_failure_rolls_back_payload_and_identity(): void

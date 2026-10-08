@@ -161,7 +161,7 @@ class DailyPhotoWorkflowTest extends TestCase
         $this->assertSame('FAILED', $job->fresh()->status);
     }
 
-    public function test_second_bch_uses_remaining_regular_budget(): void
+    public function test_conflicting_same_day_assignments_require_review_before_allocation(): void
     {
         [, $row] = $this->fixture();
         $first = $row->replicate();
@@ -173,11 +173,10 @@ class DailyPhotoWorkflowTest extends TestCase
         $first->regular_morning_end = '10:00';
         $first->regular_minutes = 240;
         $first->save();
+        $this->expectException(ValidationException::class);
         app(DailyPhotoWorkflowService::class)->allocate($row, ['intervals' => [
             ['kind' => 'regular_afternoon', 'start' => '14:00', 'end' => '18:00'],
         ], 'manual_reason' => 'Đã kiểm tra ca chiều', 'confirm_manual' => true], User::factory()->create()->id);
-        $this->assertSame(180, (int) $row->fresh()->regular_minutes);
-        $this->assertSame(60, (int) $row->fresh()->ot_afternoon_minutes);
     }
 
     public function test_overlapping_an_existing_row_is_rejected(): void

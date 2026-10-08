@@ -38,7 +38,7 @@ class DailyPhotoLargeVolumeReconciliationTest extends TestCase
         $firstReads = collect($queries)->filter(fn (string $sql) => str_starts_with(ltrim($sql), 'select'));
 
         $this->assertLessThan(30, $duration, "Large reconciliation took {$duration} seconds.");
-        $this->assertLessThanOrEqual(130, $firstReads->count(), $firstReads->implode(PHP_EOL));
+        $this->assertLessThanOrEqual(140, $firstReads->count(), $firstReads->implode(PHP_EOL));
         $this->assertSame(499, $result['updated']);
         $this->assertSame(1, $result['protected']);
         $this->assertSame(1, $result['partial']);
@@ -65,7 +65,7 @@ class DailyPhotoLargeVolumeReconciliationTest extends TestCase
         $secondWrites = collect($queries)->filter(fn (string $sql) => preg_match('/^\s*(insert|update|delete)\b/', $sql) === 1);
         $this->assertSame(0, $second['updated']);
         $this->assertSame(1, $second['protected']);
-        $this->assertLessThanOrEqual(130, $secondReads->count(), $secondReads->implode(PHP_EOL));
+        $this->assertLessThanOrEqual(140, $secondReads->count(), $secondReads->implode(PHP_EOL));
         $this->assertLessThanOrEqual(1, $secondWrites->count(), $secondWrites->implode(PHP_EOL));
         $this->assertDatabaseCount('daily_photo_case_evidence', 1001);
         $this->assertDatabaseCount('daily_photo_intervals', 500);

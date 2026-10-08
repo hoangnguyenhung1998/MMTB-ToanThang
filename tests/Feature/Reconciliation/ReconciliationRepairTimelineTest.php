@@ -84,14 +84,14 @@ class ReconciliationRepairTimelineTest extends TestCase
         }
     }
 
-    public function test_return_removes_empty_future_drafts_and_narrows_return_day(): void
+    public function test_return_keeps_whole_return_day_and_removes_empty_future_days(): void
     {
         $a = $this->assignment('2026-09-01', '2026-09-15 12:00:00');
         for ($day = 1; $day <= 30; $day++) {
             $this->row($a, $day);
         }
-        $this->assertSame(['repaired' => 1, 'removed' => 15, 'unresolved' => 0], $this->repair());
-        $this->assertSame('12:00:00', $this->period->rows()->whereDate('work_date', '2026-09-15')->first()->segment_end);
+        $this->assertSame(['repaired' => 0, 'removed' => 15, 'unresolved' => 0], $this->repair());
+        $this->assertSame('23:59:59', $this->period->rows()->whereDate('work_date', '2026-09-15')->first()->segment_end);
         $this->assertTrue(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
         $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], $this->repair());
     }
@@ -105,7 +105,7 @@ class ReconciliationRepairTimelineTest extends TestCase
         $before = $early->getAttributes();
         $this->assertSame(['repaired' => 2, 'removed' => 0, 'unresolved' => 0], $this->repair());
         $this->assertSame($before, $early->fresh()->getAttributes());
-        $this->assertSame('07:30:00', $start->fresh()->segment_start);
+        $this->assertSame('00:00:00', $start->fresh()->segment_start);
         $this->assertSame($a->id, (int) $later->fresh()->machine_assignment_id);
     }
 
@@ -115,9 +115,10 @@ class ReconciliationRepairTimelineTest extends TestCase
         $b = $this->assignment('2026-09-15 13:00:00', null, 'BCH B');
         $old = $this->row($a, 15);
         $new = $this->row($b, 15);
-        $this->assertSame(['repaired' => 2, 'removed' => 0, 'unresolved' => 0], $this->repair());
-        $this->assertSame('12:00:00', $old->fresh()->segment_end);
-        $this->assertSame('13:00:00', $new->fresh()->segment_start);
+        $this->assertSame(['repaired' => 1, 'removed' => 1, 'unresolved' => 0], $this->repair());
+        $this->assertSame($b->id, $old->fresh()->machine_assignment_id);
+        $this->assertSame('23:59:59', $old->fresh()->segment_end);
+        $this->assertNull($new->fresh());
         $this->assertTrue(app(ReconciliationExportValidator::class)->validate($this->period)['can_export']);
     }
 
@@ -133,7 +134,7 @@ class ReconciliationRepairTimelineTest extends TestCase
         $this->assertSame(0, ActivityLog::where('event', 'like', 'reconciliation.%')->count());
     }
 
-    public function test_exact_source_catalog_repair_preserves_entire_manual_evidence_payload(): void
+    public function test_exact_source_catalog_repair_leaves_manual_evidence_payload_for_review(): void
     {
         config(['daily_photos.enabled' => true]);
         $a = $this->assignment('2026-09-01');
@@ -142,13 +143,8 @@ class ReconciliationRepairTimelineTest extends TestCase
             'daily_ocr_job_ids' => [1, 2], 'journal_row_ids' => [3], 'ai_reconciliation_job_id' => 99,
             'daily_intervals' => [['start' => '07:00:00', 'end' => '12:00:00']], 'evidence_signature' => str_repeat('a', 64)]);
         $before = $row->getAttributes();
-        $this->assertSame(['repaired' => 1, 'removed' => 0, 'unresolved' => 0], $this->repair());
-        $after = $row->fresh()->getAttributes();
-        foreach (['command_center_id', 'updated_at'] as $key) {
-            unset($before[$key], $after[$key]);
-        }
-        $this->assertSame($before, $after);
-        $this->assertSame($a->command_center_id, (int) $row->fresh()->command_center_id);
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], $this->repair());
+        $this->assertSame($before, $row->fresh()->getAttributes());
     }
 
     public function test_terminal_and_review_timestamp_rows_are_not_changed(): void
@@ -167,7 +163,7 @@ class ReconciliationRepairTimelineTest extends TestCase
         }
     }
 
-    public function test_stale_manual_evidence_and_hours_are_relinked_without_payload_changes(): void
+    public function test_stale_automatic_payload_relinks_while_manual_and_reviewed_remain_protected(): void
     {
         $a = $this->assignment('2026-09-01', '2026-09-14 23:59:59');
         $b = $this->assignment('2026-09-15', null, 'BCH B');
@@ -177,10 +173,10 @@ class ReconciliationRepairTimelineTest extends TestCase
             $row = $this->row($a, 15 + $i, $state);
             $snapshots[] = [$row, $row->getAttributes()];
         }
-        $this->assertSame(['repaired' => 4, 'removed' => 0, 'unresolved' => 1], $this->repair());
+        $this->assertSame(['repaired' => 3, 'removed' => 0, 'unresolved' => 2], $this->repair());
         foreach ($snapshots as [$row, $before]) {
             $after = $row->fresh()->getAttributes();
-            if ($row->status === 'REVIEWED') {
+            if ($row->status === 'REVIEWED' || $row->manually_edited_at) {
                 $this->assertSame($before, $after);
             } else {
                 $this->assertSame($b->id, (int) $after['machine_assignment_id']);
@@ -208,7 +204,7 @@ class ReconciliationRepairTimelineTest extends TestCase
         $a = $this->assignment('2026-09-01', '2026-09-15 12:00:00');
         $row = $this->row($a, 15, ['regular_minutes' => 321, 'confirmed_check_out' => '17:00:00']);
         $before = $row->getAttributes();
-        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 1], $this->repair());
+        $this->assertSame(['repaired' => 0, 'removed' => 0, 'unresolved' => 0], $this->repair());
         $this->assertSame($before, $row->fresh()->getAttributes());
     }
 

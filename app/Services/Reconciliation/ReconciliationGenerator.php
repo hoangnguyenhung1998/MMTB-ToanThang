@@ -59,7 +59,7 @@ class ReconciliationGenerator
             $periodStart = $period->date_from->copy()->startOfDay();
             $periodEnd = $period->date_to->copy()->endOfDay();
 
-            $assignments = MachineAssignment::query()
+            $assignments = MachineAssignment::query()->with('bchResolution')
                 ->where('time_in', '<=', $periodEnd)
                 ->where(function ($query) use ($periodStart) {
                     $query->whereNull('time_out')
@@ -71,6 +71,7 @@ class ReconciliationGenerator
                 ->get();
 
             $machineIds = $assignments->pluck('machine_id')->unique()->values();
+            $ownership = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')->whereIn('machine_id', $machineIds)->get(['id', 'machine_id', 'type', 'occurred_at']));
 
             $journalRows = $machineIds->isEmpty()
                 ? collect()
@@ -128,6 +129,13 @@ class ReconciliationGenerator
                 $histories = $driverHistories->get($assignment->machine_id, collect());
 
                 for ($date = $from->copy(); $date->lte($to); $date->addDay()) {
+                    $day = $ownership->resolve($assignment->machine_id, $date->toDateString());
+                    if ($day['reason'] !== null) {
+                        throw new RuntimeException('Ownership theo ngày cần review: '.$day['reason']);
+                    }
+                    if (! $day['assignment'] || (int) $day['assignment']->id !== (int) $assignment->id) {
+                        continue;
+                    }
                     $changeType = null;
                     $changeNote = null;
 
@@ -149,12 +157,12 @@ class ReconciliationGenerator
                         $assignment->id,
                     ]);
 
-                    $segmentStart = $this->segmentStart($assignmentStart, $date);
+                    $segmentStart = '00:00:00';
                     // Identity and segment occupancy are checked separately, including NULL gap rows.
                     if ($existing->has($key)) {
                         continue;
                     }
-                    $segmentEnd = $this->segmentEnd($assignmentEnd, $date, $assignment->time_out !== null);
+                    $segmentEnd = '23:59:59';
                     if ($segmentStart >= $segmentEnd) {
                         continue;
                     }
@@ -175,7 +183,7 @@ class ReconciliationGenerator
                         'segment_start' => $segmentStart,
                         'segment_end' => $segmentEnd,
                         'project_id' => $assignment->project_id,
-                        'command_center_id' => $assignment->command_center_id,
+                        'command_center_id' => $day['assignment']->source_bch_id ?? $assignment->command_center_id,
                         'driver_id' => $this->driverForDate($histories, $date),
                         'change_type' => $changeType,
                         'change_note' => $changeNote,

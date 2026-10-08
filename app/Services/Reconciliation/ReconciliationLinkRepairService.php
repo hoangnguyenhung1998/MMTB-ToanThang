@@ -40,26 +40,22 @@ class ReconciliationLinkRepairService
                 $canonical = new CanonicalAssignmentRelinker($ids, $rows->min('work_date'), $rows->max('work_date'));
                 $firstDate = $rows->min('work_date');
                 $lastDate = $rows->max('work_date');
-                $byMachine = $assignments->filter(fn ($a) => AssignmentInterval::valid($a) && (string) $a->time_in <= $lastDate.' 23:59:59'
-                    && (! $a->time_out || (string) $a->time_out >= $firstDate.' 00:00:00'))->groupBy('machine_id');
-                $timeline = new AssignmentTimelineState($assignments, DB::table('machine_events')
+                $ownership = new DayBasedAssignmentOwnership($assignments, DB::table('machine_events')
                     ->whereIn('machine_id', $ids)->whereIn('type', ['RETURN', 'HANDOVER', 'TRANSFER'])
                     ->lockForUpdate()->get(['id', 'machine_id', 'type', 'occurred_at']));
+                $contexts = [];
                 $effective = [];
                 $targets = [];
                 $duplicates = [];
                 foreach ($rows as $row) {
                     $key = $row->machine_id.'|'.$row->work_date;
                     if (! isset($effective[$key])) {
-                        $effective[$key] = [];
-                        foreach ($byMachine->get($row->machine_id, collect()) as $assignment) {
-                            if ($this->onDate($assignment, $row->work_date)) {
-                                $effective[$key][] = $assignment;
-                            }
-                        }
+                        $day = $ownership->resolve((int) $row->machine_id, $row->work_date);
+                        $contexts[$key] = $day['context'];
+                        $effective[$key] = $day['assignment'] ? [$day['assignment']] : [];
                     }
                     $targets[$key.'|'.$row->machine_assignment_id][$row->id] = true;
-                    $source = $assignments->get($row->machine_assignment_id);
+                    $source = $this->sourceForDay($row, $assignments, $effective);
                     if ($source && (int) $source->machine_id === (int) $row->machine_id
                         && $this->usable($source) && $this->onDate($source, $row->work_date)
                         && $this->withinSegment($source, $row)
@@ -74,16 +70,15 @@ class ReconciliationLinkRepairService
                 $rowIndex = $rows->keyBy('id');
                 [$orderedRows, $writeLevels] = $this->orderByDependencies($rows->all(), $assignments, $effective, $targets, $canonical);
                 foreach ($orderedRows as $row) {
-                    if (isset($deletes[$row->id]) || ($from && $row->work_date < substr($from, 0, 10)) || ($to && $row->work_date > substr($to, 0, 10))
-                        || ($from && strlen($from) > 10 && $row->segment_end && $row->work_date.' '.$row->segment_end <= $from)
-                        || ($to && strlen($to) > 10 && $row->segment_start && $row->work_date.' '.$row->segment_start >= $to)) {
+                    if (isset($deletes[$row->id]) || ($from && $row->work_date < substr($from, 0, 10)) || ($to && $row->work_date > substr($to, 0, 10))) {
                         continue;
                     }
                     $result['diagnostics']['total_inspected']++;
-                    $source = $assignments->get($row->machine_assignment_id);
+                    $source = $this->sourceForDay($row, $assignments, $effective);
                     $key = $row->machine_id.'|'.$row->work_date;
                     $exact = $source && (int) $source->machine_id === (int) $row->machine_id
-                        && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
+                        && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date)
+                        && count($effective[$key]) === 1 && (int) $source->id === (int) $effective[$key][0]->id;
                     $protected = $this->protected($row);
                     $human = $row->manually_edited_at !== null;
                     if (($row->segment_start && $row->segment_end && $row->segment_start >= $row->segment_end)
@@ -92,9 +87,7 @@ class ReconciliationLinkRepairService
 
                         continue;
                     }
-                    $context = $timeline->context((int) $row->machine_id,
-                        $row->work_date.' '.($row->segment_start ?: '00:00:00'),
-                        $row->work_date.' '.($row->segment_end ?: '23:59:59'));
+                    $context = $contexts[$key];
                     $context['source_assignment_id'] = $row->machine_assignment_id;
                     $context['_candidate_assignments'] = $effective[$key];
                     $state = $context['timeline_context'];
@@ -149,13 +142,13 @@ class ReconciliationLinkRepairService
 
                         continue;
                     }
-                    if (in_array($state, ['INVALID_TIMELINE', 'LIFECYCLE_AMBIGUITY', 'LIFECYCLE_ASSIGNMENT_CONFLICT'], true)) {
+                    if (in_array($state, ['INVALID_TIMELINE', 'LIFECYCLE_AMBIGUITY', 'LIFECYCLE_ASSIGNMENT_CONFLICT', 'TRUE_ASSIGNMENT_OVERLAP', 'NO_BCH_RESOLUTION', 'NO_PROJECT_RESOLUTION'], true)) {
                         $this->unresolved($result, $row, $state, $context);
 
                         continue;
                     }
                     // A same-date source can also be stale after a time-level transfer.
-                    // Empty drafts retain the existing exact-source boundary narrowing rule.
+                    // Daily ownership is selected before legacy segment and payload checks.
                     $needsTarget = ! $exact || (! $this->withinSegment($source, $row)
                         && ($human || $this->hasData($row) || $canonical->hasContent($row) || $this->containedCandidates($row, $effective[$key])));
                     if ($needsTarget) {
@@ -232,7 +225,7 @@ class ReconciliationLinkRepairService
 
                             continue;
                         }
-                        // Narrow source boundaries only; never expand existing segments.
+                        // Reject malformed legacy ranges before applying the whole-day segment.
                         $changes['segment_start'] = max($row->segment_start ?: $start, $start);
                         $changes['segment_end'] = min($row->segment_end ?: $end, $end);
                         if ($changes['segment_start'] >= $changes['segment_end']) {
@@ -241,6 +234,16 @@ class ReconciliationLinkRepairService
                             continue;
                         }
                     }
+                    // Ownership is a whole business day, regardless of physical transfer/return time.
+                    if ($row->segment_start !== '00:00:00' || $row->segment_end !== '23:59:59') {
+                        $changes['segment_start'] = '00:00:00';
+                        $changes['segment_end'] = '23:59:59';
+                    }
+                    if ($reason = $canonical->reason($row, $source)) {
+                        $this->unresolved($result, $row, $reason);
+
+                        continue;
+                    }
                     if (! $changes) {
                         $result['diagnostics']['already_correct']++;
 
@@ -248,12 +251,6 @@ class ReconciliationLinkRepairService
                     }
                     if ($protected) {
                         $this->unresolved($result, $row, 'PROTECTED_RELATIONSHIP');
-
-                        continue;
-                    }
-                    $canonicalReason = (int) $row->machine_assignment_id !== (int) $source->id ? $canonical->reason($row, $source) : null;
-                    if ($canonicalReason) {
-                        $this->unresolved($result, $row, $canonicalReason);
 
                         continue;
                     }
@@ -269,7 +266,7 @@ class ReconciliationLinkRepairService
 
                             continue;
                         }
-                        if ($targetEmpty && ! $sourceEmpty) {
+                        if ($targetEmpty) {
                             $deletes[$targetRow->id] = $targetRow->id;
                             $logs[] = $this->mergeLog($row, $targetRow, $row, $source, $userId, 'EMPTY_TARGET', $now);
                             unset($targets[$key.'|'.$source->id][$targetRow->id]);
@@ -326,6 +323,13 @@ class ReconciliationLinkRepairService
         });
     }
 
+    private function sourceForDay(object $row, $assignments, array $effective): ?object
+    {
+        $owner = $effective[$row->machine_id.'|'.$row->work_date][0] ?? null;
+
+        return $owner && (int) $owner->id === (int) $row->machine_assignment_id ? $owner : $assignments->get($row->machine_assignment_id);
+    }
+
     private function onDate(object $assignment, string $date): bool
     {
         return AssignmentInterval::onDate($assignment, $date);
@@ -366,7 +370,7 @@ class ReconciliationLinkRepairService
 
     private function protected(object $row): bool
     {
-        return $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null;
+        return $row->status !== 'DRAFT' || $row->reviewed_at !== null || $row->confirmed_at !== null || $row->manually_edited_at !== null;
     }
 
     private function hasCanonicalReference(object $row): bool
@@ -397,9 +401,10 @@ class ReconciliationLinkRepairService
         foreach ($rows as $row) {
             $indexed[$row->id] = $row;
             $key = $row->machine_id.'|'.$row->work_date;
-            $source = $assignments->get($row->machine_assignment_id);
+            $source = $this->sourceForDay($row, $assignments, $effective);
             $exact = $source && (int) $source->machine_id === (int) $row->machine_id
-                && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date);
+                && AssignmentInterval::valid($source) && $this->onDate($source, $row->work_date)
+                        && count($effective[$key]) === 1 && (int) $source->id === (int) $effective[$key][0]->id;
             $targetId = $row->machine_assignment_id;
             if (! $exact || (! $this->withinSegment($source, $row)
                 && ($row->manually_edited_at || $rich[$row->id] || $this->containedCandidates($row, $effective[$key])))) {

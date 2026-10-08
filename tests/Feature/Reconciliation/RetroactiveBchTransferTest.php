@@ -155,7 +155,7 @@ class RetroactiveBchTransferTest extends TestCase
             'complementary' => [['regular_minutes' => 321], ['work_content' => 'Target'], 'review'],
             'conflicting hours' => [['regular_minutes' => 321], ['regular_minutes' => 123], 'review'],
             'reviewed target' => [['work_content' => 'Source'], ['status' => 'REVIEWED'], 'protected'],
-            'manual target' => [['work_content' => 'Source'], ['manually_edited_at' => '2026-09-20 12:00:00'], 'review'],
+            'manual target' => [['work_content' => 'Source'], ['manually_edited_at' => '2026-09-20 12:00:00'], 'protected'],
         ];
     }
 
@@ -347,7 +347,7 @@ class RetroactiveBchTransferTest extends TestCase
         $this->assertSame(1, DailyPhotoInterval::count());
     }
 
-    public function test_canonical_capture_outside_target_segment_is_not_moved(): void
+    public function test_same_day_capture_before_physical_in_moves_without_time_loss(): void
     {
         $old = $this->assignment('2026-08-01', '2026-08-31 23:59:59');
         $target = $this->assignment('2026-09-20 12:00:00', null, $this->b);
@@ -355,9 +355,10 @@ class RetroactiveBchTransferTest extends TestCase
         $row = $this->row($this->period('2026-09'), $old, '2026-09-20', ['segment_start' => '12:00:00', 'segment_end' => '23:59:59']);
         $before = $row->getAttributes();
         $result = app(ReconciliationLinkRepairService::class)->repair($this->period('2026-09'), null);
-        $this->assertSame(['CANONICAL_TIME_CONFLICT' => 1], $result['diagnostics']['reasons']);
-        $this->assertSame($before, $row->fresh()->getAttributes());
-        $this->assertSame($old->id, (int) $case->fresh()->machine_assignment_id);
+        $this->assertSame([], $result['diagnostics']['reasons']);
+        $this->assertSame(1, $result['repaired']);
+        $this->assertBusinessSame($before, $row->fresh()->getAttributes());
+        $this->assertSame($target->id, (int) $case->fresh()->machine_assignment_id);
     }
 
     public function test_handover_and_return_propagate_only_valid_history_and_preserve_gap_content(): void
@@ -473,7 +474,7 @@ class RetroactiveBchTransferTest extends TestCase
         $this->assertSame(210, (int) $row->fresh()->regular_minutes);
     }
 
-    public function test_retroactive_propagation_stops_at_next_transfer_time_on_the_same_day(): void
+    public function test_retroactive_propagation_uses_final_owner_for_entire_boundary_day(): void
     {
         $old = $this->assignment('2026-07-01', '2026-08-01');
         $target = $this->assignment('2026-08-01', '2026-09-15 07:00:00', $this->b);
@@ -483,13 +484,14 @@ class RetroactiveBchTransferTest extends TestCase
         $later = $this->row($this->period('2026-09'), $old, '2026-09-15', $this->payload() + ['segment_start' => '07:00:00', 'segment_end' => '23:59:59']);
         $before = $later->getAttributes();
         app(MachineAssignmentTimelineService::class)->reviseTransfer($this->machine->id, $target->id, '2026-07-14', '2026-07-15', null);
-        $this->assertSame($before, $later->fresh()->getAttributes());
+        $this->assertBusinessSame($before, $later->fresh()->getAttributes());
+        $this->assertSame($c->id, $later->fresh()->machine_assignment_id);
         $this->assertSame('2026-09-15 07:00:00', $c->fresh()->time_in->toDateTimeString());
     }
 
     private function payload(): array
     {
-        return ['work_content' => 'HUMAN', 'work_location' => 'Location', 'notes' => 'Keep', 'manually_edited_at' => '2026-10-01 10:00:00',
+        return ['work_content' => 'HUMAN', 'work_location' => 'Location', 'notes' => 'Keep',
             'regular_minutes' => 210, 'regular_morning_start' => '07:30:00', 'regular_morning_end' => '11:00:00',
             'ot_afternoon_minutes' => 30, 'gps_check_in' => '07:25:00', 'gps_check_out' => '11:05:00',
             'gps_check_in_diff_minutes' => 5, 'journal_row_ids' => [21], 'ai_reconciliation_job_id' => 31];
@@ -531,7 +533,7 @@ class RetroactiveBchTransferTest extends TestCase
 
     private function assertBusinessSame(array $before, array $after): void
     {
-        foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'updated_at'] as $key) {
+        foreach (['machine_assignment_id', 'project_id', 'command_center_id', 'segment_start', 'segment_end', 'updated_at'] as $key) {
             unset($before[$key], $after[$key]);
         }
         $this->assertSame($before, $after);
