@@ -395,8 +395,24 @@ class CanonicalAssignmentRelinker
         return ReconciliationRepairSnapshot::hash($data);
     }
 
+    /** Ownership does not require every valid capture to be an interval endpoint.
+     * Validate the entire union against actual jobs/members and every canonical interval.
+     * The legacy strict pairing proof remains available for other duplicate policies.
+     */
+    public function provesOwnershipSource(object $rich, object $shadow, object $owner, array $changes): bool
+    {
+        $combined = clone $rich;
+        foreach ($changes as $field => $value) {
+            $combined->$field = $value;
+        }
+        $references = clone $shadow;
+        $references->daily_ocr_job_ids = $combined->daily_ocr_job_ids;
+
+        return $this->provesSameOcrSource($combined, $references, $owner, false);
+    }
+
     /** Prove actual source/pairing, never infer equivalence from hashes or job IDs alone. */
-    public function provesSameOcrSource(object $rich, object $shadow, object $owner): bool
+    public function provesSameOcrSource(object $rich, object $shadow, object $owner, bool $requireAllPaired = true): bool
     {
         if ($this->protectedEvidence($rich) || $this->protectedEvidence($shadow)
             || $this->reason($rich, $owner) || $this->reason($shadow, $owner)) {
@@ -483,7 +499,7 @@ class CanonicalAssignmentRelinker
         $pairedJobs = array_values(array_unique($pairedJobs));
         sort($pairedJobs);
 
-        return $selected !== [] && $selected === $all && $pairedJobs === $ids;
+        return $selected !== [] && $selected === $all && (! $requireAllPaired || $pairedJobs === $ids);
     }
 
     public function caseRows(): array

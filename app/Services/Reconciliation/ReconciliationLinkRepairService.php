@@ -9,6 +9,8 @@ use RuntimeException;
 
 class ReconciliationLinkRepairService
 {
+    private const SNAPSHOT_POLICY = 'TRANSFER_OWNERSHIP_CANONICAL_V2';
+
     public function repair(ReconciliationPeriod $period, ?int $userId, ?int $machineId = null, ?string $from = null, ?string $to = null, ?string $runId = null): array
     {
         return $this->run($period, $userId, $machineId, $from, $to, true, true, $runId);
@@ -43,6 +45,8 @@ class ReconciliationLinkRepairService
             $result['duplicates_consolidated'] = 0;
             $result['actions'] = [];
             $fingerprint = hash_init('sha256');
+            // A preview approved under PR67 must not authorize the expanded ownership policy.
+            hash_update($fingerprint, self::SNAPSHOT_POLICY);
             hash_update($fingerprint, serialize(ReconciliationRepairSnapshot::normalize([$period->getAttributes(), $machineId, $from, $to])));
             $result['diagnostics'] = ['total_inspected' => 0, 'already_correct' => 0, 'repairable_stale_links' => 0,
                 'unassigned_by_context' => [], 'cleaned_by_context' => [], 'reasons' => [], 'rows' => []];
@@ -164,7 +168,7 @@ class ReconciliationLinkRepairService
                             }
                             $canonical->plan($row, $target, $userId, $now);
                             $changes = ['machine_assignment_id' => null, 'project_id' => null, 'command_center_id' => null];
-                            $updates[$row->id] = $changes;
+                            $updates[$row->id] = array_replace($updates[$row->id] ?? [], $changes);
                             unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
                             $targets[$key.'|'][$row->id] = true;
                             $logs[] = $this->log($row, $userId, 'reconciliation.relationship_unassigned',
@@ -312,17 +316,32 @@ class ReconciliationLinkRepairService
                             continue;
                         }
                         $classifier = new ReconciliationDuplicateClassifier;
-                        $sourceRich = $targetRow && $classifier->sameSourceShadow($row, $targetRow)
-                            && $canonical->provesSameOcrSource($row, $targetRow, $source);
-                        $targetRich = $targetRow && $classifier->sameSourceShadow($targetRow, $row)
-                            && $canonical->provesSameOcrSource($targetRow, $row, $source);
+                        $sourceCarry = $targetRow ? $classifier->ownershipShadowChanges($row, $targetRow) : null;
+                        $targetCarry = $targetRow ? $classifier->ownershipShadowChanges($targetRow, $row) : null;
+                        $sourceRich = $sourceCarry !== null && $canonical->provesOwnershipSource($row, $targetRow, $source, $sourceCarry);
+                        $targetRich = $targetCarry !== null && $canonical->provesOwnershipSource($targetRow, $row, $source, $targetCarry);
+                        // Prefer an evidence superset; equal independent bundles have no proven survivor.
+                        if ($sourceRich && $targetRich) {
+                            $sourceParts = count(json_decode($row->daily_intervals ?? '[]', true) ?? []);
+                            $targetParts = count(json_decode($targetRow->daily_intervals ?? '[]', true) ?? []);
+                            $sourceRich = $sourceParts > $targetParts;
+                            $targetRich = $targetParts > $sourceParts;
+                        }
                         if ($sourceRich || $targetRich) {
                             $survivor = $sourceRich ? $row : $targetRow;
                             $redundant = $sourceRich ? $targetRow : $row;
+                            $carry = $sourceRich ? $sourceCarry : $targetCarry;
+                            $survivorBefore = clone $survivor;
                             $canonical->plan($row, $source, $userId, $now);
+                            if ($carry) {
+                                $updates[$survivor->id] = array_replace($updates[$survivor->id] ?? [], $carry);
+                            }
+                            foreach ($carry as $field => $value) {
+                                $survivor->$field = $value;
+                            }
                             $deletes[$redundant->id] = $redundant->id;
                             unset($targets[$key.'|'.$redundant->machine_assignment_id][$redundant->id]);
-                            $logs[] = $this->mergeLog($row, $targetRow, $survivor, $source, $userId, 'SAME_OCR_REDUNDANT_SHADOW', $now);
+                            $logs[] = $this->mergeLog($sourceRich ? $survivorBefore : $row, $sourceRich ? $targetRow : $survivorBefore, $survivor, $source, $userId, 'SAME_OCR_REDUNDANT_SHADOW', $now, $survivorBefore, $carry);
                             $result['removed']++;
                             if ($targetRich) {
                                 continue;
@@ -365,14 +384,17 @@ class ReconciliationLinkRepairService
 
                             continue;
                         } else {
-                            $this->unresolved($result, $row, $targetRow ? 'DUPLICATE_PAYLOAD_CONFLICT' : 'TARGET_DUPLICATE');
+                            $this->unresolved($result, $row, $targetRow ? 'DUPLICATE_PAYLOAD_CONFLICT' : 'TARGET_DUPLICATE', $targetRow ? [
+                                'conflicting_fields' => $classifier->compare($row, $targetRow)['conflicting_fields'],
+                                'missing_proof' => 'Single canonical source, consistent interval union and an authoritative survivor time bundle are required.',
+                            ] : []);
 
                             continue;
                         }
                     }
                     $canonical->plan($row, $source, $userId, $now);
                     $old = array_intersect_key((array) $row, $changes);
-                    $updates[$row->id] = $changes;
+                    $updates[$row->id] = array_replace($updates[$row->id] ?? [], $changes);
                     unset($targets[$key.'|'.$row->machine_assignment_id][$row->id]);
                     $targets[$key.'|'.$source->id][$row->id] = true;
                     if ((int) $row->machine_assignment_id !== (int) $source->id) {
@@ -611,17 +633,17 @@ class ReconciliationLinkRepairService
             'properties' => json_encode($properties, JSON_THROW_ON_ERROR), 'occurred_at' => $now, 'created_at' => $now, 'updated_at' => $now];
     }
 
-    private function mergeLog(object $sourceRow, object $targetRow, object $survivor, object $assignment, ?int $actor, string $reason, string $now): array
+    private function mergeLog(object $sourceRow, object $targetRow, object $survivor, object $assignment, ?int $actor, string $reason, string $now, ?object $survivorBefore = null, array $carried = []): array
     {
         $proof = [];
         if ($reason === 'SAME_OCR_REDUNDANT_SHADOW') {
             $proof = ['proof' => ['same_ocr_job_ids' => json_decode($survivor->daily_ocr_job_ids, true, 512, JSON_THROW_ON_ERROR),
                 'canonical_interval_ids' => array_column(json_decode($survivor->daily_intervals, true, 512, JSON_THROW_ON_ERROR), 'canonical_interval_id'),
-                'preserve_whole_row' => true, 'owner_assignment_id' => $assignment->id],
-                'survivor_before' => (array) $survivor,
+                'preserve_whole_row' => $carried === [], 'carried_fields' => array_keys($carried), 'ownership_contract' => 'CANONICAL_SOURCE_WITH_UNPAIRED_CAPTURES', 'owner_assignment_id' => $assignment->id],
+                'survivor_before' => (array) ($survivorBefore ?? $survivor),
                 'survivor_after' => $survivor->id === $sourceRow->id ? array_replace((array) $survivor,
                     ['machine_assignment_id' => $assignment->id, 'project_id' => $assignment->source_project_id,
-                        'command_center_id' => $assignment->source_bch_id, 'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'updated_at' => $now]) : (array) $survivor];
+                        'command_center_id' => $assignment->source_bch_id, 'segment_start' => '00:00:00', 'segment_end' => '23:59:59', 'updated_at' => $now]) : array_replace((array) $survivor, $carried ? ['updated_at' => $now] : [])];
         }
 
         return $this->log($survivor, $actor, $survivor->id === $targetRow->id ? 'reconciliation.stale_row_removed' : 'reconciliation.rows_merged',
