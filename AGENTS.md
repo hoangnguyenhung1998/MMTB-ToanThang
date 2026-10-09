@@ -303,6 +303,11 @@ Thứ tự:
 
 Các Skill hiện tại của project:
 
+### `.agents/skills/fix-mmtb-bugs/SKILL.md`
+
+Dùng cho sửa lỗi MMTB, review bản sửa và viết prompt Codex sửa lỗi. Đọc skill này để chốt trigger/actual/expected/invariants/acceptance trước khi dùng skill subsystem liên quan. Sau acceptance, tích lũy bài học đã xác minh vào references của skill; publish theo quyền người dùng đã giao. Trả report kiểm thử trực tiếp trong chat, không chỉ dẫn tới file private.
+
+
 ### `.agents/skills/laravel-mmtb/SKILL.md`
 
 Dùng cho: - Laravel MMTB. - Quản lý máy. - API. - Migration. - UI
