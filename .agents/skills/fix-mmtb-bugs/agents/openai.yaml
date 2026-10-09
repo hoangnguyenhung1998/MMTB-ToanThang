@@ -1,1 +1,4 @@
-cat: /root/.codex/skills/remote-skills/fix-mmtb-bugs/agents/openai.yaml: No such file or directory
+interface:
+  display_name: "Sửa lỗi MMTB"
+  short_description: "Sửa lỗi theo nghiệp vụ và tích lũy bài học thực tế"
+  default_prompt: "Dùng $fix-mmtb-bugs để tái hiện, sửa nguyên nhân, kiểm chứng lỗi MMTB và cập nhật bài học sau khi hoàn tất."
