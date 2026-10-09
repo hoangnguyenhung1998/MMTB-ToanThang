@@ -39,6 +39,67 @@ class ReconciliationDuplicateClassifier
         return array_diff_key($left, $ignored) === array_diff_key($right, $ignored);
     }
 
+    /** Ownership-only consolidation, after the caller proves the canonical source.
+     * Zero/NULL on a shadow is not a competing allocation. Never fill/recompute survivor hours.
+     * Evidence references and independent, non-conflicting descriptors may be carried across.
+     */
+    public function ownershipShadowChanges(object $rich, object $shadow): ?array
+    {
+        if ($this->protected($rich) || $this->protected($shadow)) {
+            return null;
+        }
+        $left = $this->payload($rich);
+        $right = $this->payload($shadow);
+        if (empty($left['daily_intervals']) || ! empty($left['journal_row_ids']) || ! empty($right['journal_row_ids'])) {
+            return null;
+        }
+        foreach (self::ALLOCATION as $field) {
+            $a = $left[$field] ?? null;
+            $b = $right[$field] ?? null;
+            if ($a !== $b && ! in_array($b, [null, 0, '0'], true)) {
+                return null;
+            }
+        }
+        $changes = [];
+        $fillable = ['driver_id', 'work_location', 'work_content', 'explanation', 'notes',
+            'gps_check_in', 'gps_check_out', 'gps_check_in_diff_minutes', 'gps_check_out_diff_minutes',
+            'ocr_check_in_raw', 'ocr_check_out_raw'];
+        $ignored = [...self::ALLOCATION, 'daily_intervals', 'daily_ocr_job_ids'];
+        foreach (array_unique([...array_keys($left), ...array_keys($right)]) as $field) {
+            if (in_array($field, $ignored, true)) {
+                continue;
+            }
+            $a = $left[$field] ?? null;
+            $b = $right[$field] ?? null;
+            if ($a === $b || $b === null) {
+                continue;
+            }
+            if ($a === null && in_array($field, $fillable, true)) {
+                $changes[$field] = $shadow->$field;
+            } else {
+                return null;
+            }
+        }
+        $ids = array_values(array_unique([...($left['daily_ocr_job_ids'] ?? []), ...($right['daily_ocr_job_ids'] ?? [])]));
+        sort($ids);
+        $parts = [];
+        foreach ([...($left['daily_intervals'] ?? []), ...($right['daily_intervals'] ?? [])] as $part) {
+            $id = $part['canonical_interval_id'] ?? null;
+            if (! $id || (isset($parts[$id]) && $parts[$id] !== $part)) {
+                return null;
+            }
+            $parts[$id] = $part;
+        }
+        if ($ids !== ($left['daily_ocr_job_ids'] ?? [])) {
+            $changes['daily_ocr_job_ids'] = json_encode($ids, JSON_THROW_ON_ERROR);
+        }
+        if (array_values($parts) !== ($left['daily_intervals'] ?? [])) {
+            $changes['daily_intervals'] = json_encode(array_values($parts), JSON_THROW_ON_ERROR);
+        }
+
+        return $changes;
+    }
+
     public const TECHNICAL = ['id', 'machine_assignment_id', 'project_id', 'command_center_id',
         'segment_start', 'segment_end', 'created_at', 'updated_at', 'change_type', 'change_note',
         'evidence_signature', 'evidence_synced_at', 'evidence_summary', 'evidence_status'];

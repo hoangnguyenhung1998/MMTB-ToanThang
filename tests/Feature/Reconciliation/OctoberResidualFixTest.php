@@ -227,6 +227,75 @@ class OctoberResidualFixTest extends TestCase
         $this->assertSame(1, $next->rows()->whereDate('work_date', '2026-11-02')->count());
     }
 
+    public static function entryOrderModes(): array
+    {
+        return [['transfer'], ['global'], ['revision']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('entryOrderModes')]
+    public function test_october_exists_before_september_transfer_entered_on_october_fifth(string $mode): void
+    {
+        $this->travelTo(\Carbon\Carbon::parse('2026-10-01'));
+        $old = $this->assignment('2026-08-01');
+        $period = $this->period('2026-10');
+        app(ReconciliationGenerator::class)->generate($period);
+        $rich = $period->rows()->whereDate('work_date', '2026-10-02')->sole();
+        $case = $this->canonical($old, '2026-10-02');
+        $jobs = OcrJob::pluck('id')->all();
+        $photo = ZaloAttachment::find(OcrJob::find($jobs[1])->zalo_attachment_id)->replicate();
+        $photo->attachment_index = 1;
+        $photo->sha256 = hash('sha256', 'extra-unpaired');
+        $photo->save();
+        $extra = OcrJob::find($jobs[1])->replicate();
+        $extra->zalo_attachment_id = $photo->id;
+        $extra->extracted_time = '12:00:00';
+        $extra->save();
+        DailyPhotoCaseEvidence::create(['daily_photo_case_id' => $case->id, 'ocr_job_id' => $extra->id,
+            'capture_datetime' => '2026-10-02 12:00:00', 'pairing_state' => 'UNPAIRED']);
+        $jobs[] = $extra->id;
+        $rich->update(['daily_ocr_job_ids' => $jobs, 'daily_intervals' => [['canonical_interval_id' => DailyPhotoInterval::first()->id]],
+            'regular_minutes' => 0, 'notes' => 'Source journal']);
+        $before = $rich->fresh()->getAttributes();
+        $this->travelTo(\Carbon\Carbon::parse('2026-10-05'));
+        if ($mode === 'transfer') {
+            app(\App\Services\MachineService::class)->transferAssignment($this->machine->id, $this->project->id, $this->a->id,
+                $this->project->id, $this->b->id, '2026-09-25', '2026-09-25', null);
+            $target = MachineAssignment::where('command_center_id', $this->b->id)->sole();
+        } elseif ($mode === 'revision') {
+            $old->update(['time_out' => '2026-11-01']);
+            $target = $this->assignment('2026-11-01', null, $this->b);
+            $this->event($old, $target);
+            $shadow = $this->row($period, $target, '2026-10-02', ['daily_ocr_job_ids' => $jobs, 'notes' => 'Source journal']);
+            app(\App\Services\MachineAssignmentTimelineService::class)->reviseTransfer($this->machine->id, $target->id, '2026-09-25', '2026-09-25', null);
+            $this->assertNull($shadow->fresh());
+        } else {
+            // Persisted historical transfer awaiting repair: event entry date is October 5.
+            $old->update(['time_out' => '2026-09-25']);
+            $target = $this->assignment('2026-09-25', null, $this->b);
+            $this->event($old, $target);
+            $shadow = $this->row($period, $target, '2026-10-02', ['daily_ocr_job_ids' => $jobs, 'notes' => 'Source journal']);
+            $global = app(\App\Services\Reconciliation\GlobalReconciliationRepairService::class);
+            $user = \App\Models\User::factory()->create();
+            $run = $global->start($user, $global->preview($user));
+            $global->processNext();
+            $this->assertNull($shadow->fresh());
+        }
+        $this->assertSame($target->id, $rich->fresh()->machine_assignment_id);
+        $this->assertSame(1, $period->rows()->whereDate('work_date', '2026-10-02')->count());
+        $this->assertSame(3, $case->evidenceMemberships()->count());
+        foreach (array_diff_key($before, array_flip(['machine_assignment_id', 'project_id', 'command_center_id', 'updated_at'])) as $field => $value) {
+            $this->assertSame($value, $rich->fresh()->getAttributes()[$field], $field);
+        }
+        $this->assertSame(0, app(ReconciliationLinkRepairService::class)->repair($period, null)['removed']);
+        app(ReconciliationGenerator::class)->generate($period);
+        config(['daily_photos.enabled' => true]);
+        app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period);
+        app(\App\Services\DailyPhotoCaseService::class)->materialize(OcrJob::find($jobs[0]), false);
+        app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period);
+        $this->assertSame([$rich->id], $period->rows()->whereDate('work_date', '2026-10-02')->pluck('id')->all());
+        $this->assertSame($target->id, $rich->fresh()->machine_assignment_id);
+    }
+
     public static function sameSourceMatrix(): array
     {
         $cases = [];
@@ -285,7 +354,9 @@ class OctoberResidualFixTest extends TestCase
         } else {
             $result = $service->repair($period, null);
         }
-        $this->assertSame($plan['actions'], $result['actions']);
+        // MySQL JSON objects reorder keys; preserve every value/type and list order.
+        $this->assertSame(\App\Services\Reconciliation\ReconciliationRepairSnapshot::hash([$plan['actions']]),
+            \App\Services\Reconciliation\ReconciliationRepairSnapshot::hash([$result['actions']]));
         $this->assertSame(1, $result['removed']);
         $this->assertSame(0, $result['unresolved']);
         $this->assertSame([$survivor->id], $period->rows()->pluck('id')->all());
@@ -316,6 +387,53 @@ class OctoberResidualFixTest extends TestCase
         $this->assertSame($logs, ActivityLog::count());
     }
 
+    public function test_complementary_canonical_photos_intervals_gps_and_notes_are_carried_without_changing_hours(): void
+    {
+        config(['daily_photos.enabled' => true]);
+        $old = $this->assignment('2026-08-01', '2026-09-25');
+        $owner = $this->assignment('2026-09-25', null, $this->b);
+        $period = $this->period('2026-10');
+        $case = $this->canonical($owner, '2026-10-02', ['07:30:00', '11:00:00', '13:00:00', '17:00:00']);
+        $jobs = OcrJob::pluck('id')->all();
+        $parts = DailyPhotoInterval::pluck('id')->map(fn ($id) => ['canonical_interval_id' => $id])->all();
+        $rich = $this->row($period, $old, '2026-10-02', ['daily_ocr_job_ids' => array_slice($jobs, 0, 2),
+            'daily_intervals' => [$parts[0]], 'regular_minutes' => 210, 'lunch_minutes' => 0]);
+        $shadow = $this->row($period, $owner, '2026-10-02', ['daily_ocr_job_ids' => array_slice($jobs, 2),
+            'daily_intervals' => [$parts[1]], 'gps_check_in' => '07:31:00', 'notes' => 'Additional source note']);
+        $snapshots = [];
+        foreach (['ocr_jobs', 'daily_photo_cases', 'daily_photo_case_evidence', 'daily_photo_intervals', 'zalo_attachments'] as $table) {
+            $snapshots[$table] = DB::table($table)->orderBy('id')->get()->toJson();
+        }
+        $service = app(ReconciliationLinkRepairService::class);
+        $plan = $service->plan($period);
+        $result = $service->repair($period, null);
+        // MySQL JSON objects reorder keys; preserve every value/type and list order.
+        $this->assertSame(\App\Services\Reconciliation\ReconciliationRepairSnapshot::hash([$plan['actions']]),
+            \App\Services\Reconciliation\ReconciliationRepairSnapshot::hash([$result['actions']]));
+        $this->assertSame(1, $result['removed']);
+        $this->assertSame([$rich->id], $period->rows()->pluck('id')->all());
+        $row = $rich->fresh();
+        $this->assertSame(210, $row->regular_minutes);
+        $this->assertSame(0, $row->lunch_minutes);
+        $this->assertSame($jobs, $row->daily_ocr_job_ids);
+        $this->assertSame($parts, $row->daily_intervals);
+        $this->assertSame('07:31:00', $row->gps_check_in);
+        $this->assertSame('Additional source note', $row->notes);
+        foreach ($snapshots as $table => $snapshot) {
+            $this->assertSame($snapshot, DB::table($table)->orderBy('id')->get()->toJson(), $table);
+        }
+        $log = ActivityLog::where('event', 'reconciliation.rows_merged')->sole();
+        $this->assertSame($jobs, json_decode($log->properties['survivor_after']['daily_ocr_job_ids'], true));
+        $this->assertSame(210, $log->properties['survivor_before']['regular_minutes']);
+        $this->assertContains('notes', $log->properties['proof']['carried_fields']);
+        $this->assertSame(0, $service->repair($period, null)['removed']);
+        app(ReconciliationGenerator::class)->generate($period);
+        app(\App\Services\Reconciliation\DailyPhotoSyncService::class)->sync($period);
+        app(\App\Services\DailyPhotoCaseService::class)->materialize(OcrJob::find($jobs[0]), false);
+        $this->assertSame([$rich->id], $period->rows()->whereDate('work_date', '2026-10-02')->pluck('id')->all());
+        $this->assertNull($shadow->fresh());
+    }
+
     public static function rejectedSameSource(): array
     {
         return array_map(fn ($reason) => [$reason], array_combine(
@@ -336,7 +454,7 @@ class OctoberResidualFixTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('differentZeroAllocation')]
-    public function test_zero_and_null_allocation_conflicts_retain_both_rows(?int $richMinutes, ?int $shadowMinutes, bool $oldRich): void
+    public function test_ownership_shadow_zero_and_null_preserve_interval_bearing_survivor(?int $richMinutes, ?int $shadowMinutes, bool $oldRich): void
     {
         $old = $this->assignment('2026-08-01', '2026-09-30 15:00:00');
         $owner = $this->assignment('2026-09-30 15:00:00', null, $this->b);
@@ -349,12 +467,12 @@ class OctoberResidualFixTest extends TestCase
         $before = DB::table('reconciliation_rows')->orderBy('id')->get()->toJson();
         $service = app(ReconciliationLinkRepairService::class);
         $plan = $service->plan($period);
-        $this->assertSame(0, $plan['duplicates_consolidated']);
+        $this->assertSame(1, $plan['duplicates_consolidated']);
         $result = $service->repair($period, null);
-        $this->assertSame(0, $result['removed']);
-        $this->assertGreaterThan(0, $result['unresolved']);
-        $this->assertArrayHasKey('DUPLICATE_PAYLOAD_CONFLICT', $result['diagnostics']['reasons']);
-        $this->assertSame($before, DB::table('reconciliation_rows')->orderBy('id')->get()->toJson());
+        $this->assertSame(1, $result['removed']);
+        $this->assertSame(0, $result['unresolved']);
+        $this->assertSame([$rich->id], $period->rows()->pluck('id')->all());
+        $this->assertSame($owner->id, $rich->fresh()->machine_assignment_id);
         $this->assertSame($richMinutes, $rich->fresh()->regular_minutes);
     }
 
@@ -463,8 +581,10 @@ class OctoberResidualFixTest extends TestCase
         if ($mutation === 'hours') {
             $shadow->update(['regular_minutes' => 211]);
         } elseif ($mutation === 'gps') {
+            $rich->update(['gps_check_in' => '07:30:00']);
             $shadow->update(['gps_check_in' => '09:00:00']);
         } elseif ($mutation === 'descriptor') {
+            $rich->update(['notes' => 'Original notes']);
             $shadow->update(['notes' => 'Independent notes']);
         } elseif ($mutation === 'missing job') {
             $rich->update(['daily_ocr_job_ids' => [...$jobs, 999999]]);
