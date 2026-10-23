@@ -8,6 +8,8 @@ use Illuminate\Console\Command;
 class DailyPhotoBacklogRecover extends Command
 {
     protected $signature = 'ocr:daily-backlog-recover
+        {--downstream : Preview/resume downstream for one interrupted COMPLETED job; requires --job}
+        {--actor= : User ID authorizing a downstream request}
         {--dry-run : Chỉ báo cáo, tuyệt đối không ghi dữ liệu}
         {--execute : Thực hiện recovery sau khi đã review dry-run}
         {--sender= : Lọc theo sender ID}
@@ -44,6 +46,27 @@ class DailyPhotoBacklogRecover extends Command
             'project_id' => $this->option('project'),
         ], fn (mixed $value): bool => filled($value));
         $filters['limit'] = max(0, min(100, (int) $this->option('limit')));
+
+        if ($this->option('downstream')) {
+            if (! $this->option('job')) {
+                $this->error('--downstream requires --job; preview each identified job before apply.');
+                return self::INVALID;
+            }
+            $runs = app(\App\Services\DailyPhotoRecoveryRunService::class);
+            $job = \App\Models\OcrJob::findOrFail($this->option('job'));
+            $proof = $runs->diagnose($job, $filters);
+            $this->line(json_encode($proof, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+            if ($this->option('execute') && $proof['missing']) {
+                if (! $this->option('actor')) {
+                    $this->error('--execute --downstream requires --actor');
+                    return self::INVALID;
+                }
+                unset($filters['limit']);
+                $run = $runs->start(\App\Models\User::findOrFail($this->option('actor')), $filters, null, 'DOWNSTREAM');
+                $this->line('Scheduled downstream run: '.$run->id);
+            }
+            return self::SUCCESS;
+        }
 
         if ($this->option('dry-run')) {
             $preview = $service->recoveryPreview($filters);

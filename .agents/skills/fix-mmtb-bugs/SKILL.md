@@ -33,6 +33,9 @@ Chọn sửa nhỏ nhất đủ bao phủ lỗi. Dùng planner/service chung cho
 ## 3. Sửa và kiểm chứng
 
 - Sửa dữ liệu cũ và ngăn generator/sync/replay tạo lại lỗi; không dựng hệ thống song song nếu kiến trúc hiện có xử lý được.
+- Với HTTP timeout/chạy nền: đo từng stage; persist phạm vi/actor/idempotency/progress, lưu downstream obligations cho cả scope cũ/mới khi evidence di chuyển, atomic với mutation; bounded units + durable lease/attempt cho crash/retry. Kiểm chứng process thật và preview riêng cho dữ liệu đã commit một phần; không đánh đồng OCR retry với thành công.
+- Với repair có filter reason: diagnostic/preview, dispatch gate và worker phải dùng cùng current-reason predicate, revalidate sau dispatch; proof reason không thay thế scope filter.
+- Bulk AI: preview chỉ đọc chốt exact IDs/actor; eligibility lớn chưa kiểm tra phải hiển thị rõ là upper bound. Đưa full validation/enqueue sang bounded worker, tiến độ OCR phải lấy từ attempt lifecycle. MySQL duplicate-create retry cần đọc sau rollback ngoài snapshot thua; tests song song cần cách ly cả fake-storage.
 - Với relink/dedupe, bảo toàn nguồn, chuyển references cần thiết, lock/revalidate và relink/delete/audit atomically; giữ retry/idempotence, quyền và protection.
 - Với xung đột nội dung thật thiếu nguồn quyết định, báo máy/ngày/trường và proof thiếu; không cộng/ghi đè tùy ý.
 - Chạy targeted regression, rồi subsystem/full theo rủi ro. Tests PASS không thay cho acceptance nghiệp vụ.

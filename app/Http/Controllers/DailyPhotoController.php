@@ -54,6 +54,7 @@ class DailyPhotoController extends Controller
             'senders' => $senders,
             'report' => $report,
             'reasonLabels' => DailyPhotoExceptionReason::LABELS,
+            'recoveryRuns' => \App\Models\DailyPhotoRecoveryRun::where('user_id', request()->user()->id)->latest()->limit(10)->get(),
         ]);
     }
 
@@ -79,9 +80,10 @@ class DailyPhotoController extends Controller
         return back()->with('success', 'Đã lưu ánh xạ. Dùng OCR lại với ảnh chưa xác định máy.');
     }
 
-    public function recover(Request $request, DailyPhotoBacklogService $backlog)
+    public function recover(Request $request, \App\Services\DailyPhotoRecoveryRunService $runs)
     {
         $data = $request->validate([
+            'request_id' => ['required', 'uuid'],
             'sender_id' => ['required', 'string', 'max:100'],
             'date_from' => ['nullable', 'date_format:Y-m-d'],
             'date_to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
@@ -89,12 +91,29 @@ class DailyPhotoController extends Controller
             'command_center_id' => ['nullable', 'integer', 'exists:command_centers,id'],
             'project_id' => ['nullable', 'integer', 'exists:projects,id'],
         ]);
-        $result = $backlog->recover(array_filter($data, fn ($value) => filled($value)));
+        $requestId = $data['request_id'];
+        unset($data['request_id']);
+        $run = $runs->start($request->user(), array_filter($data, fn ($value) => filled($value)), $requestId);
 
-        return back()->with('success', sprintf(
-            'Đã kiểm tra %d ảnh: recovered %d, xếp hàng OCR retry %d, còn exception %d, bỏ qua dữ liệu được bảo vệ %d.',
-            $result['total'], $result['recovered'], $result['queued_retry'], $result['still_exception'], $result['skipped_protected'],
-        ));
+        return redirect()->route('daily-photos.recovery.show', $run);
+    }
+
+    public function recoveryStatus(Request $request, \App\Models\DailyPhotoRecoveryRun $recoveryRun)
+    {
+        abort_unless($recoveryRun->user_id === $request->user()->id, 403);
+        if ($request->expectsJson()) {
+            return response()->json($recoveryRun->only(['id', 'status', 'mode', 'filters', 'counters', 'discovery_done', 'failures', 'error_code', 'error_context', 'finished_at']));
+        }
+
+        return view('daily-photos.recovery-run', ['run' => $recoveryRun]);
+    }
+
+    public function retryRecovery(Request $request, \App\Models\DailyPhotoRecoveryRun $recoveryRun, \App\Services\DailyPhotoRecoveryRunService $runs)
+    {
+        abort_unless($recoveryRun->user_id === $request->user()->id, 403);
+        $runs->retry($recoveryRun);
+
+        return redirect()->route('daily-photos.recovery.show', $recoveryRun);
     }
 
     public function closeLink(Request $request, int $link, ZaloSenderDriverService $service)

@@ -6,6 +6,11 @@
 @if(session('success'))<div class="alert alert-success">{{ session('success') }}</div>@endif
 @if($errors->any())<div class="alert alert-danger">{{ $errors->first() }}</div>@endif
 
+@if($recoveryRuns->isNotEmpty())
+<div class="mb-3"><strong>Yêu cầu xử lý gần đây</strong>
+@foreach($recoveryRuns as $recoveryRun)<div><a href="{{ route('daily-photos.recovery.show', $recoveryRun) }}">{{ $recoveryRun->filters['sender_id'] ?? 'CLI' }} — {{ ['QUEUED'=>'Đang chờ','RUNNING'=>'Đang xử lý','COMPLETED'=>'Hoàn tất','FAILED'=>'Có lỗi cần xử lý'][$recoveryRun->status] }}</a></div>@endforeach
+</div>
+@endif
 <div class="row g-3 mb-4">
     <div class="col"><div class="card card-body"><small>Tổng exception</small><strong class="fs-4">{{ number_format($report['total']) }}</strong></div></div>
     <div class="col"><div class="card card-body"><small>Có thể tự xử lý</small><strong class="fs-4 text-success">{{ number_format($report['auto_recoverable']) }}</strong></div></div>
@@ -37,6 +42,10 @@
     </form>
     @if($sender['auto_recoverable'] > 0)
     <form method="POST" action="{{ route('daily-photos.recover') }}">@csrf
+        <input type="hidden" name="request_id" value="{{ (string) \Illuminate\Support\Str::uuid() }}">
+        @foreach(['date_from', 'date_to', 'reason', 'command_center_id', 'project_id'] as $filter)
+        @if(request()->filled($filter))<input type="hidden" name="{{ $filter }}" value="{{ request($filter) }}">@endif
+        @endforeach
         <input type="hidden" name="sender_id" value="{{ $sender['sender_id'] }}">
         <div class="small mb-1">Có {{ number_format($sender['waiting']) }} ảnh đang chờ: {{ number_format($sender['auto_recoverable']) }} có thể xử lý, {{ number_format($sender['manual']) }} cần manual.</div>
         <button class="btn btn-sm btn-success" onclick="return confirm('Chỉ xử lý ảnh đủ điều kiện theo lịch sử mapping. Tiếp tục?')">XỬ LÝ ẢNH ĐANG CHỜ</button>

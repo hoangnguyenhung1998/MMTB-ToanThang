@@ -4,6 +4,8 @@
 
 | Phase | Purpose | Status | Dependencies | Related | Git reference | Documentation path |
 |---|---|---|---|---|---|---|
+| 17.5 | Durable bounded bulk AI Rescue enqueue and progress | LOCAL PASS568/5625 + MySQL40/452; release/live NOT VERIFIED | 16.11.1–16.11.3 | 17.4 cumulative patch | base13adfd0 / same fix branch | `docs/phases/PHASE-17.5.md` |
+| 17.4 | Durable bounded background Daily Photo backlog recovery | LOCAL REVIEW FIXES PASS23/10 (563/5562); release/live NOT VERIFIED | 16.10.5–16.10.8; canonical pairing/sync | 17.3 / PR68 regression | base13adfd0 / codex/daily-backlog-background-recovery | `docs/phases/PHASE-17.4.md` |
 | 17.3 | Effective-date ownership consolidation, propagation and durable global repair | LOCAL ownership fix PASS WITH REVIEW; production NOT VERIFIED | 17.1;17.2;canonical16.10.1–16.10.4 | Phase11/11.1; residual audit/global repair runbooks | base6a4f2e7 / codex/retroactive-transfer-ownership (uncommitted) | `docs/phases/PHASE-17.3.md` |
 | 17 | Production Stabilization & Bugfix umbrella | ACTIVE — independent bug groups tracked as 17.x | Current verified repository | 17.1; 17.2; 17.3 | No independent code change | `docs/phases/PHASE-17.2.md` |
 | 17.2 | Retroactive BCH Transfer, Relink & Safe Merge Stabilization | COMPLETED locally / CODE COMPLETE — full 420 tests / 2742 assertions; performance/lint/diff PASS; production NOT VERIFIED | 11 / 11.1; 17.1 | 16.9; 16.10.1–16.10.4; 16.11 protection | Merge `6bb75f267015c94cadfd93abffb3624b10072d45` VERIFIED at 17.3 start; earlier uncommitted checkpoint is historical | `docs/phases/PHASE-17.2.md` |

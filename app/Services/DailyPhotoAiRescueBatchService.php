@@ -14,7 +14,7 @@ use Throwable;
 
 class DailyPhotoAiRescueBatchService
 {
-    public const PREVIEW_VERSION = 'daily-photo-ai-rescue-preview-v1';
+    public const PREVIEW_VERSION = 'daily-photo-ai-rescue-preview-v2';
 
     private const CATEGORIES = [
         'eligible',
@@ -77,100 +77,57 @@ class DailyPhotoAiRescueBatchService
     {
         $reasonGroups = $this->normalizeReasons($reasonGroups);
 
-        return collect($this->backlog->report()['rows'])
-            ->filter(fn (array $row): bool => collect($row['reasons'])->intersect($reasonGroups)->isNotEmpty())
-            ->pluck('job.id')->unique()->count();
+        return $this->selectionQuery($reasonGroups)->count();
     }
 
     public function preview(array $reasonGroups): array
     {
         $reasonGroups = $this->normalizeReasons($reasonGroups);
-        $rows = collect($this->backlog->report()['rows'])
-            ->filter(fn (array $row): bool => collect($row['reasons'])->intersect($reasonGroups)->isNotEmpty())
-            ->unique('job.id')->values();
-        $latest = $this->latestAttempts($rows->pluck('job.id')->all())->keyBy('ocr_job_id');
+        $owner = auth()->id();
+        abort_unless($owner, 403);
+        // Same SQL taxonomy as the dashboard; load IDs only, never whole backlog models.
+        $query = $this->selectionQuery($reasonGroups);
+        $jobIds = (clone $query)->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
         $counts = $this->emptyCounts();
-        $matchedRecords = 0;
-
-        foreach ($rows as $row) {
-            $matchedRecords += collect($row['reasons'])->intersect($reasonGroups)->count();
-            $counts[$this->category($row['job'], $row, $latest->get($row['job']->id))]++;
+        $deferred = count($jobIds) > 50;
+        if ($deferred) {
+            // Full storage/domain analysis belongs in bounded worker units. No pretend eligibility.
+            $counts['eligibility_pending'] = count($jobIds);
+        } elseif ($jobIds !== []) {
+            $jobs = OcrJob::with(['attachment.message', 'machine:id,asset_code', 'dailyPhotoCaseEvidence.dailyPhotoCase'])
+                ->whereKey($jobIds)->get();
+            $rows = $this->backlog->analyse($jobs)->keyBy('job.id');
+            $latest = $this->latestAttempts($jobIds)->keyBy('ocr_job_id');
+            foreach ($jobs as $job) {
+                $counts[$this->category($job, $rows->get($job->id), $latest->get($job->id))]++;
+            }
         }
+        // Count memberships over the frozen IDs, rather than a second expanding selection.
+        $matchedRecords = $jobIds === [] ? 0 : array_sum(array_intersect_key(
+            $this->reasons->counts(OcrJob::whereKey($jobIds)), array_flip($reasonGroups)));
+        $payload = ['version' => self::PREVIEW_VERSION, 'id' => (string) \Illuminate\Support\Str::uuid(),
+            'user_id' => $owner, 'created_at' => now()->timestamp, 'reason_groups' => $reasonGroups, 'job_ids' => $jobIds];
 
-        $jobIds = $rows->pluck('job.id')->map(fn ($id): int => (int) $id)->values()->all();
-        $payload = [
-            'version' => self::PREVIEW_VERSION,
-            'created_at' => now()->timestamp,
-            'reason_groups' => $reasonGroups,
-            'job_ids' => $jobIds,
-        ];
-
-        return [
-            'reason_groups' => $reasonGroups,
-            'reason_labels' => collect(DailyPhotoExceptionReason::LABELS)->only($reasonGroups)->all(),
-            'matched_records' => $matchedRecords,
-            'unique_photos' => count($jobIds),
-            'will_queue' => $counts['eligible'],
-            'counts' => $counts,
-            'preview_token' => Crypt::encryptString(json_encode($payload, JSON_THROW_ON_ERROR)),
-        ];
+        return ['reason_groups' => $reasonGroups, 'reason_labels' => collect(DailyPhotoExceptionReason::LABELS)->only($reasonGroups)->all(),
+            'matched_records' => $matchedRecords, 'unique_photos' => count($jobIds),
+            'will_queue' => $deferred ? count($jobIds) : $counts['eligible'], 'eligibility_deferred' => $deferred,
+            'counts' => $counts, 'preview_token' => Crypt::encryptString(json_encode($payload, JSON_THROW_ON_ERROR))];
     }
 
-    public function execute(string $previewToken, User $user): array
+    private function selectionQuery(array $reasonGroups): \Illuminate\Database\Eloquent\Builder
+    {
+        $query = OcrJob::where('document_type', 'DAILY_TIMEMARK')->where('status', 'EXCEPTION');
+        $this->reasons->applyAnyToQuery($query, $reasonGroups);
+
+        return $query;
+    }
+
+    public function execute(string $previewToken, User $user): \App\Models\DailyPhotoAiRescueRun
     {
         $payload = $this->decodePreview($previewToken);
-        $jobs = OcrJob::query()->with([
-            'attachment.message',
-            'machine:id,asset_code',
-            'dailyPhotoCaseEvidence.dailyPhotoCase',
-        ])->whereKey($payload['job_ids'])->orderBy('id')->get();
-        $manualJobs = $jobs->filter(fn (OcrJob $job): bool => $job->document_type === 'DAILY_TIMEMARK' && $job->status === 'EXCEPTION');
-        $rows = $manualJobs->isEmpty() ? collect() : $this->backlog->analyse($manualJobs)->keyBy('job.id');
-        $latest = $this->latestAttempts($jobs->modelKeys())->keyBy('ocr_job_id');
-        $counts = $this->emptyCounts();
-        $counts['other_skipped'] += count($payload['job_ids']) - $jobs->count();
-        $accepted = 0;
+        abort_unless((int) $payload['user_id'] === (int) $user->id, 403);
 
-        foreach ($jobs as $job) {
-            $category = $this->category($job, $rows->get($job->id), $latest->get($job->id));
-            if ($category !== 'eligible') {
-                $counts[$category]++;
-
-                continue;
-            }
-
-            try {
-                $attempt = $this->rescue->request($job);
-                if ($attempt->wasRecentlyCreated) {
-                    $accepted++;
-                    $counts['eligible']++;
-                } else {
-                    $counts['ai_processing']++;
-                }
-            } catch (ValidationException) {
-                $counts['other_skipped']++;
-            }
-        }
-
-        ActivityLog::query()->create([
-            'user_id' => $user->id,
-            'event' => 'ocr.ai_rescue_bulk_requested',
-            'description' => "Yêu cầu AI Rescue hàng loạt: {$accepted} ảnh được tiếp nhận.",
-            'properties' => [
-                'reason_groups' => $payload['reason_groups'],
-                'preview_unique_photos' => count($payload['job_ids']),
-                'accepted' => $accepted,
-                'counts' => $counts,
-            ],
-            'occurred_at' => now(),
-        ]);
-
-        return [
-            'preview_unique_photos' => count($payload['job_ids']),
-            'accepted' => $accepted,
-            'skipped' => count($payload['job_ids']) - $accepted,
-            'counts' => $counts,
-        ];
+        return app(DailyPhotoAiRescueRunService::class)->start($payload, $user);
     }
 
     public function requestSingle(OcrJob $job, User $user): array
@@ -222,7 +179,7 @@ class DailyPhotoAiRescueBatchService
         ];
     }
 
-    private function category(OcrJob $job, ?array $row, ?DailyPhotoAiRescueAttempt $latest): string
+    public function category(OcrJob $job, ?array $row, ?DailyPhotoAiRescueAttempt $latest): string
     {
         if ($latest?->active_key === DailyPhotoAiRescueService::ACTIVE_KEY
             && in_array($latest->status, ['PENDING', 'RETRY', 'PROCESSING'], true)) {
@@ -281,6 +238,8 @@ class DailyPhotoAiRescueBatchService
         }
         $ttl = max(1, (int) config('daily_photos.ai_rescue.preview_ttl_minutes', 30));
         if (($payload['version'] ?? null) !== self::PREVIEW_VERSION
+            || ! \Illuminate\Support\Str::isUuid($payload['id'] ?? '')
+            || ! is_numeric($payload['user_id'] ?? null)
             || ! is_array($payload['job_ids'] ?? null)
             || ! is_array($payload['reason_groups'] ?? null)
             || (int) ($payload['created_at'] ?? 0) < now()->subMinutes($ttl)->timestamp) {
@@ -296,7 +255,7 @@ class DailyPhotoAiRescueBatchService
 
     private function emptyCounts(): array
     {
-        return array_fill_keys(self::CATEGORIES, 0);
+        return array_fill_keys([...self::CATEGORIES, 'eligibility_pending'], 0);
     }
 
     private function categoryMessage(string $category): string

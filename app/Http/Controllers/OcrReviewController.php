@@ -36,6 +36,7 @@ class OcrReviewController extends Controller
             'filters' => $f,
             'exceptionReasonLabels' => DailyPhotoExceptionReason::LABELS,
             'aiRescueDashboard' => $dailyPhotos ? $this->aiRescue->dashboard() : null,
+            'aiRescueRuns' => \App\Models\DailyPhotoAiRescueRun::where('user_id', auth()->id())->latest()->limit(10)->get(['id', 'selected_count', 'status']),
         ]);
     }
 

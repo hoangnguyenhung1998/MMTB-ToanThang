@@ -12,6 +12,7 @@ use App\Services\DailyPhotoAiRescueBatchService;
 use App\Services\DailyPhotoAiRescueService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -37,6 +38,7 @@ class DailyPhotoAiRescueUiTest extends TestCase
         ]);
         Storage::fake('local');
         $this->user = User::factory()->create();
+        $this->actingAs($this->user);
     }
 
     protected function tearDown(): void
@@ -117,17 +119,17 @@ class DailyPhotoAiRescueUiTest extends TestCase
         $changed = $this->manualJob('changed', ['MISSING_TIME'], date: '2026-09-28');
         $preview = app(DailyPhotoAiRescueBatchService::class)->preview(['CAPTURE_TIME_MISSING']);
         $changed->update(['reviewed_at' => now(), 'review_status' => 'CORRECTED']);
-        $changedResult = app(DailyPhotoAiRescueBatchService::class)->execute($preview['preview_token'], $this->user);
+        $changedResult = $this->executeAndDrain($preview['preview_token'], $this->user);
         $this->assertSame(0, $changedResult['accepted']);
         $this->assertSame(1, $changedResult['counts']['protected']);
 
         $job = $this->manualJob('overlap', ['MISSING_DATE']);
         $overlap = app(DailyPhotoAiRescueBatchService::class)->preview(['CAPTURE_DATE_MISSING']);
-        $first = app(DailyPhotoAiRescueBatchService::class)->execute($overlap['preview_token'], $this->user);
-        $second = app(DailyPhotoAiRescueBatchService::class)->execute($overlap['preview_token'], $this->user);
+        $first = $this->executeAndDrain($overlap['preview_token'], $this->user);
+        $second = $this->executeAndDrain($overlap['preview_token'], $this->user);
         $this->assertSame(1, $first['accepted']);
-        $this->assertSame(0, $second['accepted']);
-        $this->assertSame(1, $second['counts']['ai_processing']);
+        $this->assertSame($first['run_id'], $second['run_id']);
+        $this->assertSame(1, $second['accepted']); // Persisted progress, never reruns a confirmed selection.
         $this->assertSame(1, DailyPhotoAiRescueAttempt::query()->where('ocr_job_id', $job->id)->count());
     }
 
@@ -137,7 +139,7 @@ class DailyPhotoAiRescueUiTest extends TestCase
         $preview = app(DailyPhotoAiRescueBatchService::class)->preview(['CAPTURE_TIME_MISSING']);
 
         $this->actingAs($this->user)->post(route('ocr-reviews.ai-rescue.single', $job))->assertSessionHas('success');
-        $result = app(DailyPhotoAiRescueBatchService::class)->execute($preview['preview_token'], $this->user);
+        $result = $this->executeAndDrain($preview['preview_token'], $this->user);
 
         $this->assertSame(0, $result['accepted']);
         $this->assertSame(1, $result['counts']['ai_processing']);
@@ -170,7 +172,7 @@ class DailyPhotoAiRescueUiTest extends TestCase
         app(DailyPhotoAiRescueService::class)->complete($resolvedAttempt, $this->completionPayload($resolvedAttempt, 'resolved-worker', [
             'classification' => 'DAILY_PHOTO', 'machine' => $machine->asset_code, 'capture_date' => '2026-09-28', 'capture_time' => '10:30', 'ambiguities' => [],
         ]));
-        $result = app(DailyPhotoAiRescueBatchService::class)->execute($resolvedPreview['preview_token'], $this->user);
+        $result = $this->executeAndDrain($resolvedPreview['preview_token'], $this->user);
         $this->assertSame(0, $result['accepted']);
         $this->assertGreaterThanOrEqual(1, $result['counts']['ai_already_resolved']);
     }
@@ -193,6 +195,21 @@ class DailyPhotoAiRescueUiTest extends TestCase
             ->assertSee('vision-model')
             ->assertDontSee('RAW_SECRET_PROVIDER_RESPONSE')
             ->assertDontSee('JOURNAL_VISION_API_KEY');
+    }
+
+    private function executeAndDrain(string $token, User $actor): array
+    {
+        $run = app(DailyPhotoAiRescueBatchService::class)->execute($token, $actor);
+        $worker = app(\App\Services\DailyPhotoAiRescueRunService::class);
+        for ($i = 0; $i < 100 && ! $run->fresh()->enqueue_done; $i++) {
+            $worker->processNext($run->id);
+        }
+        $run->refresh();
+        $this->assertTrue($run->enqueue_done);
+        $counts = DB::table('daily_photo_ai_rescue_run_items')->where('run_id', $run->id)
+            ->selectRaw('category, COUNT(*) as total')->groupBy('category')->pluck('total', 'category')->all();
+
+        return ['run_id' => $run->id, 'accepted' => $run->enqueued, 'counts' => $counts + array_fill_keys(['protected', 'ai_processing', 'ai_already_resolved'], 0)];
     }
 
     private function claim(OcrJob $job, string $worker): DailyPhotoAiRescueAttempt

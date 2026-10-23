@@ -42,9 +42,22 @@ class DailyPhotoAiRescueUiController extends Controller
     {
         $result = $this->service->execute($request->validated('preview_token'), $request->user());
 
-        return redirect()->route('ocr-reviews.index')->with(
-            'success',
-            "AI Rescue đã tiếp nhận {$result['accepted']} ảnh; bỏ qua {$result['skipped']} ảnh sau khi kiểm tra lại.",
-        );
+        return redirect()->route('ocr-reviews.ai-rescue.progress', $result);
+    }
+
+    public function progress(\Illuminate\Http\Request $request, \App\Models\DailyPhotoAiRescueRun $aiRun, \App\Services\DailyPhotoAiRescueRunService $runs)
+    {
+        abort_unless((int) $aiRun->user_id === (int) $request->user()->id, 403);
+        $progress = $runs->progress($aiRun);
+
+        return $request->expectsJson() ? response()->json($progress) : view('ocr-reviews.ai-rescue-progress', compact('progress'));
+    }
+
+    public function retry(\Illuminate\Http\Request $request, \App\Models\DailyPhotoAiRescueRun $aiRun, \App\Services\DailyPhotoAiRescueRunService $runs): RedirectResponse
+    {
+        abort_unless((int) $aiRun->user_id === (int) $request->user()->id, 403);
+        $runs->retry($aiRun);
+
+        return redirect()->route('ocr-reviews.ai-rescue.progress', $aiRun);
     }
 }

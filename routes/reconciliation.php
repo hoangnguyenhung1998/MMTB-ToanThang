@@ -15,7 +15,11 @@ Route::middleware('auth')->group(function () {
     Route::post('/daily-photos/rows/{reconciliationRow}/allocate', [\App\Http\Controllers\DailyPhotoController::class, 'allocate'])->name('daily-photos.allocate');
     Route::get('/daily-photos/settings', [\App\Http\Controllers\DailyPhotoController::class, 'settings'])->name('daily-photos.settings');
     Route::post('/daily-photos/settings', [\App\Http\Controllers\DailyPhotoController::class, 'link'])->name('daily-photos.link');
-    Route::post('/daily-photos/settings/recover', [\App\Http\Controllers\DailyPhotoController::class, 'recover'])->name('daily-photos.recover');
+    Route::post('/daily-photos/settings/recover', [\App\Http\Controllers\DailyPhotoController::class, 'recover'])->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('daily-photos.recover');
+    Route::get('/daily-photos/settings/recovery/{recoveryRun}', [\App\Http\Controllers\DailyPhotoController::class, 'recoveryStatus'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('daily-photos.recovery.show');
+    Route::post('/daily-photos/settings/recovery/{recoveryRun}/retry', [\App\Http\Controllers\DailyPhotoController::class, 'retryRecovery'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('daily-photos.recovery.retry');
     Route::post('/daily-photos/settings/{link}/close', [\App\Http\Controllers\DailyPhotoController::class, 'closeLink'])->whereNumber('link')->name('daily-photos.close-link');
     Route::post('/reconciliation-periods/{reconciliationPeriod}/repair-links', [ReconciliationPeriodController::class, 'repairLinks'])
         ->name('reconciliation-periods.repair-links');

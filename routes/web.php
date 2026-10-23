@@ -236,11 +236,15 @@ Route::middleware('auth')->group(function () {
     Route::post('/ocr-reviews/bulk', [App\Http\Controllers\OcrReviewController::class, 'bulk'])
         ->name('ocr-reviews.bulk');
     Route::post('/ocr-reviews/ai-rescue/preview', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'preview'])
-        ->name('ocr-reviews.ai-rescue.preview');
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('ocr-reviews.ai-rescue.preview');
     Route::post('/ocr-reviews/ai-rescue/selection-count', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'selectionCount'])
-        ->name('ocr-reviews.ai-rescue.selection-count');
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('ocr-reviews.ai-rescue.selection-count');
     Route::post('/ocr-reviews/ai-rescue/execute', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'execute'])
-        ->name('ocr-reviews.ai-rescue.execute');
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('ocr-reviews.ai-rescue.execute');
+    Route::get('/ocr-reviews/ai-rescue/runs/{aiRun}', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'progress'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('ocr-reviews.ai-rescue.progress');
+    Route::post('/ocr-reviews/ai-rescue/runs/{aiRun}/retry', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'retry'])
+        ->withoutMiddleware(\App\Http\Middleware\SyncNotifications::class)->name('ocr-reviews.ai-rescue.retry');
     Route::post('/ocr-reviews/{ocrJob}/ai-rescue', [App\Http\Controllers\DailyPhotoAiRescueUiController::class, 'requestSingle'])
         ->name('ocr-reviews.ai-rescue.single');
     Route::get('/ocr-reviews/{ocrJob}', [App\Http\Controllers\OcrReviewController::class, 'show'])
