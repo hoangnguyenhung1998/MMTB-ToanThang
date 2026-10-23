@@ -31,12 +31,15 @@
         <div class="ai-preview-summary">
             <div><span>Tổng records matched</span><strong>{{ number_format($preview['matched_records']) }}</strong></div>
             <div><span>Ảnh unique</span><strong>{{ number_format($preview['unique_photos']) }}</strong></div>
-            <div class="will-run"><span>Sẽ OCR bằng AI</span><strong>{{ number_format($preview['will_queue']) }}</strong></div>
+            <div class="will-run"><span>{{ $preview['eligibility_deferred'] ? 'Tối đa ảnh sẽ kiểm tra và xếp hàng' : 'Sẽ OCR bằng AI nếu vẫn đủ điều kiện' }}</span><strong>{{ number_format($preview['will_queue']) }}</strong></div>
         </div>
+        @if($preview['eligibility_deferred'])
+        <p class="p-3">Tập {{ number_format($preview['unique_photos']) }} ảnh đã được chốt trong preview. Khi xác nhận, hệ thống kiểm tra eligibility, protection và ảnh gốc theo lô trước khi xếp hàng. Số ảnh thực tế có thể ít hơn; không lấy thêm ảnh mới. Preview này chưa gọi AI và chưa xác nhận tất cả ảnh đủ điều kiện.</p>
+        @endif
         <div class="ai-skip-list">
             <strong>Bỏ qua</strong>
             @foreach($skipLabels as $key => $label)
-                <div><span>{{ $label }}</span><b>{{ number_format($preview['counts'][$key]) }}</b></div>
+                <div><span>{{ $label }}</span><b>{{ $preview['eligibility_deferred'] ? 'Chưa kiểm tra' : number_format($preview['counts'][$key]) }}</b></div>
             @endforeach
         </div>
         <div class="ai-preview-actions">
@@ -44,7 +47,7 @@
             <form method="POST" action="{{ route('ocr-reviews.ai-rescue.execute') }}" id="aiExecuteForm">
                 @csrf
                 <input type="hidden" name="preview_token" value="{{ $preview['preview_token'] }}">
-                <button class="btn btn-primary" type="submit" id="aiExecuteButton" @disabled($preview['will_queue'] === 0)>OCR AI {{ number_format($preview['will_queue']) }} ảnh</button>
+                <button class="btn btn-primary" type="submit" id="aiExecuteButton" @disabled($preview['will_queue'] === 0)>Xác nhận AI Rescue cho tập {{ number_format($preview['unique_photos']) }} ảnh</button>
             </form>
         </div>
     </section>

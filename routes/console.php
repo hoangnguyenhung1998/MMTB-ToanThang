@@ -6,6 +6,8 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
+Schedule::command('ocr:process-daily-recovery-runs --steps=10')->everyMinute()->withoutOverlapping(2);
+
 Schedule::command('reconciliation:process-repair-runs --limit=1')->everyMinute()->withoutOverlapping();
 
 Artisan::command('machine-intakes:enqueue-ocr {reference?} {--retry}', function (?string $reference = null) {
@@ -76,3 +78,5 @@ Schedule::command('machine-handovers:dispatch-reminders')
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Schedule::command('ocr:process-ai-rescue-runs --steps=50')->everyMinute()->withoutOverlapping(2);

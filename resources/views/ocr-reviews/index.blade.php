@@ -1,6 +1,14 @@
 @extends('layouts.app')
 
 @section('content')
+@auth
+<div class="container pt-2">
+@foreach($aiRescueRuns as $aiRun)
+<div><a href="{{ route('ocr-reviews.ai-rescue.progress', $aiRun) }}">Yêu cầu AI Rescue — {{ $aiRun->selected_count }} ảnh — xem tiến độ</a></div>
+@endforeach
+</div>
+@endauth
+
 @php
     $reviewLabels = [
         'PENDING' => 'Cần duyệt',

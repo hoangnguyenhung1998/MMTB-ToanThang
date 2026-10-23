@@ -164,13 +164,13 @@ class DailyPhotoCaseService
         }, 3);
     }
 
-    public function detach(OcrJob $job): void
+    public function detach(OcrJob $job, bool $recompute = true): void
     {
         if (! config('daily_photos.enabled')) {
             return;
         }
 
-        DB::transaction(function () use ($job): void {
+        DB::transaction(function () use ($job, $recompute): void {
             $job = OcrJob::query()->lockForUpdate()->findOrFail($job->id);
             $membership = DailyPhotoCaseEvidence::query()->where('ocr_job_id', $job->id)->first();
             $oldCaseId = $membership?->daily_photo_case_id;
@@ -191,7 +191,7 @@ class DailyPhotoCaseService
                 'daily_metadata' => $metadata,
             ]);
 
-            if ($oldCaseId) {
+            if ($oldCaseId && $recompute) {
                 $this->pairing->recomputeMany([$oldCaseId]);
             }
         }, 3);

@@ -160,7 +160,7 @@ class DailyPhotoBacklogService
         ];
     }
 
-    public function recover(array $filters): array
+    public function recover(array $filters, ?\Closure $recordDownstream = null): array
     {
         $summary = [
             'total' => 0,
@@ -175,7 +175,7 @@ class DailyPhotoBacklogService
         $caseIds = collect();
         $affected = collect();
 
-        $this->query($filters)->chunkById(200, function (Collection $jobs) use (&$summary, $filters, $caseIds, $affected): void {
+        $this->query($filters)->chunkById(200, function (Collection $jobs) use (&$summary, $filters, $caseIds, $affected, $recordDownstream): void {
             $rows = $this->analyse($jobs, $filters)
                 ->when($filters['reason'] ?? null, fn (Collection $items, string $reason) => $items
                     ->filter(fn (array $row): bool => in_array($reason, $row['reasons'], true)))
@@ -185,7 +185,7 @@ class DailyPhotoBacklogService
                 return;
             }
 
-            DB::transaction(function () use ($rows, &$summary, $caseIds, $affected): void {
+            DB::transaction(function () use ($rows, &$summary, $caseIds, $affected, $recordDownstream): void {
                 $locked = OcrJob::query()->whereKey($rows->pluck('job.id')->all())
                     ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
 
@@ -220,7 +220,7 @@ class DailyPhotoBacklogService
                             $caseIds->push($oldCase->id);
                             $affected->push($oldCase->machine_id.'|'.$oldCase->work_date->format('Y-m-d'));
                         }
-                        $this->cases->detach($job);
+                        $this->cases->detach($job, $recordDownstream === null);
                         $job->refresh();
                         $dailyMetadata = $job->daily_metadata ?? [];
                         data_set($dailyMetadata, 'image_classification', [
@@ -270,6 +270,13 @@ class DailyPhotoBacklogService
                         continue;
                     }
 
+                    // Membership is the evidence's actual previous scope, even when the job's
+                    // denormalized case pointer is stale. Capture it before materialization moves it.
+                    $oldCase = $row['job']->dailyPhotoCaseEvidence?->dailyPhotoCase;
+                    if ($oldCase) {
+                        $caseIds->push($oldCase->id);
+                        $affected->push($oldCase->machine_id.'|'.$oldCase->work_date->format('Y-m-d'));
+                    }
                     $machine = $row['machine'];
                     $mapping = $row['mapping'];
                     $asset = $row['asset'];
@@ -319,8 +326,15 @@ class DailyPhotoBacklogService
                     $affected->push($machine->id.'|'.$job->extracted_date->format('Y-m-d'));
                     $summary['recovered']++;
                 }
+                if ($recordDownstream) {
+                    $recordDownstream($caseIds->filter()->unique()->all(), $affected->unique()->values()->all());
+                }
             }, 3);
         });
+
+        if ($recordDownstream) {
+            return $summary;
+        }
 
         $this->pairing->recomputeMany($caseIds->filter()->unique()->all());
         if ($affected->isNotEmpty()) {
@@ -335,7 +349,7 @@ class DailyPhotoBacklogService
         return $summary;
     }
 
-    private function query(array $filters): Builder
+    public function query(array $filters, string $status = 'EXCEPTION'): Builder
     {
         return OcrJob::query()->with([
             'attachment.message',
@@ -343,7 +357,7 @@ class DailyPhotoBacklogService
             'dailyPhotoCaseEvidence.dailyPhotoCase',
         ])
             ->where('document_type', 'DAILY_TIMEMARK')
-            ->where('status', 'EXCEPTION')
+            ->where('status', $status)
             ->when($filters['job'] ?? null, fn (Builder $query, int|string $id) => $query->whereKey($id))
             ->when($filters['sender_id'] ?? null, fn (Builder $query, string $sender) => $query
                 ->whereHas('attachment.message', fn (Builder $message) => $message->where('sender_id', $sender)))
@@ -524,7 +538,7 @@ class DailyPhotoBacklogService
         return $reasons->unique()->values()->all();
     }
 
-    private function isProtected(OcrJob $job): bool
+    public function isProtected(OcrJob $job): bool
     {
         return $job->reviewed_at !== null
             || in_array($job->review_status, self::PROTECTED_REVIEW_STATUSES, true)

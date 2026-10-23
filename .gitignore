@@ -31,3 +31,6 @@ Homestead.yaml
 Thumbs.db
 *.sql
 /storage/app/public
+
+# Synthetic acceptance runtime; never publish process output or fixture state.
+/storage/p174-fixtures/
