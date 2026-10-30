@@ -68,6 +68,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qpdf poppler-utils
       - run: php artisan test --compact --filter='Dossier(Ai)?Test'
+      - name: Synthetic PDF diagnostics after failure
+        if: failure()
+        run: |
+          if [ -f storage/logs/laravel.log ]; then
+            grep 'dossier.pdf.tool' storage/logs/laravel.log | tail -n 12 || true
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
