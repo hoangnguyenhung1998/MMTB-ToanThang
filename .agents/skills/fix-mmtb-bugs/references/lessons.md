@@ -38,3 +38,10 @@ SQLite/MySQL16tests/190assertions PASS: chuyển cả máy/ngày trong hai mode,
 Fixture2062 không provider: count/preview còn full backlog report~1.8s, execute enqueue đồng bộ38.865s. Không quy timeout cho AI provider khi chưa trace/log. SQL taxonomy của dashboard cho count/readonly snapshot IDs; preview lớn phải nói eligibility chưa kiểm tra, không trình bày upper bound thành số chắc chắn. Chốt actor/UUID/IDs, enqueue theo unit với attempt/item/cursor atomic; progress OCR tách khỏi enqueue, giữ lifecycle/fairness cũ.
 
 Native concurrency bắt lỗi firstOrCreate đọc fallback trong snapshot REPEATABLE READ cũ (MySQL1062/HTTP500). Catch unique SAU rollback và đọc lại ngoài transaction thắng;302/302 cùng run. Test DB cách ly vẫn cần fake-storage riêng cho mỗi process, nếu không cleanup có thể làm mất ảnh fixture của test khác. Final SQLite568/5625, MySQL40/452, Python42 PASS; native2058eligible/2062selection, real crash78/77, lock waits,2058mock OCR calls/callback replay/no duplicate attempts. LOCAL ONLY, hosting stage/live quota/provider billing not verified.
+
+
+## PDF external-tool warning và nguồn bất biến — 29/10/2026
+
+Upload PDF1.6 thực thất bại0/? vì generic isSuccessful coi qpdf exit3 như lỗi; stderr xác minh chỉ thiếu xref-stream self-entry, không phải launch/timeout/encryption. Không bỏ qua mọi nonzero: exit2/unknown warning vẫn từ chối; chỉ warning đã nhận diện mới tạo derivative, bắt buộc fresh qpdf --check exit0, đọc mọi trang, geometry/count/rotation khớp và xuất/mở lại. Không rasterize/ghi đè nguồn. Diagnostics command/version/exit/stdout/stderr/timeouts riêng; lọc metadata cá nhân từ pdfinfo.
+
+Regression byte fixture tối thiểu không PII tái hiện đúng lỗi trước sửa, qua sau sửa; negative error2/unknown warning/failed output-check bị chặn. Retry nguồn cũ idempotent. Actual16page scan: hash/bytes nguồn giữ nguyên, thumbnail/processed render giống nhau; export đúng thứ tự và image-stream hashes/dimensions giữ nguyên. Phân loại thử rollback để tránh bịa dữ liệu xác nhận. Targeted25/392, full593/6017 PASS; LOCAL only, không thay acceptance mẫu khác hay hosting proof.

@@ -50,6 +50,8 @@ class DailyPhotoController extends Controller
         });
 
         return view('daily-photos.settings', [
+            'dossierProfiles' => \App\Models\DossierSenderProfile::with('driver')->get()->keyBy('sender_id'),
+            'dossierDrivers' => \App\Models\Driver::orderBy('name')->get(['id', 'name']),
             'machines' => \App\Models\Machine::orderBy('asset_code')->get(['id', 'asset_code']),
             'senders' => $senders,
             'report' => $report,

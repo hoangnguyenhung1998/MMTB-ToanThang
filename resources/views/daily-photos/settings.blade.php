@@ -28,7 +28,14 @@
 
 <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Sender</th><th>Current mapping</th><th>Ảnh exception</th><th>Có thể auto-recover</th><th>Cần manual</th><th>Thời điểm mapping</th><th>Thao tác</th></tr></thead><tbody>
 @foreach($senders as $sender)<tr>
-<td><strong>{{ $sender['sender_name'] ?: 'Không rõ tên' }}</strong><br><small>{{ $sender['sender_id'] }}</small></td>
+<td><strong>{{ $sender['sender_name'] ?: 'Không rõ tên' }}</strong><br><small>{{ $sender['sender_id'] }}</small>
+@can('manage-dossiers')
+@php($profile = $dossierProfiles[$sender['sender_id']] ?? null)
+@if($profile?->driver)<p><a href="{{ route('dossiers.driver',$profile->driver) }}">Hồ sơ: {{ $profile->driver->name }}</a></p>
+@else<details><summary>Chưa liên kết hồ sơ tài xế</summary><p>Chọn đúng người; liên kết này không thay mapping/OCR.</p>
+<form method="post" class="dossier-profile-link">@csrf<input type="hidden" name="sender_id" value="{{ $sender['sender_id'] }}"><select required aria-label="Tài xế của sender" onchange="this.form.action=this.value"><option value="">Chọn tài xế</option>@foreach($dossierDrivers as $d)<option value="{{ route('dossiers.sender',$d) }}">{{ $d->name }} (#{{ $d->id }})</option>@endforeach</select><button type="submit" class="btn btn-sm btn-outline-primary">Xác nhận liên kết hồ sơ</button></form></details>@endif
+@endcan
+</td>
 <td>{{ $sender['mapping']?->machine?->asset_code ?? 'Chưa mapping' }}</td>
 <td>{{ number_format($sender['waiting']) }} ảnh chờ</td>
 <td class="text-success">{{ number_format($sender['auto_recoverable']) }}</td>

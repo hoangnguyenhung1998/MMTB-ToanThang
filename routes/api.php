@@ -95,3 +95,15 @@ Route::prefix('ocr/v1')
         Route::post('/handovers/jobs/{machineHandoverOcrJob}/complete', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'complete'])->name('api.ocr.handovers.complete');
         Route::post('/handovers/jobs/{machineHandoverOcrJob}/fail', [App\Http\Controllers\Api\MachineHandoverOcrController::class, 'fail'])->name('api.ocr.handovers.fail');
     });
+
+// Independent dossier credentials, claim tokens and queue; never share OCR auth.
+Route::prefix('dossiers/v1')->middleware([\App\Http\Middleware\AuthenticateDossierWorker::class, 'throttle:120,1'])->group(function () {
+    $controller = \App\Http\Controllers\Api\DossierWorkerController::class;
+    Route::post('heartbeat', [$controller, 'heartbeat']);
+    Route::post('jobs/claim', [$controller, 'claim']);
+    Route::post('jobs/{job}/renew', [$controller, 'renew']);
+    Route::get('jobs/{job}/inputs/{object}', [$controller, 'input'])->whereUuid('object');
+    Route::post('jobs/{job}/outputs/{slot}', [$controller, 'upload']);
+    Route::post('jobs/{job}/complete', [$controller, 'complete']);
+    Route::post('jobs/{job}/fail', [$controller, 'fail']);
+});

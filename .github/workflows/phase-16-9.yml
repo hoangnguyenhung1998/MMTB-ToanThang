@@ -41,3 +41,44 @@ jobs:
       - run: pip install -e ./journal-worker -e ./reconciliation-worker
       - run: python -m unittest discover -s journal-worker/tests -v
       - run: python -m unittest discover -s reconciliation-worker/tests -v
+
+  dossier-tests:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: testing
+      APP_KEY: base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      DOSSIERS_AI_ENABLED: 'false'
+      DOSSIERS_AI_AUTO_ANALYZE: 'false'
+      DOSSIERS_PDFTOPPM: /usr/bin/pdftoppm
+      DOSSIERS_PDFINFO: /usr/bin/pdfinfo
+      DOSSIERS_QPDF: /usr/bin/qpdf
+      DOSSIERS_TEST_PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, sqlite3, pdo_sqlite, gd, zip
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r dossier-worker/requirements.lock
+      - run: composer install --no-interaction --prefer-dist --no-scripts
+      - run: cp .env.example .env
+      - name: PDF tools for Linux compatibility tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qpdf poppler-utils
+      - run: php artisan test --compact --filter='Dossier(Ai|Remote)?Test'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ./journal-worker
+      - run: python -m unittest discover -s journal-worker/tests
+        env:
+          PYTHONPATH: journal-worker/src
+      - run: python -m unittest discover -s dossier-worker/tests -v
