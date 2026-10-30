@@ -30,6 +30,8 @@ $result = ['php_cli' => PHP_VERSION, 'sapi' => PHP_SAPI, 'environment' => app()-
 foreach (['qpdf' => '--version', 'pdfinfo' => '-v', 'pdftoppm' => '-v'] as $tool => $option) {
     $result['tools'][$tool] = dossierProbe([$opts[$tool] ?? config('dossiers.'.$tool, $tool), $option]);
 }
+preg_match('/qpdf version ([0-9.]+)/', $result['tools']['qpdf']['version_line'] ?? '', $qpdfVersion);
+$result['qpdf_warning_recovery_qualified'] = isset($qpdfVersion[1]) && version_compare($qpdfVersion[1], '12.3.2', '>=');
 $python = $opts['python'] ?? config('dossiers.ai.python', 'python3');
 $result['python'] = dossierProbe([$python, '-c', 'import sys,httpx,pydantic; print("Python "+sys.version.split()[0]+"; httpx="+httpx.__version__+"; pydantic="+pydantic.__version__); sys.exit(0 if sys.version_info >= (3,12) else 2)']);
 $root = config('filesystems.disks.dossiers.root', storage_path('app/dossiers-private'));
@@ -47,4 +49,4 @@ try {
 }
 $result['safety'] = ['ai_enabled' => (bool) config('dossiers.ai.enabled', false), 'automatic_analysis' => (bool) config('dossiers.ai.auto_analyze', false), 'ai_endpoint_configured' => (bool) config('dossiers.ai.endpoint'), 'ai_key_configured' => (bool) config('dossiers.ai.key'), 'ai_model_configured' => (bool) config('dossiers.ai.model'), 'telegram_enabled' => (bool) config('dossiers.telegram_enabled', false), 'recipient_count' => count(config('dossiers.telegram_recipients', []))];
 $result['not_verified'] = ['PHP web/FPM limits may differ from CLI', 'external process RAM/wall-time limits', 'actual hosting cron execution and locks', 'backup/restore integrity', 'authorized real user Gate access', 'endpoint DNS/TLS/egress after user config; NO API REQUEST MADE'];
-echo json_encode($result,JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";

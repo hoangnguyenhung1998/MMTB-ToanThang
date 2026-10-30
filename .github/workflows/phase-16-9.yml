@@ -63,6 +63,7 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, sqlite3, pdo_sqlite, gd, zip
       - run: composer install --no-interaction --prefer-dist --no-scripts
+      - run: cp .env.example .env
       - name: PDF tools for Linux compatibility tests
         run: |
           sudo apt-get update

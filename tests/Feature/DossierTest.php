@@ -632,6 +632,24 @@ class DossierTest extends TestCase
         $source = $this->service->upload($this->batch(), $file, $this->user->id)['source'];
         $source->update(['status' => 'failed', 'error' => 'previous qpdf warning']);
         $this->post(route('dossiers.source.retry', $source))->assertRedirect();
+        $toolVersion = new \Symfony\Component\Process\Process([config('dossiers.qpdf'), '--version']);
+        $toolVersion->mustRun();
+        if (preg_match('/qpdf version 11\.9\./', $toolVersion->getOutput())) {
+            // CI11.9 reports only a generic object-count mismatch for this exact
+            // missing-self-entry fixture. That diagnostic is NOT safe to whitelist.
+            try {
+                (new ProcessDossierSource($source->id))->handle(app(DossierPdf::class));
+                $this->fail('Legacy generic object-count warning must remain rejected.');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('chưa được xác minh', $e->getMessage());
+            }
+            $this->assertNull($source->fresh()->processed_path);
+            $this->assertSame($hash, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
+            $this->assertDatabaseCount('dossier_sources', 1);
+            $this->assertDatabaseCount('dossier_versions', 0);
+
+            return;
+        }
         (new ProcessDossierSource($source->id))->handle(app(DossierPdf::class));
         $source->refresh();
         $this->assertSame('ready', $source->status);
@@ -658,6 +676,14 @@ class DossierTest extends TestCase
                 protected function runTool(array $args, int $timeout, int $sourceId, string $stage): \Symfony\Component\Process\Process
                 {
                     $real = parent::runTool($args, $timeout, $sourceId, $stage);
+                    if ($stage === 'normalize' && $this->failure === 'output_warning') {
+                        // Inject a clean normalization result to isolate the next
+                        // stage's output-check failure on every qpdf version.
+                        $clean = \Mockery::mock(\Symfony\Component\Process\Process::class);
+                        $clean->shouldReceive('getExitCode')->andReturn(0);
+
+                        return $clean;
+                    }
                     if (($stage === 'normalize' && $this->failure !== 'output_warning') || ($stage === 'check_processed' && $this->failure === 'output_warning')) {
                         $fake = \Mockery::mock(\Symfony\Component\Process\Process::class);
                         $fake->shouldReceive('getExitCode')->andReturn($this->failure === 'exit2' ? 2 : 3);
