@@ -64,3 +64,6 @@ Implementation b9366e0 was committed/pushed to codex/phase18-electronic-dossiers
 
 
 Linux CI diagnostics confirmed qpdf11.9.0 reports only generic "reported number of objects (7) is not one plus the highest object number (5)" for the minimal missing-self-entry fixture. That warning does not identify a benign self-entry issue and remains rejected by unchanged production whitelist. Tests now assert fail-closed behavior for native11.9, keep actual recovery assertions on12.3.2, and isolate the output-check fault using a mocked clean normalization result. This is not generic warning recovery or reduced validation. Hosting warning-recovery qualification explicitly requires qpdf>=12.3.2; no lower-version actual-scan recovery is claimed. Windows module rerun47/521 PASS25.12s; await latest Linux checks.
+
+
+Final code snapshotfa49cd4: GitHub run40998144734 both jobs PASS; Linux dossier47/517 and Python45PASS, Windows dossier47/521 and full615/6146PASS. No whitelist relaxation; native11.9 unknown-count warning rejection is expected. PR#71 remains draft/unmerged because mandatory hosting binaries are still unavailable. Documentation-only follow-up does not change tested code. Hosting app remains32cfa23; only dedicated new venv was created, .env/DB/cron/Journal untouched. No backup/migration/deployment/AI-call acceptance claimed.
