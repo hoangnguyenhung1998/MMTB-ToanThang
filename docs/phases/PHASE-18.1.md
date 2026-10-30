@@ -1,5 +1,24 @@
 # Phase 18.1 — AI phân loại giấy tờ và đọc hạn
 
+## Kiến trúc thay thế30/10/2026 — LOCAL / PR#71 DRAFT
+
+Current implementation: private R2 object registry + Laravel coordination/review/expiry/Excel + outbound `dossier-worker` riêng tại laptop. Hosting không chạy Python/qpdf/Poppler; AI credentials chỉ ở worker. Kế hoạch CLI bridge/hosting binary/queue trong các checkpoint lịch sử phía dưới đã được thay thế; không dùng làm hướng dẫn release. Xem [runbook hiện hành](../runbooks/ELECTRONIC-DOSSIERS.md), [hosting](../runbooks/DOSSIERS-HOSTING-RELEASE.md), [laptop](../runbooks/DOSSIERS-LAPTOP-WORKER.md).
+
+Goal/scope: bảo toàn model/versions/subject/expiry rules/human review và Zalo/Journal hiện có; chuyển execution/storage, giữ file legacy có migration stream idempotent. Không merge/deploy/live mutation, không AI thật/Telegram, không thay/restart laptop runtime trong lượt này.
+
+Changes: additive `2026_10_30_000002_add_dossier_remote_execution`; server-issued object IDs/keys, scoped download/upload receipt, atomic claim/renew/fenced completion, bounded retry/backoff, immutable snapshot export, heartbeat/offline UI. Source upload/remote job ghi cùng transaction; legacy Laravel jobs chỉ delegate. AI page/group adapter tái sử dụng JournalVisionClient, riêng .env/process; proposals về muộn không ghi đè sửa tay. Private source/preview/AI/export download qua stream với Gate và export owner. Thêm durable worker outbox/slot ACK, reboot task scripts/log rotation/safe temp cleanup; chưa cài task laptop.
+
+Milestone evidence: LOCAL real-worker HTTP E2E T-XX0709.pdf16pages14727818bytes, originalSHA unchanged; qpdf12.3.2 known exit3 recovery→check0;16thumb + geometry +16pixel comparisons PASS;17AI jobs MOCK, human review/replacement in isolated DB, export old snapshot4pages14/15/16/13 at90/0/270/0 with unchanged image payloads, PDF reopened/rendered/viewed, Excel2sheets, temp ACK cleanup PASS. HTTP E2E found/fixed export Blade empty-directive syntax; regression GET export page added. Neither real-user metadata nor local app DB changed by fixture review.
+
+MySQL8.4.3 isolated33319 real process/connection tests: confirm conflict, ordered replacements, export-before/after replacement, request retry, legacy delegation retry;7versions/audit retained. Additional3pairs claim(single winner), complete(replay one receipt set), expired claim reassignment(old409), each follower waits~1.5s. Prior first legacy retry assertion failed because read-only wrapper did not contend; wrapper now locks export and rerun passed, evidence preserved. New schema only applied to isolated DB; application LOCAL/hosting migrations not run this turn.
+
+Final LOCAL verification: Laravel full618/6175 PASS235.31s, module50/552 PASS; dossier Python10, Journal45, reconciliation17 PASS. Native process crash97 after actual HTTP upload and restarted process complete:1attempt/1receipt/cleanup PASS. Remote3pairs re-run after final stream/geometry validation PASS. Commit/CI publication is recorded in PROJECT_STATE. Storage tests use remote-like adapter whose path() throws; actual R2 bucket/S3 network, true laptop task/reboot, hosting web limits/private paths, actual AI connection/accuracy NOT VERIFIED. Two requested T-XX0769.pdf/T-3C0624.pdf remain absent; native fixtures do not replace real-sample acceptance. Rule/schema/date/driver behavior preserved; PDF signature/form fidelity beyond scan images not claimed.
+
+Checklist remaining before release: final review/tests/CI at published HEAD; independent human PR review; verified hosting backup/pending paths/privateR2/access gate; deploy approval; actual laptop installation/heartbeat/claim; user-configured single AI pilot. Keep PR draft. No live actions authorized for architecture revision.
+
+## Historical implementation checkpoints (superseded execution architecture)
+
+
 Status: LOCAL INTEGRATION COMPLETE / MOCK TESTS PASS; application LOCAL DB migration pending (server unavailable). Hoàn thiện tích hợp; chưa kiểm thử kết nối/AI thực tế. Branch codex/phase18-electronic-dossiers, HEAD73ff5e7. Existing Phase18 dirty/untracked preserved. Related: Phase18 / ELECTRONIC-DOSSIERS runbook; check-in AI transport in journal-worker only.
 
 Goal: upload → queued high-resolution page extraction → cross-page grouping → private proposals/evidence → explicit human review through existing version service → unchanged PDF/Excel.

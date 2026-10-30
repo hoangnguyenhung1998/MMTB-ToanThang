@@ -34,3 +34,5 @@ Thumbs.db
 
 # Synthetic acceptance runtime; never publish process output or fixture state.
 /storage/p174-fixtures/
+/dossier-worker/.venv/
+/dossier-worker/data/

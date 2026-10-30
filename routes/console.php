@@ -6,14 +6,12 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
-Artisan::command('dossiers:work {--max-time=50} {--watch : Keep polling only the dossier queue}', function () {
+// Compatibility drains for pre-release Laravel queue records. New requests write
+// remote jobs atomically; laptop polls without a hosting PDF/AI queue worker.
+Artisan::command('dossiers:work {--max-time=50} {--watch}', function () {
     config(['queue.failed.table' => 'dossier_failed_jobs']);
-    $watch = (bool) $this->option('watch');
-    $this->call('queue:work', ['connection' => 'dossiers', '--queue' => 'dossiers', '--stop-when-empty' => ! $watch,
-        '--max-time' => $watch ? 0 : max(1, min(300, (int) $this->option('max-time'))), '--sleep' => 2, '--tries' => 3, '--timeout' => 900, '--memory' => 256]);
-})->purpose('Drain only dossier PDF jobs using isolated queue/failure tables');
-
-Schedule::command('dossiers:work')->everyMinute()->withoutOverlapping(20);
+    $this->call('queue:work', ['connection' => 'dossiers', '--queue' => 'dossiers,dossiers-ai', '--stop-when-empty' => true, '--max-time' => 50, '--tries' => 3, '--timeout' => 60]);
+})->purpose('Drain legacy dossier entries into remote job queue; no native processing');
 
 Artisan::command('dossiers:ai-work {--watch}', function () {
     if (! config('dossiers.ai.enabled')) {
@@ -21,18 +19,13 @@ Artisan::command('dossiers:ai-work {--watch}', function () {
 
         return;
     }
-    if (! \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs')) {
-        $this->warn('Chưa có schema Phase18.1; xác minh/backup LOCAL rồi migrate đúng path trước.');
-
-        return;
-    }
-    config(['queue.failed.table' => 'dossier_failed_jobs']);
-    // Resume durable runs after an abandoned job/lease; duplicate jobs are fenced.
-    \App\Models\DossierAiRun::whereIn('status', ['queued', 'processing'])->where('paused', false)->orderBy('id')->limit(20)->pluck('id')->each(fn ($id) => \App\Jobs\AnalyzeDossier::dispatch($id));
-    $this->call('queue:work', ['connection' => 'dossiers', '--queue' => 'dossiers-ai', '--stop-when-empty' => ! $this->option('watch'),
-        '--max-time' => $this->option('watch') ? 0 : 50, '--sleep' => 2, '--tries' => 3, '--timeout' => 360, '--memory' => 256]);
-})->purpose('Run only dossier AI; never claim Journal/Collector jobs');
-Schedule::command('dossiers:ai-work')->everyMinute()->withoutOverlapping(10);
+    \App\Models\DossierAiRun::whereIn('status', ['queued', 'unconfigured', 'processing'])->where('paused', false)->orderBy('id')->chunkById(20, function ($runs) {
+        foreach ($runs as $run) {
+            app(\App\Services\Dossiers\Ai\DossierAiService::class)->schedule($run);
+        }
+    });
+    $this->info('Đã kiểm tra hàng đợi remote; AI chỉ chạy tại worker hồ sơ.');
+})->purpose('Reconcile remote AI scheduling only; no Python on hosting');
 
 Artisan::command('dossiers:reminders', function () {
     $this->info('Sent: '.app(\App\Services\Dossiers\DossierReminderService::class)->run());

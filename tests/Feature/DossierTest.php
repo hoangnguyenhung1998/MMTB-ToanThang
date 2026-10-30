@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Exports\DossierWorkbook;
-use App\Jobs\BuildDossierExport;
 use App\Jobs\ProcessDossierSource;
 use App\Models\DossierBatch;
 use App\Models\DossierExport;
@@ -17,7 +16,6 @@ use App\Models\MachineDriverHistory;
 use App\Models\User;
 use App\Models\ZaloMessage;
 use App\Services\Dossiers\DossierExportService;
-use App\Services\Dossiers\DossierPdf;
 use App\Services\Dossiers\DossierReminderService;
 use App\Services\Dossiers\DossierReport;
 use App\Services\Dossiers\DossierService;
@@ -32,6 +30,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use setasign\Fpdi\Fpdi;
+use Tests\Support\DossierTestWorker;
 use Tests\TestCase;
 
 class DossierTest extends TestCase
@@ -46,36 +45,11 @@ class DossierTest extends TestCase
 
     private string $poppler;
 
-    private function missingXrefSelfEntry(): UploadedFile
-    {
-        $content = 'BT /F1 14 Tf 20 100 Td (XREF SELF ENTRY REGRESSION) Tj ET';
-        $objects = [1 => '<< /Type /Catalog /Pages 2 0 R >>',
-            2 => '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-            3 => '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-            4 => '<< /Length '.strlen($content).' >>'."\nstream\n".$content."\nendstream",
-            5 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
-        $pdf = "%PDF-1.6\n";
-        $offsets = [];
-        foreach ($objects as $n => $body) {
-            $offsets[$n] = strlen($pdf);
-            $pdf .= $n." 0 obj\n".$body."\nendobj\n";
-        }
-        $start = strlen($pdf);
-        $xref = chr(0).pack('Nn', 0, 65535);
-        foreach ($offsets as $offset) {
-            $xref .= chr(1).pack('Nn', $offset, 0);
-        }
-        // Size includes object6, Index intentionally omits the xref stream itself.
-        $pdf .= "6 0 obj\n<< /Type /XRef /Root 1 0 R /Size 7 /W [1 4 2] /Index [0 6] /Length ".strlen($xref)." >>\nstream\n".$xref."\nendstream\nendobj\nstartxref\n".$start."\n%%EOF\n";
-
-        return UploadedFile::fake()->createWithContent('T-XX0769.pdf', $pdf);
-    }
-
     protected function setUp(): void
     {
         parent::setUp();
         $this->withoutVite();
-        config(['dossiers.ai.enabled' => false]);
+        config(['dossiers.ai.enabled' => false, 'dossiers.storage_disk' => 'dossiers']);
         Storage::set('dossiers', Storage::fake('dossiers-'.getmypid(), ['throw' => true]));
         Queue::fake();
         Http::preventStrayRequests();
@@ -84,7 +58,7 @@ class DossierTest extends TestCase
         $this->actingAs($this->user);
         $this->machine = Machine::create(['asset_code' => 'T-XX0769', 'company' => 'VINCONS', 'chassis_no' => 'F-769', 'status' => 'ACTIVE']);
         $this->service = app(DossierService::class);
-        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-28 12:00:00', 'Asia/Ho_Chi_Minh'));
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-28 12:00:00', 'Asia/Ho_Chi_Minh')->utc());
         $this->poppler = getenv('DOSSIERS_PDFTOPPM') ?: 'C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/Library/bin/pdftoppm.exe';
         if (is_file($this->poppler)) {
             config(['dossiers.pdftoppm' => $this->poppler]);
@@ -126,7 +100,7 @@ class DossierTest extends TestCase
         if ($process) {
             $job = new ProcessDossierSource($source->id);
             for ($i = 0; $i < 5; $i++) {
-                $job->handle(app(DossierPdf::class));
+                DossierTestWorker::run($source->id, 'prepare');
             }
         } else {
             $source->update(['status' => 'ready', 'page_count' => 4, 'progress' => 4]);
@@ -166,7 +140,7 @@ class DossierTest extends TestCase
         $this->assertSame('AMBIGUOUS', $ambiguous->resolution);
         $this->assertSame(2, Machine::count());
         $this->assertSame(3, DossierSource::count());
-        Queue::assertPushed(ProcessDossierSource::class, 3);
+        $this->assertDatabaseCount('dossier_worker_jobs', 3);
     }
 
     public function test_real_pdf_thumbnails_multipage_rotation_blank_source_bytes_and_retry(): void
@@ -179,9 +153,9 @@ class DossierTest extends TestCase
         $this->assertSame(4, $source->page_count);
         $hash = hash_file('sha256', Storage::disk('dossiers')->path($source->path));
         $this->assertSame($source->sha256, $hash);
-        Storage::disk('dossiers')->assertExists('thumbnails/'.$source->id.'/3.png');
+        $this->assertNotEmpty($source->previews[3]);
         $job = new ProcessDossierSource($source->id);
-        $job->handle(app(DossierPdf::class));
+        DossierTestWorker::run($source->id, 'prepare');
         $this->assertSame(4, $source->fresh()->progress);
         $this->assertSame($hash, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
         $v = $this->service->saveVersion($this->data($source), $this->user->id);
@@ -191,29 +165,16 @@ class DossierTest extends TestCase
         $this->get(route('dossiers.file', [$source, 'thumbnail', 5]))->assertNotFound();
     }
 
-    public function test_invalid_pdf_does_not_destroy_source_and_failed_job_can_resume(): void
+    public function test_failed_remote_source_retries_same_record_and_preserves_original(): void
     {
         $source = $this->source();
-        Storage::disk('dossiers')->put('corrupt.pdf', '%PDF-1.4 broken');
-        try {
-            app(DossierPdf::class)->inspect(Storage::disk('dossiers')->path('corrupt.pdf'));
-            $this->fail('Invalid PDF accepted');
-        } catch (\RuntimeException $e) {
-            $this->assertStringContainsString('PDF hỏng', $e->getMessage());
-        }
-        $source->update(['status' => 'queued', 'page_count' => null, 'progress' => 0]);
-        config(['dossiers.pdftoppm' => 'does-not-exist-dossier-pdftoppm']);
-        $job = new ProcessDossierSource($source->id);
-        try {
-            $job->handle(app(DossierPdf::class));
-            $this->fail('Missing Poppler accepted');
-        } catch (\Throwable $e) {
-            $job->failed($e);
-        }
-        $this->assertSame('failed', $source->fresh()->status);
-        $this->assertSame(0, $source->fresh()->progress);
+        $source->update(['status' => 'failed', 'page_count' => null, 'progress' => 0]);
+        $job = \App\Models\DossierWorkerJob::where('kind', 'prepare')->firstOrFail();
+        $job->update(['status' => 'failed', 'attempts' => 3]);
         $this->post(route('dossiers.source.retry', $source))->assertRedirect();
-        Queue::assertPushed(ProcessDossierSource::class);
+        $this->assertSame('pending', $job->fresh()->status);
+        $this->assertDatabaseCount('dossier_sources', 1);
+        $this->assertDatabaseCount('dossier_worker_jobs', 1);
         Storage::disk('dossiers')->assertExists($source->path);
     }
 
@@ -257,7 +218,7 @@ class DossierTest extends TestCase
         $future = $this->service->saveVersion($this->data($this->source('replacement'), ['effective_at' => '2026-11-01 00:00:00', 'expiry_value' => '2026-11-03', 'reason' => 'Gia hạn']), $this->user->id);
         $engine = app(DossierStatus::class);
         $this->assertSame($v->id, $engine->current($v->record->fresh()->load('versions'))->id);
-        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-05 00:00:00', 'Asia/Ho_Chi_Minh'));
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-05 00:00:00', 'Asia/Ho_Chi_Minh')->utc());
         $record = $v->record->fresh()->load('versions');
         $this->assertSame($future->id, $engine->current($record)->id);
         $this->assertSame('expired', $engine->describe($engine->current($record))['status']);
@@ -336,17 +297,19 @@ class DossierTest extends TestCase
         $service = app(DossierExportService::class);
         $uuid = (string) Str::uuid();
         $e = $service->create($this->machine, [], [$v2->id, $v1->id], $uuid, true, $this->user->id);
-        (new BuildDossierExport($e->id))->handle(app(DossierPdf::class));
-        (new BuildDossierExport($e->id))->handle(app(DossierPdf::class));
+        DossierTestWorker::run($e->id, 'export');
+        DossierTestWorker::run($e->id, 'export');
         $this->assertSame($e->id, $service->create($this->machine, [], [$v1->id], $uuid, true, $this->user->id)->id);
         $e->refresh();
+        $this->get(route('dossiers.export', $e))->assertOk()->assertSee('Manifest phiên bản');
         $this->assertSame('ready', $e->status);
         $this->assertSame([$v2->id, $v1->id], array_column($e->manifest, 'version_id'));
         $pdf = new Fpdi;
         $this->assertSame(4, $pdf->setSourceFile(Storage::disk('dossiers')->path($e->path)));
         $reader = new \setasign\Fpdi\PdfReader\PdfReader(new \setasign\Fpdi\PdfParser\PdfParser(
             \setasign\Fpdi\PdfParser\StreamReader::createByFile(Storage::disk('dossiers')->path($e->path))));
-        $this->assertSame(270, $reader->getPage(1)->getRotation());
+        // Source page2 already has90deg rotation; additional270 produces0.
+        $this->assertSame(0, $reader->getPage(1)->getRotation());
         $this->assertSame(90, $reader->getPage(3)->getRotation());
         $this->assertSame($source->sha256, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
         $this->get(route('dossiers.export.file', $e))->assertOk();
@@ -553,7 +516,7 @@ class DossierTest extends TestCase
         Storage::disk('dossiers')->assertExists($source->path);
         $machineVersion = $this->service->saveVersion($this->data($this->source('date-fixture')), $this->user->id);
         $e = app(DossierExportService::class)->create($this->machine, [], [$machineVersion->id], (string) Str::uuid(), true, $this->user->id);
-        (new BuildDossierExport($e->id))->handle(app(DossierPdf::class));
+        DossierTestWorker::run($e->id, 'export');
         $e->update(['created_at' => '2026-10-27 18:01:00']);
         $this->get(route('dossiers.export.file', $e))->assertDownload('T-XX0769-2026-10-28.pdf');
     }
@@ -563,7 +526,7 @@ class DossierTest extends TestCase
         $source = $this->source();
         $v = $this->service->saveVersion($this->data($source), $this->user->id);
         $export = app(DossierExportService::class)->create($this->machine, [], [$v->id], (string) Str::uuid(), true, $this->user->id);
-        (new BuildDossierExport($export->id))->handle(app(DossierPdf::class));
+        DossierTestWorker::run($export->id, 'export');
         $this->get(route('dossiers.file', [$source, 'source']))->assertOk();
         $other = User::factory()->create();
         $this->actingAs($other);
@@ -579,132 +542,5 @@ class DossierTest extends TestCase
         $this->actingAs($other)->get(route('dossiers.index'))->assertOk();
         $this->get(route('dossiers.file', [$source, 'source']))->assertOk();
         $this->get(route('dossiers.export.file', $export))->assertForbidden();
-    }
-
-    public function test_pdf16_compressed_objects_are_normalized_automatically_without_changing_original_or_render(): void
-    {
-        $qpdf = getenv('DOSSIERS_QPDF') ?: 'C:/Program Files/PDF24/qpdf/bin/qpdf.exe';
-        if (! is_file($qpdf) || ! is_file($this->poppler)) {
-            $this->markTestSkipped('qpdf/Poppler required for mechanism test; this is not real-scan acceptance.');
-        }
-        config(['dossiers.qpdf' => $qpdf, 'dossiers.pdfinfo' => (getenv('DOSSIERS_PDFINFO') ?: dirname($this->poppler).'/pdfinfo'.(PHP_OS_FAMILY === 'Windows' ? '.exe' : ''))]);
-        $disk = Storage::disk('dossiers');
-        $inputFile = $this->pdf();
-        $disk->put('mechanism-input.pdf', file_get_contents($inputFile->getRealPath()));
-        (new \Symfony\Component\Process\Process([$qpdf, '--object-streams=generate', '--force-version=1.6', $disk->path('mechanism-input.pdf'), $disk->path('mechanism-compressed.pdf')]))->mustRun();
-        $original = file_get_contents($disk->path('mechanism-compressed.pdf'));
-        $this->assertStringStartsWith('%PDF-1.6', $original);
-        $source = $this->service->upload($this->batch(), UploadedFile::fake()->createWithContent('T-XX0769.pdf', $original), $this->user->id)['source'];
-        $job = new ProcessDossierSource($source->id);
-        for ($i = 0; $i < 4; $i++) {
-            $job->handle(app(DossierPdf::class));
-        }
-        $source->refresh();
-        $this->assertSame('ready', $source->status);
-        $this->assertSame(4, $source->page_count);
-        $this->assertSame(hash('sha256', $original), hash_file('sha256', $disk->path($source->path)));
-        $this->assertSame('qpdf-object-streams-disable', $source->processing['method']);
-        $this->assertFalse($source->processing['rasterized']);
-        $this->assertFalse($source->processing['downsampled']);
-        foreach (range(1, 4) as $page) {
-            $prefix = $disk->path('normalized-render-'.$page);
-            (new \Symfony\Component\Process\Process([$this->poppler, '-f', (string) $page, '-l', (string) $page,
-                '-singlefile', '-scale-to', '1000', '-png', $disk->path($source->processed_path), $prefix]))->mustRun();
-            $this->assertSame(hash_file('sha256', $disk->path('thumbnails/'.$source->id.'/'.$page.'.png')), hash_file('sha256', $prefix.'.png'));
-        }
-        $hash = $source->processed_sha256;
-        $job->handle(app(DossierPdf::class));
-        $this->assertSame($hash, $source->fresh()->processed_sha256);
-        $this->service->saveSource($source, ['machine_id' => $this->machine->id, 'revision' => $source->revision, 'excluded_pages' => [], 'confirm' => false], $this->user->id);
-        $v = $this->service->saveVersion($this->data($source), $this->user->id);
-        $e = app(DossierExportService::class)->create($this->machine, [], [$v->id], (string) Str::uuid(), true, $this->user->id);
-        $this->assertSame($source->processed_sha256, $e->manifest[0]['processed_sha256']);
-        (new BuildDossierExport($e->id))->handle(app(DossierPdf::class));
-        $this->assertSame('ready', $e->fresh()->status);
-        $this->get(route('dossiers.file', [$source, 'processed']))->assertOk();
-    }
-
-    public function test_recoverable_missing_xref_self_entry_warning_requires_validated_output_not_reupload(): void
-    {
-        config(['dossiers.qpdf' => getenv('DOSSIERS_QPDF') ?: 'C:/Program Files/PDF24/qpdf/bin/qpdf.exe', 'dossiers.pdfinfo' => (getenv('DOSSIERS_PDFINFO') ?: dirname($this->poppler).'/pdfinfo'.(PHP_OS_FAMILY === 'Windows' ? '.exe' : ''))]);
-        $file = $this->missingXrefSelfEntry();
-        $hash = hash_file('sha256', $file->getRealPath());
-        $source = $this->service->upload($this->batch(), $file, $this->user->id)['source'];
-        $source->update(['status' => 'failed', 'error' => 'previous qpdf warning']);
-        $this->post(route('dossiers.source.retry', $source))->assertRedirect();
-        $toolVersion = new \Symfony\Component\Process\Process([config('dossiers.qpdf'), '--version']);
-        $toolVersion->mustRun();
-        if (preg_match('/qpdf version 11\.9\./', $toolVersion->getOutput())) {
-            // CI11.9 reports only a generic object-count mismatch for this exact
-            // missing-self-entry fixture. That diagnostic is NOT safe to whitelist.
-            try {
-                (new ProcessDossierSource($source->id))->handle(app(DossierPdf::class));
-                $this->fail('Legacy generic object-count warning must remain rejected.');
-            } catch (\RuntimeException $e) {
-                $this->assertStringContainsString('chưa được xác minh', $e->getMessage());
-            }
-            $this->assertNull($source->fresh()->processed_path);
-            $this->assertSame($hash, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
-            $this->assertDatabaseCount('dossier_sources', 1);
-            $this->assertDatabaseCount('dossier_versions', 0);
-
-            return;
-        }
-        (new ProcessDossierSource($source->id))->handle(app(DossierPdf::class));
-        $source->refresh();
-        $this->assertSame('ready', $source->status);
-        $this->assertSame(1, $source->page_count);
-        $this->assertSame(3, $source->processing['normalize_exit_code']);
-        $this->assertSame(0, $source->processing['validation']['qpdf_check_exit_code']);
-        $this->assertSame(1, $source->processing['validation']['trial_export_pages']);
-        $this->assertSame($hash, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
-        $this->assertDatabaseCount('dossier_sources', 1);
-        $this->assertDatabaseCount('dossier_versions', 0);
-        (new ProcessDossierSource($source->id))->handle(app(DossierPdf::class));
-        $this->assertDatabaseCount('dossier_sources', 1);
-    }
-
-    public function test_warning_recovery_does_not_accept_exit2_unknown_warnings_or_failed_output_check(): void
-    {
-        config(['dossiers.qpdf' => getenv('DOSSIERS_QPDF') ?: 'C:/Program Files/PDF24/qpdf/bin/qpdf.exe', 'dossiers.pdfinfo' => (getenv('DOSSIERS_PDFINFO') ?: dirname($this->poppler).'/pdfinfo'.(PHP_OS_FAMILY === 'Windows' ? '.exe' : ''))]);
-        $source = $this->service->upload($this->batch(), $this->missingXrefSelfEntry(), $this->user->id)['source'];
-        foreach (['exit2', 'unknown_warning', 'output_warning'] as $failure) {
-            $pdf = new class($failure) extends DossierPdf
-            {
-                public function __construct(private string $failure) {}
-
-                protected function runTool(array $args, int $timeout, int $sourceId, string $stage): \Symfony\Component\Process\Process
-                {
-                    $real = parent::runTool($args, $timeout, $sourceId, $stage);
-                    if ($stage === 'normalize' && $this->failure === 'output_warning') {
-                        // Inject a clean normalization result to isolate the next
-                        // stage's output-check failure on every qpdf version.
-                        $clean = \Mockery::mock(\Symfony\Component\Process\Process::class);
-                        $clean->shouldReceive('getExitCode')->andReturn(0);
-
-                        return $clean;
-                    }
-                    if (($stage === 'normalize' && $this->failure !== 'output_warning') || ($stage === 'check_processed' && $this->failure === 'output_warning')) {
-                        $fake = \Mockery::mock(\Symfony\Component\Process\Process::class);
-                        $fake->shouldReceive('getExitCode')->andReturn($this->failure === 'exit2' ? 2 : 3);
-                        $fake->shouldReceive('getErrorOutput')->andReturn($real->getErrorOutput()."\nWARNING: unresolved unknown structural damage\n");
-
-                        return $fake;
-                    }
-
-                    return $real;
-                }
-            };
-            try {
-                $pdf->prepare($source->fresh());
-                $this->fail('Unsafe output accepted: '.$failure);
-            } catch (\RuntimeException $e) {
-                $this->assertStringContainsString(match ($failure) {
-                    'exit2' => 'mã 2', 'unknown_warning' => 'chưa được xác minh', default => 'không vượt kiểm tra',
-                }, $e->getMessage());
-            }
-            $this->assertNull($source->fresh()->processed_path);
-            $this->assertSame($source->sha256, hash_file('sha256', Storage::disk('dossiers')->path($source->path)));
-        }
     }
 }

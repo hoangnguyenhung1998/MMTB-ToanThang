@@ -6,8 +6,10 @@ $root = getenv('P18_ACCEPTANCE_ROOT');
 if (! $root || ! is_dir($root) || ! str_contains(str_replace('\\', '/', $root), '/.codex/visualizations/')) {
     throw new RuntimeException('Explicit private acceptance root required');
 }
-$dbName = 'p18_concurrency_20261029';
-foreach (['APP_ENV' => 'testing', 'DB_CONNECTION' => 'mysql', 'DB_HOST' => '127.0.0.1', 'DB_PORT' => '33318', 'DB_DATABASE' => $dbName, 'DB_USERNAME' => 'root', 'DB_PASSWORD' => '', 'DB_URL' => '', 'CACHE_STORE' => 'array', 'SESSION_DRIVER' => 'array'] as $k => $v) {
+$remote = getenv('P18_REMOTE_ACCEPTANCE') === '1';
+$dbName = $remote ? 'p18_remote_20261030' : 'p18_concurrency_20261029';
+$testPort = $remote ? 33319 : 33318;
+foreach (['APP_ENV' => 'testing', 'DB_CONNECTION' => 'mysql', 'DB_HOST' => '127.0.0.1', 'DB_PORT' => (string) $testPort, 'DB_DATABASE' => $dbName, 'DB_USERNAME' => 'root', 'DB_PASSWORD' => '', 'DB_URL' => '', 'CACHE_STORE' => 'array', 'SESSION_DRIVER' => 'array'] as $k => $v) {
     putenv($k.'='.$v);
     $_ENV[$k] = $v;
     $_SERVER[$k] = $v;
@@ -20,11 +22,11 @@ foreach (['framework/cache/data', 'framework/views', 'framework/sessions', 'logs
     }
 }
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-config(['telegram.enabled' => false, 'dossiers.telegram_enabled' => false, 'database.connections.mysql.url' => null, 'database.connections.mysql.host' => '127.0.0.1', 'database.connections.mysql.port' => 33318, 'database.connections.mysql.database' => $dbName, 'database.connections.mysql.username' => 'root', 'database.connections.mysql.password' => '']);
+config(['telegram.enabled' => false, 'dossiers.telegram_enabled' => false, 'dossiers.storage_disk' => 'dossiers', 'database.connections.mysql.url' => null, 'database.connections.mysql.host' => '127.0.0.1', 'database.connections.mysql.port' => $testPort, 'database.connections.mysql.database' => $dbName, 'database.connections.mysql.username' => 'root', 'database.connections.mysql.password' => '']);
 DB::purge();
 Http::preventStrayRequests();
 Queue::fake();
-$admin = new PDO('mysql:host=127.0.0.1;port=33318;charset=utf8mb4', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+$admin = new PDO('mysql:host=127.0.0.1;port='.$testPort.';charset=utf8mb4', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 $dir = strtolower(str_replace('\\', '/', $admin->query('SELECT @@datadir')->fetchColumn()));
 if ($dir !== strtolower(str_replace('\\', '/', $root.'/mysql-isolated/'))) {
     throw new RuntimeException('Must use own isolated MySQL');
@@ -84,7 +86,7 @@ if ($mode === 'setup') {
 $s = json_decode(file_get_contents($root.'/concurrency-state.json'), true);
 auth()->loginUsingId($s['user_id']);
 if ($mode === 'worker') {
-    $gate = $root.'/native-'.$round;
+    $gate = $root.'/native-'.$round.getenv('P18_PROOF_SUFFIX');
     $conn = (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id;
     file_put_contents($gate.'-'.$role.'.ready', getmypid().' '.$conn);
     waitFile($gate.'.go');
@@ -119,7 +121,7 @@ if ($mode === 'worker') {
             $v = $service->saveVersion(dataFor($s, 'replaceAfterExport'), $s['user_id']);
             $result['version_id'] = $v->id;
         } elseif ($round === 'jobRetry') {
-            (new App\Jobs\BuildDossierExport($s['export_id']))->handle(app(App\Services\Dossiers\DossierPdf::class));
+            (new App\Jobs\BuildDossierExport($s['export_id']))->handle(app(App\Services\Dossiers\DossierRemoteJobs::class));
             $result['export_id'] = $s['export_id'];
         } else {
             $id = $s['selected_version'];
@@ -187,11 +189,9 @@ if ($mode === 'verify') {
     }
     if ($round === 'jobRetry') {
         $e = App\Models\DossierExport::firstOrFail();
-        check($e->status === 'ready', 'Export not ready');
+        check($e->status === 'queued', 'Legacy queue must only delegate, never run PDF tools');
         check($e->manifest[0]['version_id'] === $s['selected_version'], 'Job changed manifest');
-        check(hash_equals($e->sha256, hash_file('sha256', Storage::disk('dossiers')->path($e->path))), 'Export hash mismatch');
-        $pdf = new setasign\Fpdi\Fpdi;
-        check($pdf->setSourceFile(Storage::disk('dossiers')->path($e->path)) === 1, 'Output PDF cannot be reopened');
+        check(App\Models\DossierWorkerJob::where('kind', 'export')->where('subject_id', $e->id)->count() === 1, 'Retry duplicated remote export job');
         check(App\Models\ActivityLog::where('event', 'dossier.export_requested')->count() === 1, 'Export audit duplicated');
     }
     foreach (App\Models\DossierSource::all() as $source) {

@@ -2,7 +2,6 @@
 
 namespace App\Services\Dossiers;
 
-use App\Jobs\ProcessDossierSource;
 use App\Models\DossierBatch;
 use App\Models\DossierRecord;
 use App\Models\DossierSource;
@@ -15,9 +14,7 @@ use App\Models\MachineDriverHistory;
 use App\Services\AssetCodeResolver;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -40,35 +37,28 @@ class DossierService
         }
         $name = basename(str_replace('\\', '/', $file->getClientOriginalName()));
         $resolved = app(AssetCodeResolver::class)->resolve(pathinfo($name, PATHINFO_FILENAME));
-        // Each upload uses a unique path; a concurrent duplicate cannot overwrite original bytes.
-        $path = $file->storeAs('sources', Str::uuid().'.pdf', 'dossiers');
+        $objects = app(DossierObjects::class);
+        $object = $objects->store($file, 'source');
         try {
-            $source = DB::transaction(function () use ($batch, $file, $actor, $hash, $name, $resolved, $path) {
+            $source = DB::transaction(function () use ($batch, $file, $actor, $hash, $name, $resolved, $object) {
                 $source = DossierSource::create(['batch_id' => $batch->id, 'machine_id' => $resolved['machine']?->id,
-                    'user_id' => $actor, 'original_name' => $name, 'sha256' => $hash, 'path' => $path,
+                    'user_id' => $actor, 'original_name' => $name, 'sha256' => $hash, 'path' => $object->key, 'object_id' => $object->id,
                     'bytes' => $file->getSize(), 'resolution' => $resolved['status'], 'candidates' => $resolved['candidate_asset_codes']]);
+                $object->update(['status' => 'published']);
                 DossierAudit::write('source_uploaded', $source, $actor);
-                ProcessDossierSource::dispatch($source->id)->afterCommit();
+                app(DossierRemoteJobs::class)->prepare($source);
 
                 return $source;
             });
-        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
-            Storage::disk('dossiers')->delete($path);
-            $existing = DossierSource::where('sha256', $hash)->first();
-            if (! $existing) {
-                throw $e;
-            }
-
-            return ['source' => $existing, 'duplicate' => true];
         } catch (\Throwable $e) {
-            // Do not delete a committed source if queue dispatch failed after commit.
-            if (! DossierSource::where('path', $path)->exists()) {
-                Storage::disk('dossiers')->delete($path);
+            $objects->deleteUnreferencedStaged($object->fresh());
+            if ($e instanceof \Illuminate\Database\UniqueConstraintViolationException && ($existing = DossierSource::where('sha256', $hash)->first())) {
+                return ['source' => $existing, 'duplicate' => true];
             }
             throw $e;
         }
 
-        return ['source' => $source, 'duplicate' => false];
+        return ['source' => $source->fresh(), 'duplicate' => false];
     }
 
     public function saveSource(DossierSource $source, array $data, int $actor): void

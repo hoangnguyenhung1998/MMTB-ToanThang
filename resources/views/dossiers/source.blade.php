@@ -2,10 +2,14 @@
 @section('content')
 <main class="dossier">@include('dossiers.common')
 <h1>{{ $source->original_name }}</h1><p>Trạng thái: {{ $source->status }} · {{ $source->progress }}/{{ $source->page_count ?: '?' }} trang · {{ $source->confirmed ? 'Đã xác nhận hồ sơ' : 'Đang phân loại' }}</p>
+@if(\Illuminate\Support\Facades\Schema::hasTable('dossier_worker_jobs'))
+@php($remoteJob=\App\Models\DossierWorkerJob::where('kind','prepare')->where('subject_id',(string)$source->id)->latest('created_at')->first())
+@if($remoteJob && $source->status!=='ready')<p>Worker job: {{ $remoteJob->status }} · {{ $remoteJob->stage }} · đã xử lý {{ $remoteJob->progress }} trang · lần {{ $remoteJob->attempts }}/3</p>@endif
+@endif
 <small>SHA256: {{ $source->sha256 }} · {{ number_format($source->bytes) }} bytes · nguồn giữ nguyên</small>
 @if($source->processed_path)<div class="box"><p>Bản xử lý tương thích: {{ $source->processing['method'] }}. Không raster hóa/hạ độ phân giải; kiểm tra độ rõ trước khi xác nhận giấy.</p>@if($source->processing['warnings'] ?? [])<p>Đã phục hồi cảnh báo thiếu entry của xref stream; bản xử lý đã qua kiểm tra cú pháp, số trang, xoay và thử xuất/mở PDF.</p>@endif<a href="{{ route('dossiers.file',[$source,'processed']) }}" target="_blank" rel="noopener">Mở PDF xử lý để đối chiếu nguồn</a><small>SHA256 bản xử lý: {{ $source->processed_sha256 }}</small></div>@endif
 <p><a href="{{ route('dossiers.file',[$source,'source']) }}" target="_blank" rel="noopener">Xem PDF nguồn rõ / tải bản gốc</a> · <a href="{{ route('dossiers.source',$source) }}">Cập nhật tiến độ</a> · <a href="{{ route('dossiers.batch',$source->batch_id) }}">Đợt nhập</a></p>
-@if($source->status!=='ready')<div class="box"><p>{{ $source->error ?: 'Chờ queue hồ sơ xử lý thumbnail. Có thể đóng trang rồi mở lại.' }}</p><form method="post" action="{{ route('dossiers.source.retry',$source) }}">@csrf<button>Thử lại / tiếp tục xử lý file</button></form></div>@endif
+@if($source->status!=='ready')<div class="box"><p>{{ $source->error ?: 'Đang chờ worker hồ sơ xử lý PDF/thumbnail. Có thể đóng trang rồi mở lại.' }}</p><form method="post" action="{{ route('dossiers.source.retry',$source) }}">@csrf<button>Thử lại / tiếp tục xử lý file</button></form></div>@endif
 @if($source->status==='ready' && !$source->confirmed)
 <form class="box" method="post" action="{{ route('dossiers.source.save',$source) }}">@csrf<input type="hidden" name="revision" value="{{ $source->revision }}">
 <p>Đối chiếu từ tên: {{ $source->resolution }}. {{ implode(', ',$source->candidates) }}. Hãy kiểm tra nội dung có đúng máy trước khi xác nhận.</p>

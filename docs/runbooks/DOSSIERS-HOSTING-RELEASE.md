@@ -1,69 +1,56 @@
-# Phase18/18.1 — hosting release gate
+# Phase18/18.1 — release gate R2 / outbound laptop worker
 
-## Authorization30/10/2026
+Kiến trúc mới thay thế hoàn toàn phương án Python/qpdf/Poppler trên hosting. Quyền lượt30/10: commit/push/cập nhật PR#71 draft; **chưa merge/deploy**, không sửa code/config/DB/cron live, không chuyển scan local đến R2 production, không gọi AI/Telegram, không sửa/restart Journal/Collector. Chỉ thực hiện các bước release dưới đây khi có quyền mới phù hợp.
 
-User authorized commit/push/PR/merge and deployment AFTER review, verified hosting prerequisites and backup. No AI API call, bulk analysis, Telegram, laptop Journal/Collector changes or open ports. Keep hosting-specific files. If a prerequisite is missing, stop deployment and report a concrete remedy.
+## Trước release
 
-## Observed hosting preflight30/10
+1. Xác minh reviewed HEAD/CI/branch và working tree hosting; bảo toàn `.htaccess`, `.env`, runtime/untracked. Không lấy production code làm nguồn chuẩn. Kiểm tra PR đã được duyệt, không tự merge draft.
+2. Hosting cần PHP>=8.2/CLI cùng project, pdo_mysql/fileinfo/OpenSSL/curl/mbstring/ZIP/XML và dependencies Composer theo lock. Không cần Python, qpdf, Poppler, exec/proc_open cho hồ sơ. Test xác nhận code Laravel không gọi native binary.
+3. Xác minh private R2 hiện có bằng **object thử không chứa scan thật**, prefix riêng `dossiers`; quyền write/read/HEAD/private/no public URL, stream hash/size và download auth. Không đổi default disk, bucket visibility hoặc prefix ảnh Zalo. S3/R2 thật chưa được test trong lượt LOCAL.
+4. PHP web/server request limits phải đủ max file nguồn50MB và output worker theo cấu hình tối đa256MB (post/multipart có dư, ví dụ upload256M/post270M), đủ temp disk, RAM/timeout cho stream hash/I/O. Chưa có bằng chứng web/FPM limits hiện tại. Không yêu cầu đủ RAM cho cả200PDF; từng HTTP một file, native xử lý tại laptop.
+5. Worker laptop phải có preflight native/config/process riêng PASS, TLS Laravel/token/heartbeat/claim/upload/complete thật bằng file thử. Không mở cổng laptop, không DB từ xa cho worker. [Runbook laptop](DOSSIERS-LAPTOP-WORKER.md).
 
-Through user-opened authenticated cPanel Terminal, account mmzoxgme on ghf56-22143:
-- Checkout /home/mmzoxgme/repositories/MMTB-ToanThang, production32cfa23 (#70), same tracked base tree as local73ff5e7. Modified public/.htaccess (21insertions) and untracked .env backup/error logs/local ini/audit JSON present; do not add/overwrite/delete them.
-- PHP /opt/alt/php83/usr/bin/php8.3.36, CLI1024M memory/max_execution_time0, proc_open and pcntl available. From actual project cwd pdo_mysql/fileinfo/mbstring/zip/gd/zlib/libxml/dom/SimpleXML/xml/xmlreader/xmlwriter/openssl/curl verified. Earlier home-cwd probe showed dom false; only project-cwd check matches cron context. CLI upload1024M/post512M; actual web/FPM limits and external process limits NOT VERIFIED.
-- System Python3.12.15 initially lacked httpx/pydantic/requests/pip. Prepared NEW private /home/mmzoxgme/venvs/dossiers-ai from /opt/alt/python312/bin/python3.12 (3.12.16), using ensurepip and official PyPI only, within existing requirement bounds. Verified httpx0.28.1/pydantic2.14.2/requests2.34.2, JournalVisionClient import and pip check (no broken requirements). No API request, no global Python or Journal change. The venv is ready; it is not linked into application .env yet.
-- BLOCKING: qpdf/pdfinfo/pdftoppm absent from PATH and checked /bin,/usr/bin,/usr/local/bin locations. Need AZDIGI to install/expose qpdf>=12.3.2 plus Poppler pdfinfo/pdftoppm in this account CageFS, or provide verified executable paths. Do not deploy incompatible code, use silent rasterization or expose laptop services as a workaround.
-- storage/app parent writable; dossier-private directory not yet created. Laravel public path /home/mmzoxgme/repositories/MMTB-ToanThang/public. Actual domain DocumentRoot/private HTTP denial not yet verified. cPanel account quota6GB, usage1.26GB: sufficient headroom for pilot only, estimate storage growth before150–200sets.
-- Existing cron every minute: cd /home/mmzoxgme/repositories/MMTB-ToanThang && /opt/alt/php83/usr/bin/php artisan schedule:run >> storage/logs/scheduler.log 2>&1. Read-only stat observations: log grew53883700→53886241bytes and mtime advanced10:14:03→10:16:02 Asia/Ho_Chi_Minh. This proves existing scheduler activity only, NOT dossier jobs (not deployed).
-- Approved account email from user resolves to existing hosting userID2. No account/password or access config changed. manage-dossiers Gate still needs actual post-deploy verification with logged-in account; ID lookup/sign-in is not Gate PASS.
+## Migration và backup
 
-## Exact pending migrations observed
+Lần đọc hosting trước kiến trúc mới: production32cfa23, PHP8.3.36, approved email người dùng khớp ID2,3migration Phase18/18.1 thiếu và không có migration ngoài phạm vi chờ. Đây là quan sát lịch sử; **phải kiểm lại migrate:status tại release**, không suy trạng thái hiện tại từ tài liệu.
 
-Only these3Phase migrations are missing; no earlier pending migrations in existing deployed tree:
-1. 2026_10_28_000001_create_electronic_dossiers:10tables including isolated queue/failure, machines.dossier_group defaultmachine, editable catalog with no mandatory legal defaults.
-2. 2026_10_29_000001_add_dossier_pdf_processing: nullable derivative path/hash/method metadata, no source-byte conversion in migration.
-3. 2026_10_30_000001_create_dossier_ai:5tables for runs/pages/proposals/versioned rules/global lease, nullable version provenance/health conclusion/renewal, type.ai_key,3distinct catalog types and disabled rule suggestions. Old types/versions retained.
+Danh sách ứng viên chính xác theo thứ tự (không chạy migrate tất cả một cách mù quáng):
 
-Recheck ledger after prerequisite fix; this inventory is time-specific. Apply each reviewed migration by exact --path --force only after backups. Never migrate:fresh/reset, unqualified migrate of unknown pending changes or restore localDB over hosting. Schema rollback retains data; do not execute destructive down migrations.
+1. `database/migrations/2026_10_28_000001_create_electronic_dossiers.php`:10bảng hồ sơ/queue legacy và machines.dossier_group, seed catalog cấu hình; không tự tạo người/tài sản.
+2. `database/migrations/2026_10_29_000001_add_dossier_pdf_processing.php`:nullable processed path/hash/metadata.
+3. `database/migrations/2026_10_30_000001_create_dossier_ai.php`:run/page/proposal/rule/control, provenance/health/renewal fields, catalog XE/MÁY, AI rule seeds; không xác nhận giấy tự động.
+4. **Mới** `database/migrations/2026_10_30_000002_add_dossier_remote_execution.php`:dossier_objects/worker_jobs/workers, nullable object pointers/previews/revision. Additive; không copy/delete file, không sửa phiên bản/manifest cũ. Down từ chối phá lịch sử.
 
-## Release procedure after prerequisites PASS
+Backup DB hiện tại bằng công cụ hosting phù hợp (InnoDB consistent snapshot), backup private legacy storage và cấu hình liên quan vào nơi riêng ngoài webroot/Git. Kiểm file tồn tại/size/SHA, test integrity và thử restore vào DB cách ly để xác minh. Backup R2 theo chính sách/versioning riêng nếu có dữ liệu trước; không coi SQL dump là backup bytes. Ghi bằng chứng đường dẫn riêng, không in credential hoặc commit dump. Chưa tạo backup hosting và chưa chạy4migration trong lượt này.
 
-1. Recheck host branch/HEAD/status, tools/exec/private storage, actual web limits, cron/process wall/RAM policy and space/quota. tools/dossier-hosting-preflight.php is a CLI-only sanitized inventory; it does not test endpoint, apply migrations, configure cron, or certify web/backup readiness. From root use actual PHP binary; --python/--qpdf/--pdfinfo/--pdftoppm accept verified paths. Never print .env or credentials.
-2. Backup hosting DB (consistent SQL, using existing config without password in argv/output) and relevant storage/config/deployment files outside webroot/Git with restrictive permissions. Verify exit, size, SQL table inventory/trailer/checksum and archive listing/checksum; record whether restore was actually tested. Do not label backup complete from command start. No backup was created in failed preflight30/10; take fresh backup after dependencies are ready.
-3. Verify reviewed merge SHA and fast-forward hosting checkout; preserve public/.htaccess and untracked environment files. No reset/clean/stash. Composer install from reviewed lock (no unrelated updates). Dedicated venv /home/mmzoxgme/venvs/dossiers-ai is now prepared and import-checked; recheck its packages before release, never start journal-worker main module.
-4. Apply only3reviewed migrations above by exact paths. Keep .env settings specific to this hosting. Do not run tools/prepare-dossier-ai-local.php on hosting: that script intentionally refuses production.
-5. Set dossier config below; clear/rebuild config/route/view caches using actual PHP as needed. Avoid global queue:restart or laptop restarts. Keep AI and auto-analysis off, recipients empty.
-6. Existing minute cron should discover new dossier schedule entries; do not add duplicate schedule:run. Verify actual invocation/progress from specific dossier job/log evidence after release, not schedule:list alone. AI command returns disabled before dispatch/claim while off. No actual AI call is authorized; verify queue/scheduler wiring without provider requests. CLI bounded commands are dossiers:work and dossiers:ai-work; --watch is for a supported supervised worker only, never assume shared hosting allows a permanent daemon.
-7. Verify real approved account Gate, denied account/guest access, private source/thumbnail/AI image/export downloads, synthetic PDF/queue/export and no UI500. Do not insert fake confirmed user dossiers. Only after those checks label DEPLOYED and narrow LIVE VERIFIED items separately; actual AI remains NOT VERIFIED until user explicitly initiates it.
+Sau backup và reviewed release: áp dụng chỉ các path thực sự pending theo thứ tự với PHP CLI hosting, `php artisan migrate --path=<path> --force`; không reset/fresh, không mang DB local đè hosting. Kiểm migrate:status, schema/index/FK/query, clear config cache theo runbook deployment. Nếu có file local cũ, dry-run và copy theo [runbook storage migration](ELECTRONIC-DOSSIERS.md#chuyển-dữ-liệu-local-cũ) sau khi được phép; kiểm SHA/count trước binding, giữ originals/manifest. Chỉ một process migration file tại một thời điểm.
 
-## Hosting configuration (future; not applied during blocked preflight)
+## Cấu hình hosting
 
-File /home/mmzoxgme/repositories/MMTB-ToanThang/.env:
+Trong `.env` riêng hosting:
 
 ```dotenv
-DOSSIERS_ALLOWED_USER_IDS=2
+DOSSIERS_STORAGE_DISK=r2
+DOSSIERS_STORAGE_PREFIX=dossiers
+DOSSIERS_WORKER_TOKEN=
+DOSSIERS_ALLOWED_USER_IDS=
 DOSSIERS_AI_ENABLED=false
 DOSSIERS_AI_AUTO_ANALYZE=false
-DOSSIERS_AI_ENDPOINT=
-DOSSIERS_AI_API_KEY=
-DOSSIERS_AI_MODEL=
-DOSSIERS_AI_PYTHON=/home/mmzoxgme/venvs/dossiers-ai/bin/python
-DOSSIERS_QPDF=qpdf
-DOSSIERS_PDFINFO=pdfinfo
-DOSSIERS_PDFTOPPM=pdftoppm
 DOSSIERS_TELEGRAM_ENABLED=false
 DOSSIERS_TELEGRAM_RECIPIENTS=
 ```
 
-Replace tool names with actual absolute hosting paths after installation, not Windows paths. Venv path is prepared/import-verified; PDF tool paths remain blocked. Owner fills endpoint/base /v1 if required, key/model privately, then explicitly enables DOSSIERS_AI_ENABLED=true and clicks Phân tích AI on one chosen dossier. Keep AUTO_ANALYZE=false to prevent uploads starting paid work. Filling credentials alone does not enable AI. No key in chat/log/Git. Endpoint must be reachable from hosting; localhost/laptop-only addresses are not reachable and no port/tunnel will be opened automatically. DNS/TLS/egress/credential/model and actual AI accuracy/usage remain unverified until configured/testing authorized.
+Điền token riêng >=32ký tự, không đưa vào chat/Git; cùng token đặt ở dossier-worker/.env. Danh sách ID phải xác minh đúng user đã được phê duyệt; lịch sử lookup tài khoản đã được phê duyệt khớp ID2 nhưng chưa phải bằng chứng Gate thật. Login bằng tài khoản đó, kiểm xem nguồn/thumbnail/AI/Excel và own-export; kiểm guest/tài khoản không có quyền403 và người khác không lấy bộ xuất. Không mở module cho mọi user đã đăng nhập.
 
-Expected module URL after deployment: https://mmtb.congtytoanthang.top/dossiers. Not deployed during blocked preflight; do not call this a working new module URL yet.
+Không cần DOSSIERS_AI_ENDPOINT/API_KEY/MODEL/PYTHON hoặc DOSSIERS_QPDF/PDFINFO/PDFTOPPM trên hosting; các giá trị AI chỉ ở laptop. Nếu cấu hình cũ tồn tại, code mới không sử dụng; không tự in/sao chép secret để chuyển môi trường. Venv hosting đã được tạo ở phiên preflight cũ không được dùng kiến trúc mới; không tự xóa nó.
 
+## Điều phối, bật worker và nghiệm thu
 
-## Publication / CI
+- Job mới trực tiếp vào dossier_worker_jobs trong transaction, worker laptop chủ động poll. Không cần cron PDF/AI hoặc long-running Python/Laravel PDF worker trên hosting.
+- Nếu còn dossier_jobs legacy, chạy `php artisan dossiers:work` một lần sau object migration để delegate; không lấy queue default/OCR. Không dùng queue:restart chung. Lịch `dossiers:work`/`dossiers:ai-work` cũ đã bỏ trong code mới; scheduler cũ của Laravel giữ nguyên cho nghiệp vụ khác và reminders (Telegram mặc định tắt).
+- Operator cài/start duy nhất MMTB-DossierWorker sau review. Xác minh task/process riêng, last_seen tiến lên trên UI, one-job claim/lease renew, output staged→published, file private tải được, temp ACK cleanup. Không restart Journal/Collector.
+- Pilot PDF không AI trước: upload→16thumbnail nếu dùng sample tương ứng→nhập tay/duyệt→thay version→snapshot export→mở/render→Excel. Không tuyên bố worker chạy chỉ từ schedule:list/preflight.
+- AI giữ tắt tới khi người dùng điền DOSSIERS_AI_ENDPOINT/API_KEY/MODEL tại laptop và chủ động yêu cầu bật. Auto_analyze giữ false. Người dùng bấm Phân tích AI một bộ, đối chiếu evidence/subject/expiry trước xác nhận. Không gọi AI thật trong nghiệm thu LOCAL/CI; **Hoàn thiện tích hợp; chưa kiểm thử kết nối/AI thực tế**.
+- Offline thử dừng duy nhất worker hồ sơ: job pending/last_seen cũ, file đã có và Excel còn dùng; khởi động lại thấy claim/complete, không làm thay Journal backlog.
 
-Implementation b9366e0 was committed/pushed to codex/phase18-electronic-dossiers, draft PR #71 targets production. No merge while host gate blocked. CI original daily-photo job PASS; first new Linux dossier job failed2qpdf warning tests on qpdf11.9.0, while Windows qpdf12.3.2 local module/full suites pass. Follow-up0a0ba15 captures only synthetic-fixture tool diagnostics to investigate exact warning wording; it does not weaken output validation. Check final PR checks rather than assuming Linux PASS.
-
-
-Linux CI diagnostics confirmed qpdf11.9.0 reports only generic "reported number of objects (7) is not one plus the highest object number (5)" for the minimal missing-self-entry fixture. That warning does not identify a benign self-entry issue and remains rejected by unchanged production whitelist. Tests now assert fail-closed behavior for native11.9, keep actual recovery assertions on12.3.2, and isolate the output-check fault using a mocked clean normalization result. This is not generic warning recovery or reduced validation. Hosting warning-recovery qualification explicitly requires qpdf>=12.3.2; no lower-version actual-scan recovery is claimed. Windows module rerun47/521 PASS25.12s; await latest Linux checks.
-
-
-Final code snapshotfa49cd4: GitHub run40998144734 both jobs PASS; Linux dossier47/517 and Python45PASS, Windows dossier47/521 and full615/6146PASS. No whitelist relaxation; native11.9 unknown-count warning rejection is expected. PR#71 remains draft/unmerged because mandatory hosting binaries are still unavailable. Documentation-only follow-up does not change tested code. Hosting app remains32cfa23; only dedicated new venv was created, .env/DB/cron/Journal untouched. No backup/migration/deployment/AI-call acceptance claimed.
+Rollback phải có kế hoạch riêng: giữ schema/objects/history; code cũ yêu cầu local/PDF binaries và không hiểu object pointers nên không rollback mù về bản cũ sau khi đã nhận file mới trên R2. Tạm tắt module/worker mới, giữ dữ liệu và khôi phục reviewed compatible release nếu cần. Chưa thực hiện rollback/deploy/live verification.

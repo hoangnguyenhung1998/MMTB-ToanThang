@@ -1,6 +1,16 @@
 # Project State
 
-## Current release Phase18/18.1 — HOSTING PREFLIGHT BLOCKED (2026-10-30)
+## Current Phase18/18.1 architecture revision — LOCAL VERIFIED / publication pending (2026-10-30)
+
+User supersedes hosting-binary design: private R2 artifacts, Laravel coordination/validation/UI/expiry/Excel, separate outbound-polling laptop dossier worker for PDF/AI/merge. PR#71 remains draft; no merge/deploy/live code/config/DB/cron/R2 changes in this turn. Branch codex/phase18-electronic-dossiers, starting HEAD35ff1f9; unrelated october-consistency.json and tatus --short preserved.
+
+Survey confirmed existing R2 disk and ZaloIngestion storage metadata, authenticated OCR claim/download/renew/complete/fail and JournalVisionClient transport. Reuse patterns only; no Journal/Collector source or runtime changes. New dossier worker token distinct from OCR and AI credentials. Files stored by disk/object key/hash/bytes/MIME; no hosting path()/binary requirement. Additive upgrade preserves old local references, explicit copy-to-R2 command must verify before binding and never delete originals or silently send real local data to production.
+
+Milestone30/10: remote API/storage/native worker implemented. Laravel module50tests/552assertions PASS; full618tests/6175assertions PASS235.31s; dossier Python10, Journal45 and reconciliation17 PASS; native real-worker HTTP E2E T-XX0709 PASS (16pages/16thumb/16pixel equality/sourceSHA,17mockAI jobs, isolated review+replacement, frozen4page PDF14/15/16/13 with image hashes preserved, Excel2sheets, cleanup). Native MySQL8.4.3 isolated33319:5business pairs plus rerun fixed legacy jobRetry pair;3remote pairs claim/complete/reclaim PASS, distinct processes/connections and~1.5s contention, oldclaim409. No app/liveDB/schema/R2/cron mutation, no AI call. Actual process crash97 after HTTP output upload, then new process outbox completion:1attempt/1receipt/ACK cleanup PASS. Final remote3pairs re-run after stricter geometry/stream handling PASS. Online CI pending publication.
+
+NEXT ACTION: review final staged diff/secret exclusions, commit and push only codex/phase18-electronic-dossiers, update PR#71 title/body and keep draft; verify CI at exact published HEAD and record code SHA/results. New additive remote migration is only in isolated test DB; applicationLOCAL/hosting not migrated this turn. Do not merge/deploy/change live or install/restart actual laptop workers. Release requires fresh backup/preflight/privateR2/auth proof and explicit follow-up authorization.
+
+## Historical release checkpoint — superseded hosting-binary plan
 
 User now authorizes commit/push/PR/merge/deploy after review, hosting eligibility and backup; no AI calls/bulk/Telegram/laptop runtime changes. Branch codex/phase18-electronic-dossiers, base73ff5e7; fetched origin/production32cfa23 is one merge ahead with identical tracked base tree. All preexisting unrelated local files retained. Code review applied AI_ENABLED=false + AUTO_ANALYZE=false, disabled-worker no-dispatch and no-auto-upload regressions; module47/521 PASS28.05s, full615/6146 PASS202.67s. Linux dossier CI added; no independent reviewer claimed.
 

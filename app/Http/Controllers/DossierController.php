@@ -3,8 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Exports\DossierWorkbook;
-use App\Jobs\BuildDossierExport;
-use App\Jobs\ProcessDossierSource;
 use App\Models\DossierBatch;
 use App\Models\DossierExport;
 use App\Models\DossierRecord;
@@ -72,7 +70,7 @@ class DossierController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            report($e);
+            \Illuminate\Support\Facades\Log::warning('dossier.upload_failed', ['exception' => get_class($e)]);
 
             return response()->json(['message' => 'Không lưu được file. Các file khác trong đợt vẫn được giữ; thử lại riêng file này.'], 422);
         }
@@ -105,7 +103,7 @@ class DossierController extends Controller
             abort_if($s->status === 'ready', 422);
             $before = $s->toArray();
             $s->update(['status' => 'queued', 'error' => null]);
-            ProcessDossierSource::dispatch($s->id)->afterCommit();
+            app(\App\Services\Dossiers\DossierRemoteJobs::class)->prepare($s);
             DossierAudit::write('source_retry', $s, $request->user()->id, $before);
         });
 
@@ -114,17 +112,20 @@ class DossierController extends Controller
 
     public function file(DossierSource $source, string $kind, ?int $page = null)
     {
+        abort_unless(in_array($kind, ['source', 'processed', 'thumbnail'], true), 404);
+        $id = match ($kind) {
+            'source' => $source->object_id, 'processed' => $source->processed_object_id, default => $source->previews[$page] ?? null
+        };
+        if ($id) {
+            return app(\App\Services\Dossiers\DossierObjects::class)->response(\App\Models\DossierObject::findOrFail($id), $kind === 'thumbnail' ? 'page.png' : $source->original_name);
+        }
+        // Explicit legacy disk only: old references must never be interpreted as R2 keys.
         $path = match ($kind) {
             'source' => $source->path, 'processed' => $source->processed_path, default => "thumbnails/{$source->id}/{$page}.png"
         };
-        abort_unless(in_array($kind, ['source', 'processed', 'thumbnail'], true) && $path, 404);
-        if ($kind === 'thumbnail') {
-            abort_unless($page && $page > 0 && $page <= $source->progress, 404);
-        }
-        abort_unless(Storage::disk('dossiers')->exists($path), 404);
+        abort_unless($path && ($kind !== 'thumbnail' || ($page > 0 && $page <= $source->progress)), 404);
 
-        return response()->file(Storage::disk('dossiers')->path($path), ['Content-Type' => $kind !== 'thumbnail' ? 'application/pdf' : 'image/png',
-            'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff', 'Content-Security-Policy' => 'sandbox']);
+        return Storage::disk('dossiers')->response($path, $kind === 'thumbnail' ? 'page.png' : $source->original_name, ['Cache-Control' => 'private, no-store', 'Content-Security-Policy' => 'sandbox', 'X-Content-Type-Options' => 'nosniff']);
     }
 
     public function version(Request $request, DossierService $service, ?DossierVersion $version = null)
@@ -301,10 +302,14 @@ class DossierController extends Controller
     public function exportFile(Request $request, DossierExport $export)
     {
         abort_unless($export->user_id === $request->user()->id, 403);
-        abort_unless($export->status === 'ready' && Storage::disk('dossiers')->exists($export->path), 404);
+        abort_unless($export->status === 'ready', 404);
 
         $date = \Carbon\CarbonImmutable::parse($export->getRawOriginal('created_at'), config('app.timezone'))
             ->timezone(config('dossiers.timezone'))->format('Y-m-d');
+
+        if ($export->object_id) {
+            return app(\App\Services\Dossiers\DossierObjects::class)->response(\App\Models\DossierObject::findOrFail($export->object_id), preg_replace('/[^A-Za-z0-9_-]/', '_', $export->machine->asset_code).'-'.$date.'.pdf', 'attachment');
+        }
 
         return Storage::disk('dossiers')->download($export->path, preg_replace('/[^A-Za-z0-9_-]/', '_', $export->machine->asset_code).'-'.$date.'.pdf', ['Cache-Control' => 'private, no-store']);
     }
@@ -316,7 +321,7 @@ class DossierController extends Controller
             $e = DossierExport::lockForUpdate()->findOrFail($export->id);
             abort_if($e->status === 'ready', 422);
             $e->update(['status' => 'queued', 'error' => null]);
-            BuildDossierExport::dispatch($e->id)->afterCommit();
+            app(\App\Services\Dossiers\DossierRemoteJobs::class)->export($e);
         });
 
         return back();

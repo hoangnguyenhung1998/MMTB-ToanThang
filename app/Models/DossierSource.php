@@ -8,7 +8,7 @@ class DossierSource extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['candidates' => 'array', 'excluded_pages' => 'array', 'processing' => 'array', 'confirmed' => 'boolean', 'machine_confirmed' => 'boolean'];
+    protected $casts = ['previews' => 'array', 'candidates' => 'array', 'excluded_pages' => 'array', 'processing' => 'array', 'confirmed' => 'boolean', 'machine_confirmed' => 'boolean'];
 
     public function machine()
     {

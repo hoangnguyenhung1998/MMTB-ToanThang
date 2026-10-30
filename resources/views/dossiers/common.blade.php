@@ -4,3 +4,11 @@
 <nav><a href="{{ route('dossiers.index') }}">Hồ sơ điện tử</a> · <a href="{{ route('dossiers.types') }}">Danh mục giấy / mốc hạn</a> · <a href="{{ route('dossiers.excel') }}">Xuất Excel</a></nav>
 @if(session('success'))<p role="status" class="box">{{ session('success') }}</p>@endif
 @if($errors->any())<div class="error" role="alert">@foreach($errors->all() as $error)<p>{{ $error }}</p>@endforeach<p>Chưa lưu thay đổi lỗi; phần đã lưu trước đó vẫn còn.</p></div>@endif
+
+@if(\Illuminate\Support\Facades\Schema::hasTable('dossier_workers'))
+@php($dossierWorker=\App\Models\DossierWorker::latest('last_seen_at')->first())
+<div class="box"><strong>Worker hồ sơ: {{ $dossierWorker && $dossierWorker->last_seen_at->gt(now()->subSeconds(120)) ? 'Đang kết nối' : 'Đang chờ worker / offline' }}</strong>
+<p>Lần thấy gần nhất: {{ $dossierWorker?->last_seen_at?->timezone('Asia/Ho_Chi_Minh')->format('d/m/Y H:i:s') ?? 'Chưa có' }}. PDF/AI mới chờ worker; file đã có, Excel và cảnh báo hạn vẫn dùng được.</p>
+@if(!config('dossiers.ai.enabled') || !$dossierWorker?->ai_ready)<p>Chưa cấu hình AI hoặc AI đang tắt. Nhập tay vẫn dùng được; không gọi API AI.</p>@endif
+</div>
+@endif

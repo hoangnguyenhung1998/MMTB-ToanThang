@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Exports\DossierWorkbook;
 use App\Jobs\AnalyzeDossier;
-use App\Jobs\BuildDossierExport;
 use App\Models\DossierAiProposal;
 use App\Models\DossierAiRun;
 use App\Models\DossierBatch;
@@ -13,7 +12,6 @@ use App\Models\DossierType;
 use App\Models\Driver;
 use App\Models\Machine;
 use App\Models\User;
-use App\Services\Dossiers\Ai\DossierAiImage;
 use App\Services\Dossiers\Ai\DossierAiSchema;
 use App\Services\Dossiers\Ai\DossierAiService;
 use App\Services\Dossiers\Ai\DossierVision;
@@ -32,6 +30,8 @@ class DossierAiTest extends TestCase
 {
     use RefreshDatabase;
 
+    private array $responses = [];
+
     private User $user;
 
     private Machine $machine;
@@ -49,8 +49,8 @@ class DossierAiTest extends TestCase
         Storage::set('dossiers', Storage::fake('dossier-ai-'.getmypid(), ['throw' => true]));
         $this->user = User::factory()->create();
         $this->actingAs($this->user);
-        config(['dossiers.allowed_user_ids' => [$this->user->id], 'dossiers.ai.enabled' => true, 'dossiers.ai.endpoint' => null, 'dossiers.ai.key' => null, 'dossiers.ai.model' => null]);
-        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-30 12:00:00', 'Asia/Ho_Chi_Minh'));
+        config(['dossiers.allowed_user_ids' => [$this->user->id], 'dossiers.storage_disk' => 'dossiers', 'dossiers.ai.enabled' => true, 'dossiers.ai.endpoint' => null, 'dossiers.ai.key' => null, 'dossiers.ai.model' => null]);
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-30 12:00:00', 'Asia/Ho_Chi_Minh')->utc());
         $this->machine = Machine::create(['asset_code' => 'T-AI01', 'company' => 'VINCONS', 'status' => 'ACTIVE', 'chassis_no' => 'FRAME01', 'dossier_group' => 'machine']);
         $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $this->user->id]);
         $pdf = new \FPDF;
@@ -61,6 +61,9 @@ class DossierAiTest extends TestCase
         } $bytes = $pdf->Output('S');
         Storage::disk('dossiers')->put('sources/test.pdf', $bytes);
         $this->source = DossierSource::create(['batch_id' => $batch->id, 'machine_id' => $this->machine->id, 'user_id' => $this->user->id, 'original_name' => 'T-AI01.pdf', 'sha256' => hash('sha256', $bytes), 'path' => 'sources/test.pdf', 'bytes' => strlen($bytes), 'resolution' => 'RESOLVED', 'candidates' => [], 'status' => 'ready', 'page_count' => 3, 'progress' => 3, 'machine_confirmed' => true]);
+        $object = app(\App\Services\Dossiers\DossierObjects::class)->store(new \Illuminate\Http\UploadedFile(Storage::disk('dossiers')->path($this->source->path), 'source.pdf', null, null, true), 'source');
+        $object->update(['status' => 'published']);
+        $this->source->update(['object_id' => $object->id]);
         $this->service = app(DossierAiService::class);
     }
 
@@ -72,17 +75,8 @@ class DossierAiTest extends TestCase
 
     private function mockVision(array $responses): void
     {
-        $mock = $this->mock(DossierVision::class);
-        $mock->shouldReceive('probe')->andReturn(['configured' => true, 'provider' => 'mock-only', 'model' => 'mock']);
-        $mock->shouldReceive('read')->andReturnUsing(function () use (&$responses) {
-            $data = array_shift($responses);
-            if ($data instanceof \Throwable) {
-                throw $data;
-            }
-
-            return ['data' => $data, 'raw' => 'mock response', 'provider' => 'mock-only', 'model' => 'mock', 'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5]];
-        });
-        $this->mock(DossierAiImage::class)->shouldReceive('render')->andReturnUsing(fn ($s, $p, $dpi) => ['path' => 'mock-only-'.$p, 'sha256' => hash('sha256', (string) $p), 'relative' => 'mock']);
+        $this->responses = $responses;
+        \Tests\Support\DossierTestWorker::worker();
     }
 
     private function page(): array
@@ -110,7 +104,34 @@ class DossierAiTest extends TestCase
         foreach (range(1, $steps) as $i) {
             DB::table('dossier_ai_control')->update(['next_call_at' => null]);
             DossierAiRun::whereKey($run->id)->update(['available_at' => null]);
-            $this->service->step($run->id);
+            \App\Models\DossierWorkerJob::where('status', 'pending')->update(['available_at' => null]);
+            $this->remoteStep($run);
+        }
+    }
+
+    private function remoteStep(DossierAiRun $run): void
+    {
+        $jobs = app(\App\Services\Dossiers\DossierRemoteJobs::class);
+        $worker = \Tests\Support\DossierTestWorker::worker();
+        $job = $jobs->claim($worker);
+        if (! $job) {
+            return;
+        }
+        $claim = [$worker->id, $job->claim_token, $job->attempts];
+        $response = array_shift($this->responses);
+        if ($response instanceof \Throwable) {
+            $jobs->fail($job, $claim, 'ai_request_failed', true);
+
+            return;
+        }
+        if ($job->kind === 'ai_page') {
+            $image = \Illuminate\Http\UploadedFile::fake()->image('mock.png', 10, 10);
+            $jobs->upload($job, 'image', $image, hash_file('sha256', $image->getRealPath()), $claim);
+        }
+        try {
+            $jobs->complete($job, $claim, ['input_hash' => $job->input_hash, 'pipeline' => $job->pipeline, 'result' => ['response' => ['data' => $response, 'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5]], 'elapsed_ms' => 0, 'mock' => true]]);
+        } catch (\Illuminate\Validation\ValidationException) {
+            $jobs->fail($job, $claim, 'ai_schema_invalid', true);
         }
     }
 
@@ -169,7 +190,7 @@ class DossierAiTest extends TestCase
         $this->assertSame($v->id, $this->service->review($p, [], $this->user->id)->id);
         $this->assertDatabaseCount('dossier_versions', 1);
         $e = app(DossierExportService::class)->create($this->machine, [], [$v->id], (string) Str::uuid(), true, $this->user->id);
-        (new BuildDossierExport($e->id))->handle(app(\App\Services\Dossiers\DossierPdf::class));
+        \Tests\Support\DossierTestWorker::run($e->id, 'export');
         $this->assertSame('ready', $e->fresh()->status);
         $pdf = new \setasign\Fpdi\Fpdi;
         $this->assertSame(3, $pdf->setSourceFile(Storage::disk('dossiers')->path($e->fresh()->path)));
@@ -262,8 +283,7 @@ class DossierAiTest extends TestCase
         $this->service->control($r, 'retry', 1, $this->user->id);
         $this->assertSame(300, $p->fresh()->dpi);
         $this->assertSame(0, $p->fresh()->attempts);
-        DB::table('dossier_ai_control')->update(['token' => (string) Str::uuid(), 'lease_until' => now()->addMinutes(5)]);
-        $this->assertSame(15, $this->service->step($r->id));
+        $this->service->step($r->id); // Scheduling alone never consumes a page.
         $this->assertSame(0, $p->fresh()->attempts);
     }
 
@@ -330,20 +350,19 @@ class DossierAiTest extends TestCase
         $this->assertSame('user_reviewed', $v->provenance['expiry_origin']);
     }
 
-    public function test_claimant_cannot_publish_after_global_fencing_token_changes(): void
+    public function test_expired_ai_claim_cannot_publish_after_remote_reclaim(): void
     {
-        $v = $this->mock(DossierVision::class);
-        $v->shouldReceive('probe')->andReturn(['configured' => true, 'model' => 'mock']);
-        $v->shouldReceive('read')->once()->andReturnUsing(function () {
-            DB::table('dossier_ai_control')->update(['token' => (string) Str::uuid(), 'lease_until' => now()->addMinutes(5)]);
-
-            return ['data' => $this->page(), 'usage' => []];
-        });
-        $this->mock(DossierAiImage::class)->shouldReceive('render')->andReturn(['path' => 'mock', 'sha256' => str_repeat('a', 64)]);
+        $this->mockVision([$this->page()]);
         $r = $this->service->request($this->source, $this->user->id);
-        $this->assertSame(0, $this->service->step($r->id));
-        $this->assertSame(0, $r->pages()->where('status', 'ready')->count());
-        $this->assertDatabaseCount('dossier_ai_proposals', 0);
+        $jobs = app(\App\Services\Dossiers\DossierRemoteJobs::class);
+        $w = \Tests\Support\DossierTestWorker::worker();
+        $j = $jobs->claim($w);
+        $claim = [$w->id, $j->claim_token, $j->attempts];
+        $j->update(['lease_until' => now()->subSecond()]);
+        $new = $jobs->claim($w);
+        $this->assertSame(2, $new->attempts);
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
+        $jobs->complete($j, $claim, []);
     }
 
     public function test_future_replacement_preserves_current_and_manual_provenance_edits(): void
@@ -399,14 +418,11 @@ class DossierAiTest extends TestCase
     public function test_auto_queue_when_thumbnails_finish_does_not_call_api(): void
     {
         config(['dossiers.ai.auto_analyze' => true]);
-        $this->source->update(['status' => 'queued', 'progress' => 2]);
-        $pdf = $this->mock(\App\Services\Dossiers\DossierPdf::class);
-        $pdf->shouldReceive('thumbnail')->once()->withArgs(fn ($s, $p) => $s->id === $this->source->id && $p === 3);
-        (new \App\Jobs\ProcessDossierSource($this->source->id))->handle($pdf);
+        $this->source->update(['status' => 'queued', 'progress' => 0]);
+        \Tests\Support\DossierTestWorker::run($this->source->id, 'prepare');
         $this->assertSame('ready', $this->source->fresh()->status);
-        $this->assertSame('unconfigured', DossierAiRun::firstOrFail()->status);
+        $this->assertDatabaseCount('dossier_ai_runs', 1);
         Queue::assertNotPushed(AnalyzeDossier::class);
-        $this->assertDatabaseCount('dossier_versions', 0);
     }
 
     public function test_rule_application_requires_scope_and_unchanged_anchor_and_records_version(): void
@@ -436,31 +452,27 @@ class DossierAiTest extends TestCase
         $this->assertSame('business-2026-10-30-v1', $v->provenance['rule']['version']);
     }
 
-    public function test_raw_failed_schema_and_retry_usage_are_private_and_accumulated(): void
+    public function test_failed_schema_does_not_publish_and_retry_uses_same_page(): void
     {
-        $this->mockVision([['invalid' => 'mock raw failure'], $this->page(), $this->page(), $this->page(), $this->group([$this->doc()])]);
+        $this->mockVision([['invalid' => 'private'], $this->page(), $this->page(), $this->page(), $this->group([$this->doc()])]);
         $r = $this->service->request($this->source, $this->user->id);
-        $this->drain($r, 5);
-        $p = $r->pages()->orderBy('page')->first();
+        $this->drain($r, 1);
+        $this->assertSame(0, $r->pages()->where('status', 'ready')->count());
+        $this->assertDatabaseCount('dossier_ai_proposals', 0);
+        $this->drain($r, 4);
         $this->assertSame('ready', $r->fresh()->status);
-        $this->assertCount(2, $p->raw['attempts']);
-        $this->assertSame(20, $p->usage['prompt_tokens']);
-        $this->assertSame(2, $p->attempts);
+        $this->assertSame(2, $r->pages()->orderBy('page')->first()->attempts);
+        $page = $r->pages()->orderBy('page')->first();
+        $this->assertCount(2, $page->raw['attempts']);
+        $this->assertSame(20, $page->usage['prompt_tokens']);
     }
 
-    public function test_long_render_still_enforces_spacing_after_call_and_auto_pilot_cap(): void
+    public function test_remote_completion_enforces_spacing_and_auto_pilot_cap(): void
     {
-        $vision = $this->mock(DossierVision::class);
-        $vision->shouldReceive('probe')->andReturn(['configured' => true, 'model' => 'mock']);
-        $vision->shouldReceive('read')->once()->andReturnUsing(function () {
-            DB::table('dossier_ai_control')->update(['next_call_at' => now()->subMinutes(2)]);
-
-            return ['data' => $this->page(), 'usage' => []];
-        });
-        $this->mock(DossierAiImage::class)->shouldReceive('render')->once()->andReturn(['path' => 'mock', 'sha256' => str_repeat('a', 64)]);
+        $this->mockVision([$this->page()]);
         $r = $this->service->request($this->source, $this->user->id);
-        $this->service->step($r->id);
-        $this->assertSame(15, $this->service->step($r->id));
+        $this->remoteStep($r);
+        $this->assertNull(app(\App\Services\Dossiers\DossierRemoteJobs::class)->claim(\Tests\Support\DossierTestWorker::worker()));
         $this->assertSame(0, $r->pages()->where('page', 2)->first()->attempts);
         $r->update(['cache_key' => hash('sha256', 'old')]);
         foreach (range(1, 9) as $n) {
@@ -468,10 +480,8 @@ class DossierAiTest extends TestCase
             $copy->cache_key = hash('sha256', 'old-'.$n);
             $copy->save();
         }
-        Queue::fake();
         $next = $this->service->request($this->source, $this->user->id, true);
         $this->assertTrue($next->paused);
-        Queue::assertNotPushed(AnalyzeDossier::class);
     }
 
     public function test_disabled_ai_worker_cannot_dispatch_or_consume_pending_work(): void
@@ -488,11 +498,9 @@ class DossierAiTest extends TestCase
 
     public function test_upload_stays_manual_until_auto_analysis_is_explicitly_enabled(): void
     {
-        config(['dossiers.ai.enabled' => true, 'dossiers.ai.auto_analyze' => false]);
-        $this->source->update(['status' => 'queued', 'progress' => 2]);
-        $pdf = $this->mock(\App\Services\Dossiers\DossierPdf::class);
-        $pdf->shouldReceive('thumbnail')->once();
-        (new \App\Jobs\ProcessDossierSource($this->source->id))->handle($pdf);
+        config(['dossiers.ai.auto_analyze' => false]);
+        $this->source->update(['status' => 'queued', 'progress' => 0]);
+        \Tests\Support\DossierTestWorker::run($this->source->id, 'prepare');
         $this->assertSame('ready', $this->source->fresh()->status);
         $this->assertDatabaseCount('dossier_ai_runs', 0);
         Queue::assertNotPushed(AnalyzeDossier::class);

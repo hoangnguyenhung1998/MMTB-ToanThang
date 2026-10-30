@@ -80,10 +80,11 @@ class DossierAiController extends Controller
     public function image(DossierAiRun $run, int $page)
     {
         $p = $run->pages()->where('page', $page)->firstOrFail();
-        $relative = "ai-images/{$run->source->sha256}/{$page}-{$p->dpi}.jpg";
-        abort_unless(Storage::disk('dossiers')->exists($relative), 404);
+        if ($p->image_object_id) {
+            return app(\App\Services\Dossiers\DossierObjects::class)->response(\App\Models\DossierObject::findOrFail($p->image_object_id), 'page.jpg');
+        }
 
-        return response()->file(Storage::disk('dossiers')->path($relative), ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff', 'Content-Security-Policy' => 'sandbox']);
+        return Storage::disk('dossiers')->response("ai-images/{$run->source->sha256}/{$page}-{$p->dpi}.jpg", 'page.jpg', ['Cache-Control' => 'private, no-store', 'Content-Security-Policy' => 'sandbox', 'X-Content-Type-Options' => 'nosniff']);
     }
 
     public function rules()

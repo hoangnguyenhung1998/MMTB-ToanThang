@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$EvidenceRoot,[string]$Php='C:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe')
+param([Parameter(Mandatory=$true)][string]$EvidenceRoot,[string]$Php='C:/laragon/bin/php/php-8.3.30-Win32-vs16-x64/php.exe',[switch]$SkipSetup,[string[]]$Rounds=@('confirm','replace','replaceFirst','exportFirst','retry','jobRetry'))
 $ErrorActionPreference='Stop'
 $env:P18_ACCEPTANCE_ROOT=[IO.Path]::GetFullPath($EvidenceRoot)
 $dossierHarness=Join-Path $PSScriptRoot 'DossierConcurrency.php'
@@ -7,11 +7,11 @@ function Invoke-DossierFixture([string]$Mode,[string]$Round='') {
     if($LASTEXITCODE -ne 0){throw "Native $Mode $Round failed: $result"}
     $result
 }
-Invoke-DossierFixture setup
+if(-not $SkipSetup){Invoke-DossierFixture setup}
 $dossierProof=@()
-foreach($round in @('confirm','replace','replaceFirst','exportFirst','retry','jobRetry')) {
+foreach($round in $Rounds) {
     if($round -in @('replaceFirst','exportFirst')){Invoke-DossierFixture prepare}
-    $base=Join-Path $EvidenceRoot "native-$round"
+    $base=Join-Path $EvidenceRoot "native-$round$env:P18_PROOF_SUFFIX"
     if(Test-Path -LiteralPath "$base.go"){throw 'Existing evidence; never overwrite'}
     $pair=@()
     foreach($role in @('leader','follower')) {
@@ -35,4 +35,4 @@ foreach($round in @('confirm','replace','replaceFirst','exportFirst','retry','jo
     $item=[pscustomobject]@{Round=$round;Processes=$outputs;Verification=$verified};$dossierProof+=$item
     $item | ConvertTo-Json -Depth 8 -Compress
 }
-$dossierProof | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $EvidenceRoot 'mysql-concurrency-proof.json')
+$dossierProof | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $EvidenceRoot "mysql-concurrency-proof$env:P18_PROOF_SUFFIX.json")

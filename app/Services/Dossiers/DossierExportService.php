@@ -2,7 +2,6 @@
 
 namespace App\Services\Dossiers;
 
-use App\Jobs\BuildDossierExport;
 use App\Models\DossierExport;
 use App\Models\DossierVersion;
 use App\Models\Machine;
@@ -38,7 +37,7 @@ class DossierExportService
             }
             // Keep every selected version in manifest even when all its shared pages are deduplicated.
             $manifest[] = ['version_id' => $v->id, 'record_id' => $v->record_id, 'source_id' => $source->id,
-                'source_path' => $source->path, 'source_sha256' => $source->sha256, 'pages' => $pages,
+                'source_object_id' => $source->object_id, 'processed_object_id' => $source->processed_object_id, 'source_path' => $source->path, 'source_sha256' => $source->sha256, 'pages' => $pages,
                 'processed_path' => $source->processed_path, 'processed_sha256' => $source->processed_sha256,
                 'processing' => $source->processing,
                 'original_pages' => $v->pages, 'type' => $row['type']->name, 'subject' => $row['subject'],
@@ -82,7 +81,7 @@ class DossierExportService
             $export = DossierExport::create(['id' => (string) Str::uuid(), 'machine_id' => $machine->id, 'user_id' => $actor,
                 'request_id' => $requestId, 'manifest' => $preview['manifest'], 'warnings' => $preview['warnings']]);
             DossierAudit::write('export_requested', $export, $actor);
-            BuildDossierExport::dispatch($export->id)->afterCommit();
+            app(DossierRemoteJobs::class)->export($export);
 
             return $export;
         }, 3);
