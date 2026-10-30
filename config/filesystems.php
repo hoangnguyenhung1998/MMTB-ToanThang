@@ -30,6 +30,14 @@ return [
 
     'disks' => [
 
+        'dossiers' => [
+            'driver' => 'local',
+            'root' => storage_path('app/dossiers-private'),
+            'visibility' => 'private',
+            'throw' => true,
+            'serve' => false,
+        ],
+
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

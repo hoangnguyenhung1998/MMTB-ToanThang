@@ -10,6 +10,8 @@ class Machine extends Model
 {
     protected $guarded = [];
 
+    protected $attributes = ['dossier_group' => 'machine'];
+
     public function companyRecord(): BelongsTo
     {
         return $this->belongsTo(Company::class, 'company', 'code');
