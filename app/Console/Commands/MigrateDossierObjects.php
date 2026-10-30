@@ -110,6 +110,26 @@ class MigrateDossierObjects extends Command
                 }$o->update(['status' => 'published']);
             });
         }
+        // A historical snapshot can reference an older derivative than its source's
+        // current pointer. Copy those bytes too; never rewrite the manifest JSON.
+        foreach (DossierExport::cursor() as $export) {
+            foreach ($export->manifest as $item) {
+                if (empty($item['processed_sha256']) || ! empty($item['processed_object_id'])) {
+                    continue;
+                }
+                $old = DossierObject::where('status', 'published')->where('sha256', $item['processed_sha256'])->where('mime', 'application/pdf')->first();
+                if ($old) {
+                    app(DossierObjects::class)->verify($old);
+
+                    continue;
+                }
+                if (empty($item['processed_path'])) {
+                    throw new \RuntimeException('Historical manifest lacks processed path; no snapshot substitution permitted.');
+                }
+                $o = $this->copy($item['processed_path'], 'derivative', $item['processed_sha256']);
+                $o->update(['status' => 'published']);
+            }
+        }
         foreach (DossierAiPage::whereNull('image_object_id')->whereNotNull('image_sha256')->cursor() as $p) {
             $o = $this->copy("ai-images/{$p->run->source->sha256}/{$p->page}-{$p->dpi}.jpg", 'preview', $p->image_sha256);
             DB::transaction(function () use ($p, $o) {

@@ -75,6 +75,14 @@ class DossierRemoteJobs
         if ($export->status === 'ready') {
             return null;
         }
+        // A retry keeps the exact object IDs/pipeline captured on first delegation.
+        if ($existing = DossierWorkerJob::where('kind', 'export')->where('subject_id', $export->id)->oldest('created_at')->first()) {
+            if ($existing->status === 'failed') {
+                $existing->update(['status' => 'pending', 'attempts' => 0, 'claim_token' => null, 'worker_id' => null, 'lease_until' => null, 'available_at' => null, 'error_code' => null]);
+            }
+
+            return $existing;
+        }
         $objects = [];
         $manifest = [];
         $store = app(DossierObjects::class);
@@ -85,7 +93,12 @@ class DossierRemoteJobs
             $objects[$a->id] = $store->descriptor($a);
             $b = null;
             if (! empty($item['processed_sha256'])) {
-                $b = DossierObject::where('status', 'published')->where('sha256', $item['processed_sha256'])->whereKey($item['processed_object_id'] ?? $source->processed_object_id)->firstOrFail();
+                $processed = DossierObject::where('status', 'published')->where('mime', 'application/pdf')->where('sha256', $item['processed_sha256']);
+                // Legacy manifests predate object IDs; content SHA is their immutable identity.
+                if (! empty($item['processed_object_id'])) {
+                    $processed->whereKey($item['processed_object_id']);
+                }
+                $b = $processed->oldest('created_at')->orderBy('id')->firstOrFail();
                 $objects[$b->id] = $store->descriptor($b);
             }
             $manifest[] = ['version_id' => $item['version_id'], 'source_object' => $a->id, 'processed_object' => $b?->id, 'pages' => $item['pages']];
@@ -362,7 +375,7 @@ class DossierRemoteJobs
             }
             $j->update(['status' => 'succeeded', 'result' => $r, 'result_hash' => $digest, 'error_code' => null]);
             if (str_starts_with($j->kind, 'ai_')) {
-                DB::table('dossier_ai_control')->where('id', 1)->update(['next_call_at' => now()->addSeconds(10)]);
+                DB::table('dossier_ai_control')->where('id', 1)->update(['next_call_at' => now()->addSeconds(max(10, (int) config('dossiers.ai.spacing_seconds', 10)))]);
             }
             if ($j->kind === 'prepare' && config('dossiers.ai.enabled') && config('dossiers.ai.auto_analyze')) {
                 app(DossierAiService::class)->request(DossierSource::findOrFail($j->subject_id), DossierSource::findOrFail($j->subject_id)->user_id, true);

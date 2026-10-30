@@ -10,6 +10,7 @@ use App\Models\DossierWorkerJob;
 use App\Models\Machine;
 use App\Models\User;
 use App\Services\Dossiers\DossierObjects;
+use App\Services\Dossiers\DossierRemoteJobs;
 use App\Services\Dossiers\DossierService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -193,5 +194,33 @@ class DossierRemoteTest extends TestCase
         $this->postJson('/api/dossiers/v1/jobs/'.$id.'/complete', $payload, $headers)->assertUnprocessable();
         $this->assertNull($this->source->fresh()->processed_object_id);
         $this->assertSame('queued', $this->source->fresh()->status);
+    }
+
+    public function test_historical_manifest_uses_its_old_derivative_after_migration_and_freezes_retry_inputs(): void
+    {
+        $legacy = Storage::fake('dossiers');
+        $oldBytes = '%PDF-1.4 old derivative';
+        $legacy->put('processed/historical.pdf', $oldBytes);
+        $source = $this->source;
+        $objects = app(DossierObjects::class);
+        $current = $objects->store(UploadedFile::fake()->createWithContent('current.pdf', '%PDF-1.4 current derivative'), 'derivative');
+        $current->update(['status' => 'published']);
+        $source->update(['processed_object_id' => $current->id, 'processed_sha256' => $current->sha256]);
+        $manifest = [['version_id' => 1, 'source_id' => $source->id, 'source_sha256' => $source->sha256, 'processed_path' => 'processed/historical.pdf', 'processed_sha256' => hash('sha256', $oldBytes), 'pages' => [['page' => 1, 'rotation' => 0]]]];
+        $export = \App\Models\DossierExport::create(['id' => (string) Str::uuid(), 'request_id' => (string) Str::uuid(), 'machine_id' => $source->machine_id, 'user_id' => $source->user_id, 'manifest' => $manifest, 'warnings' => []]);
+        $this->artisan('dossiers:migrate-objects', ['--disk' => 'remote-test', '--execute' => true, '--backup-verified' => true])->assertSuccessful();
+        $old = DossierObject::where('sha256', hash('sha256', $oldBytes))->firstOrFail();
+        $this->assertSame('published', $old->status);
+        $this->assertSame($manifest, $export->fresh()->manifest);
+        $this->assertSame($current->id, $source->fresh()->processed_object_id);
+        $jobs = app(DossierRemoteJobs::class);
+        $job = $jobs->export($export);
+        $this->assertSame($old->id, $job->input['manifest'][0]['processed_object']);
+        $frozen = $job->input;
+        $this->artisan('dossiers:migrate-objects', ['--disk' => 'remote-test', '--execute' => true, '--backup-verified' => true])->assertSuccessful();
+        $this->assertSame(1, DossierObject::where('sha256', hash('sha256', $oldBytes))->count());
+        $legacy->assertExists('processed/historical.pdf');
+        $this->assertSame($job->id, $jobs->export($export)->id);
+        $this->assertSame($frozen, $job->fresh()->input);
     }
 }
