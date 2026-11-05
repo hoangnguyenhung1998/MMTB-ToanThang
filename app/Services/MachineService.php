@@ -288,7 +288,7 @@ class MachineService
     public function assignDriver(int $machineId, int $driverId, string $startedAt): Machine
     {
         return DB::transaction(function () use ($machineId, $driverId, $startedAt) {
-            $machine = Machine::findOrFail($machineId);
+            $machine = Machine::lockForUpdate()->findOrFail($machineId);
             Driver::findOrFail($driverId);
 
             if ($machine->current_driver_id === $driverId) {
@@ -296,6 +296,7 @@ class MachineService
             }
 
             $openHistory = MachineDriverHistory::where('machine_id', $machine->id)
+                ->where('driver_id', $machine->current_driver_id)
                 ->whereNull('ended_at')
                 ->first();
 
@@ -303,11 +304,16 @@ class MachineService
                 $openHistory->update(['ended_at' => Carbon::parse($startedAt)]);
             }
 
-            MachineDriverHistory::create([
-                'machine_id' => $machine->id,
-                'driver_id' => $driverId,
-                'started_at' => Carbon::parse($startedAt),
-            ]);
+            $alreadyAssigned = MachineDriverHistory::where('machine_id', $machine->id)
+                ->where('driver_id', $driverId)->where('started_at', '<=', Carbon::parse($startedAt))
+                ->where(fn ($q) => $q->whereNull('ended_at')->orWhere('ended_at', '>', Carbon::parse($startedAt)))->exists();
+            if (! $alreadyAssigned) {
+                MachineDriverHistory::create([
+                    'machine_id' => $machine->id,
+                    'driver_id' => $driverId,
+                    'started_at' => Carbon::parse($startedAt),
+                ]);
+            }
 
             $machine->update(['current_driver_id' => $driverId]);
 

@@ -129,6 +129,9 @@ class DriverController extends Controller
 
     public function destroy(Driver $driver): RedirectResponse
     {
+        if (\App\Models\DossierRecord::where('driver_id', $driver->id)->exists() || \App\Models\DossierSenderProfile::where('driver_id', $driver->id)->exists()) {
+            return back()->withErrors(['error' => 'Tài xế có hồ sơ điện tử / liên kết Zalo cần giữ lịch sử; không thể xóa.']);
+        }
         $hasOpenShift = MachineDriverHistory::query()
             ->where('driver_id', $driver->id)
             ->whereNull('ended_at')

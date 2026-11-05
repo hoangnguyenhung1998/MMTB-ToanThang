@@ -38,6 +38,7 @@ Chọn sửa nhỏ nhất đủ bao phủ lỗi. Dùng planner/service chung cho
 - Bulk AI: preview chỉ đọc chốt exact IDs/actor; eligibility lớn chưa kiểm tra phải hiển thị rõ là upper bound. Đưa full validation/enqueue sang bounded worker, tiến độ OCR phải lấy từ attempt lifecycle. MySQL duplicate-create retry cần đọc sau rollback ngoài snapshot thua; tests song song cần cách ly cả fake-storage.
 - Với relink/dedupe, bảo toàn nguồn, chuyển references cần thiết, lock/revalidate và relink/delete/audit atomically; giữ retry/idempotence, quyền và protection.
 - Với xung đột nội dung thật thiếu nguồn quyết định, báo máy/ngày/trường và proof thiếu; không cộng/ghi đè tùy ý.
+- Với công cụ ngoài: phân biệt launch/timeout/error/warning theo exit contract; warning phục hồi cần kiểm tra đầu ra độc lập, giữ nguyên nguồn và diagnostics riêng không lộ dữ liệu cá nhân.
 - Chạy targeted regression, rồi subsystem/full theo rủi ro. Tests PASS không thay cho acceptance nghiệp vụ.
 - Destructive tests dùng fixtures riêng. Repair lớn/locking dùng MySQL bản sao cách ly và concurrency bằng process độc lập; không gọi tuần tự là concurrency PASS.
 - So sánh trước/sau, survivor payload, NULL/0, ảnh/OCR/GPS references, FK, protected và lần chạy thứ hai. Phân biệt metadata với bytes file.

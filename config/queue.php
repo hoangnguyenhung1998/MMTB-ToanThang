@@ -31,6 +31,15 @@ return [
 
     'connections' => [
 
+        'dossiers' => [
+            'driver' => 'database',
+            'connection' => null,
+            'table' => 'dossier_jobs',
+            'queue' => 'dossiers',
+            'retry_after' => 1020,
+            'after_commit' => true,
+        ],
+
         'sync' => [
             'driver' => 'sync',
         ],

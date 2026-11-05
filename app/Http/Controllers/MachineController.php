@@ -177,6 +177,12 @@ class MachineController extends Controller
 
     public function destroy(Machine $machine): RedirectResponse
     {
+        if (\App\Models\DossierSource::where('machine_id', $machine->id)->exists()
+            || \App\Models\DossierRecord::where('machine_id', $machine->id)->exists()
+            || \App\Models\DossierRecord::whereIn('assignment_id', $machine->assignments()->select('id'))->exists()
+            || \App\Models\DossierExport::where('machine_id', $machine->id)->exists()) {
+            return back()->withErrors(['error' => 'Máy có hồ sơ điện tử cần giữ lịch sử; không thể xóa.']);
+        }
         if (!in_array($machine->status, ['WAIT_HANDOVER', 'RETURNED'], true)) {
             return back()->withErrors([
                 'error' => 'Chỉ được xóa máy ở trạng thái WAIT_HANDOVER hoặc RETURNED.',

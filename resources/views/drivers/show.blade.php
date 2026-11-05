@@ -11,6 +11,7 @@
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h1 class="h4 mb-0">Chi tiết tài xế: {{ $driver->name }}</h1>
             <div class="d-flex gap-2">
+                @can('manage-dossiers')<a class="btn btn-outline-primary" href="{{ route('dossiers.driver', $driver) }}">Hồ sơ điện tử / Zalo</a>@endcan
                 <a class="btn btn-outline-primary" href="{{ route('driver-documents.create', $driver) }}">Thêm giấy tờ</a>
                 <a class="btn btn-outline-secondary" href="{{ route('drivers.edit', $driver) }}">Sửa thông tin</a>
             </div>

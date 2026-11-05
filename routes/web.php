@@ -2,6 +2,8 @@
 
 use Illuminate\Support\Facades\Route;
 
+require __DIR__.'/dossiers.php';
+
 Route::middleware('auth')->group(function () {
     Route::resource('companies', App\Http\Controllers\CompanyController::class)->only(['index', 'store', 'update', 'destroy']);
 });

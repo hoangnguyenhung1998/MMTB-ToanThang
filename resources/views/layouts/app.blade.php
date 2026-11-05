@@ -57,7 +57,7 @@
                 </div>
             </details>
 
-            <details class="sidebar-group" data-sidebar-group="equipment" @if(request()->routeIs('companies.*', 'machines.*', 'reconciliation-*', 'projects.*', 'command-centers.*', 'drivers.*', 'expiries.*')) open @endif>
+            <details class="sidebar-group" data-sidebar-group="equipment" @if(request()->routeIs('companies.*', 'machines.*', 'reconciliation-*', 'projects.*', 'command-centers.*', 'drivers.*', 'expiries.*', 'dossiers.*')) open @endif>
                 <summary title="Quản lý MMTB"><span class="sidebar-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4V7Zm3-3h10v3H7V4Zm1 13v3m8-3v3M8 11h8"/></svg></span><span class="sidebar-group-title">Quản lý MMTB</span><span class="sidebar-chevron">⌄</span></summary>
                 <div class="sidebar-group-links">
                     <a class="sidebar-link {{ request()->routeIs('companies.*') ? 'active' : '' }}" href="{{ route('companies.index') }}"><span>Công ty</span></a>
@@ -66,7 +66,8 @@
                     <a class="sidebar-link {{ request()->routeIs('projects.*') ? 'active' : '' }}" href="{{ route('projects.index') }}"><span>Dự án</span></a>
                     <a class="sidebar-link {{ request()->routeIs('command-centers.*') ? 'active' : '' }}" href="{{ route('command-centers.index') }}"><span>Ban chỉ huy</span></a>
                     <a class="sidebar-link {{ request()->routeIs('drivers.*') ? 'active' : '' }}" href="{{ route('drivers.index') }}"><span>Tài xế</span></a>
-                    <a class="sidebar-link {{ request()->routeIs('expiries.*') ? 'active' : '' }}" href="{{ route('expiries.index') }}"><span>Hồ sơ</span></a>
+                    <a class="sidebar-link {{ request()->routeIs('expiries.*') ? 'active' : '' }}" href="{{ route('expiries.index') }}"><span>Hồ sơ cũ</span></a>
+                    @can('manage-dossiers')<a class="sidebar-link {{ request()->routeIs('dossiers.*') ? 'active' : '' }}" href="{{ route('dossiers.index') }}"><span>Hồ sơ điện tử</span></a>@endcan
                 </div>
             </details>
 

@@ -34,6 +34,7 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        Gate::define('manage-dossiers', fn (\App\Models\User $user) => in_array((string) $user->id, array_map('strval', config('dossiers.allowed_user_ids', [])), true));
         RateLimiter::for('collector-api', fn (Request $request) => Limit::perMinute(
             (int) config('collector.rate_limit_per_minute', 240)
         )->by('collector:'.hash('sha256', (string) $request->bearerToken())));

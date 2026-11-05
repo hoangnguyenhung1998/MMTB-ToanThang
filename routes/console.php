@@ -6,6 +6,33 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
+// Compatibility drains for pre-release Laravel queue records. New requests write
+// remote jobs atomically; laptop polls without a hosting PDF/AI queue worker.
+Artisan::command('dossiers:work {--max-time=50} {--watch}', function () {
+    config(['queue.failed.table' => 'dossier_failed_jobs']);
+    $this->call('queue:work', ['connection' => 'dossiers', '--queue' => 'dossiers,dossiers-ai', '--stop-when-empty' => true, '--max-time' => 50, '--tries' => 3, '--timeout' => 60]);
+})->purpose('Drain legacy dossier entries into remote job queue; no native processing');
+
+Artisan::command('dossiers:ai-work {--watch}', function () {
+    if (! config('dossiers.ai.enabled')) {
+        $this->info('AI hồ sơ đang tắt; không xếp hoặc gọi API.');
+
+        return;
+    }
+    \App\Models\DossierAiRun::whereIn('status', ['queued', 'unconfigured', 'processing'])->where('paused', false)->orderBy('id')->chunkById(20, function ($runs) {
+        foreach ($runs as $run) {
+            app(\App\Services\Dossiers\Ai\DossierAiService::class)->schedule($run);
+        }
+    });
+    $this->info('Đã kiểm tra hàng đợi remote; AI chỉ chạy tại worker hồ sơ.');
+})->purpose('Reconcile remote AI scheduling only; no Python on hosting');
+
+Artisan::command('dossiers:reminders', function () {
+    $this->info('Sent: '.app(\App\Services\Dossiers\DossierReminderService::class)->run());
+})->purpose('Send explicitly configured electronic dossier expiry reminders');
+
+Schedule::command('dossiers:reminders')->dailyAt('07:15')->timezone('Asia/Ho_Chi_Minh')->withoutOverlapping();
+
 Schedule::command('ocr:process-daily-recovery-runs --steps=10')->everyMinute()->withoutOverlapping(2);
 
 Schedule::command('reconciliation:process-repair-runs --limit=1')->everyMinute()->withoutOverlapping();
