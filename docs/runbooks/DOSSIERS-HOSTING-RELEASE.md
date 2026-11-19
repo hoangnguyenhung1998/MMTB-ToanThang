@@ -54,3 +54,9 @@ Không cần DOSSIERS_AI_ENDPOINT/API_KEY/MODEL/PYTHON hoặc DOSSIERS_QPDF/PDFI
 - Offline thử dừng duy nhất worker hồ sơ: job pending/last_seen cũ, file đã có và Excel còn dùng; khởi động lại thấy claim/complete, không làm thay Journal backlog.
 
 Rollback phải có kế hoạch riêng: giữ schema/objects/history; code cũ yêu cầu local/PDF binaries và không hiểu object pointers nên không rollback mù về bản cũ sau khi đã nhận file mới trên R2. Tạm tắt module/worker mới, giữ dữ liệu và khôi phục reviewed compatible release nếu cần. Chưa thực hiện rollback/deploy/live verification.
+
+## Bản nâng cấp Phase 18.2 sau PR #71
+
+Trước khi triển khai theo chỉ định riêng, đồng bộ nhánh tích hợp với production ref và xác minh HEAD. Backup và kiểm trạng thái migration. Nếu bốn migration Phase 18/18.1 đã áp dụng, bản nâng cấp này chỉ cần thêm `database/migrations/2026_11_19_000001_add_dossier_batch_review.php`. Migration thêm lựa chọn OCR nullable của đợt và loại giấy danh sách huấn luyện ATLĐ. Giữ file R2 và phiên bản hồ sơ hiện có.
+
+Hosting cần cập nhật Laravel và giao diện, áp dụng migration, làm mới cache nếu hosting có dùng cache cấu hình/route/view. Prompt và schema nằm trên Laravel. Worker hồ sơ đang dùng hợp đồng v1 tương thích có thể giữ nguyên bản Python, cấu hình và credential. Kiểm tra heartbeat nhận job thử, tiến độ PDF/OCR trên batch, bảng duyệt và báo cáo. Kiểm tra riêng nguồn T-XN0048 theo quy trình preview trong runbook hồ sơ trước mọi thao tác áp dụng trên dữ liệu thật.

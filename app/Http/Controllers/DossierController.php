@@ -31,11 +31,7 @@ class DossierController extends Controller
     {
         $machines = Machine::orderBy('asset_code')->when($request->filled('q'), fn ($q) => $q->where('asset_code', 'like', '%'.$request->string('q').'%'))->get();
         $report->warm($machines);
-        $items = $machines->map(function ($machine) use ($report) {
-            $rows = $report->rows($machine);
-
-            return ['machine' => $machine, 'drivers' => $report->drivers($machine), 'assignments' => $report->assignments($machine), 'counts' => $report->summary($rows)];
-        });
+        $items = $machines->flatMap(fn ($machine) => $report->pairs($machine));
         $totals = [];
         foreach (array_keys(DossierStatus::LABELS) as $s) {
             $totals[$s] = $items->sum(fn ($i) => $i['counts'][$s] ?? 0);
@@ -50,14 +46,14 @@ class DossierController extends Controller
 
     public function batch(Request $request)
     {
-        $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $request->user()->id]);
+        $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $request->user()->id, 'auto_analyze' => $request->has('auto_analyze') ? $request->boolean('auto_analyze') : null]);
 
         return redirect()->route('dossiers.batch', $batch);
     }
 
     public function showBatch(DossierBatch $batch)
     {
-        return view('dossiers.batch', ['batch' => $batch, 'sources' => DossierSource::with('machine')->where('batch_id', $batch->id)->get()]);
+        return view('dossiers.batch', ['batch' => $batch, 'sources' => DossierSource::with(['machine', 'latestAiRun' => fn ($query) => $query->withCount(['pages', 'pages as ready_pages_count' => fn ($pages) => $pages->where('status', 'ready')])])->where('batch_id', $batch->id)->get()]);
     }
 
     public function upload(Request $request, DossierBatch $batch, DossierService $service)
@@ -210,7 +206,10 @@ class DossierController extends Controller
     {
         return view('dossiers.driver', ['driver' => $driver, 'rows' => $report->subjectRows('driver', $driver->id, 'driver', null, $driver->name),
             'links' => DossierSenderProfile::where('driver_id', $driver->id)->get(),
-            'senders' => ZaloMessage::select('sender_id')->whereNotNull('sender_id')->distinct()->orderBy('sender_id')->get(),
+            'senders' => ZaloMessage::select(['sender_id', 'sender_name'])->whereIn('id', ZaloMessage::query()->selectRaw('MAX(id)')->whereNotNull('sender_id')->groupBy('sender_id'))->orderBy('sender_name')->get(),
+            'machines' => Machine::orderBy('asset_code')->get(),
+            'checkinLinks' => \App\Models\ZaloSenderDriverLink::where('driver_id', $driver->id)->orderByDesc('valid_from')->get(),
+            'openHistories' => MachineDriverHistory::whereNull('ended_at')->with(['driver', 'machine'])->get(),
             'histories' => $driver->machineHistories()->with('machine')->latest('started_at')->get(),
             'records' => DossierRecord::with(['type', 'versions'])->where('driver_id', $driver->id)->get()]);
     }

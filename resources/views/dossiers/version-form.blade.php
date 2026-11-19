@@ -30,6 +30,14 @@
 <label>Hạn ghi trên giấy <input name="expiry_value" value="{{ $values?->expiry_value }}" placeholder="YYYY-MM-DD / YYYY-MM-DD HH:MM:SS / YYYY-MM"><small>Không tự suy hạn từ ngày cấp hoặc ngày chứng thực.</small></label>
 <label>Diễn giải tháng/năm <select name="month_rule"><option value="">Chưa xác nhận quy tắc</option><option value="end_of_month" @selected($values?->month_rule==='end_of_month')>Tôi xác nhận tính hết ngày cuối tháng</option></select></label>
 </div>
+<details><summary>Đối chiếu CCCD hoặc bằng chứng danh sách BIC</summary>
+<p>Chỉ điền định danh khi đã đối chiếu CCCD với người được chọn.</p>
+<label>Họ tên pháp lý <input name="identity_check[person_name]" autocomplete="off"></label>
+<label>Ngày sinh <input type="date" name="identity_check[birth_date]"></label>
+<label>Số CCCD <input name="identity_check[identity]" inputmode="numeric" autocomplete="off"></label>
+<label>Trang danh sách BIC <input type="number" name="bic_page" min="1" max="{{ $source->page_count }}"></label>
+<label>Dòng đã đối chiếu trong danh sách BIC <textarea name="bic_quote" maxlength="2000"></textarea></label>
+</details>
 <label>Lý do thêm / thay / sửa <input name="reason" value="{{ $draft?->reason }}" required maxlength="2000"></label><label>Ghi chú <textarea name="note" maxlength="5000">{{ $values?->note }}</textarea></label>
 <button name="confirmed" value="0">Lưu nháp giấy</button><button name="confirmed" value="1">Xác nhận giấy này</button>
 </form>

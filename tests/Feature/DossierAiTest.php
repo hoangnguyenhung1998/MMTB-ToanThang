@@ -297,7 +297,7 @@ class DossierAiTest extends TestCase
         $r = $this->completed([$d]);
         $this->assertSame([1, 3], $r->proposals()->first()->data['pages']);
         $this->assertCount(1, $r->proposals()->first()->data['insured']);
-        $this->assertStringContainsString('chưa có định danh', implode(' ', $r->proposals()->first()->issues));
+        $this->assertStringContainsString('định danh', implode(' ', $r->proposals()->first()->issues));
         $this->assertDatabaseCount('dossier_sender_profiles', 0);
         $this->assertDatabaseCount('machine_driver_histories', 0);
         $this->assertDatabaseCount('ocr_jobs', 0);
@@ -318,22 +318,26 @@ class DossierAiTest extends TestCase
         $this->post(route('dossiers.ai.bulk', $r))->assertForbidden();
     }
 
-    public function test_bulk_review_selected_forms_is_atomic_and_does_not_select_other_proposals(): void
+    public function test_bulk_review_saves_matches_and_excludes_wrong_chassis_and_unselected_proposal(): void
     {
-        $r = $this->completed([$this->doc(pages: [1]), $this->doc('asset_insurance', [2]), $this->doc('machine_inspection', [3])]);
+        $r = $this->completed([
+            $this->doc(pages: [1], fields: ['chassis_no' => $this->field('FRAME01', 'text'), 'expiry' => $this->field('2027-01-01')]),
+            $this->doc('asset_insurance', [2], ['chassis_no' => $this->field('WRONG', 'text', 2), 'expiry' => $this->field('2027-01-01', 'day', 2)]),
+            $this->doc('machine_inspection', [3]),
+        ]);
         $ps = $r->proposals()->orderBy('position')->get();
         $items = $ps->take(2)->map(function ($p) {
-            $d = $this->reviewData($p);
+            $d = $this->reviewData($p, ['expiry_precision' => 'day', 'expiry_value' => '2027-01-01']);
             unset($d['pages']);
             $d['page_numbers'] = implode(',', $p->data['pages']);
 
             return ['id' => $p->id, 'data' => $d];
         })->all();
-        $this->postJson(route('dossiers.ai.bulk', $r), ['items' => $items])->assertOk();
-        $this->assertDatabaseCount('dossier_versions', 2);
+        $this->postJson(route('dossiers.ai.bulk', $r), ['items' => $items])->assertOk()->assertJsonPath('skipped.0', $ps[1]->id);
+        $this->assertDatabaseCount('dossier_versions', 1);
         $this->assertNull($ps[2]->fresh()->version_id);
         $this->postJson(route('dossiers.ai.bulk', $r), ['items' => $items])->assertStatus(422);
-        $this->assertDatabaseCount('dossier_versions', 2);
+        $this->assertDatabaseCount('dossier_versions', 1);
     }
 
     public function test_hour_precision_unknown_and_permanent_do_not_mix_with_renewal_date(): void
@@ -504,5 +508,112 @@ class DossierAiTest extends TestCase
         $this->assertSame('ready', $this->source->fresh()->status);
         $this->assertDatabaseCount('dossier_ai_runs', 0);
         Queue::assertNotPushed(AnalyzeDossier::class);
+    }
+
+    public function test_blank_null_empty_and_unreadable_contract(): void
+    {
+        $schema = app(DossierAiSchema::class);
+        foreach ([null, ''] as $text) {
+            $this->assertSame('', $schema->page([...$this->page(), 'kind' => 'blank', 'text' => $text])['text']);
+        }
+        $this->assertSame('unknown', $schema->page([...$this->page(), 'kind' => 'unknown', 'text' => 'Faint text'])['kind']);
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+        $schema->page([...$this->page(), 'kind' => 'document', 'text' => null]);
+    }
+
+    public function test_blank_is_processed_and_excluded_from_grouping_then_can_be_relabeled(): void
+    {
+        $this->mockVision([$this->page(), [...$this->page(), 'kind' => 'blank', 'text' => null], $this->page()]);
+        $run = $this->service->request($this->source, $this->user->id);
+        $this->drain($run, 3);
+        $this->assertSame(3, $run->pages()->where('status', 'ready')->count());
+        $group = \App\Models\DossierWorkerJob::where('kind', 'ai_group')->firstOrFail();
+        $this->assertStringNotContainsString('"page":2', $group->input['prompt']);
+        $this->get(route('dossiers.source', $this->source))->assertOk()->assertSee('Trang trắng — bỏ qua phân tích');
+        $this->post(route('dossiers.ai.label', [$run, 2]), ['kind' => 'unknown'])->assertRedirect();
+        $this->assertSame('cancelled', $group->fresh()->status);
+        $this->assertSame('blank', $run->pages()->where('page', 2)->first()->raw['before_label_override']['kind']);
+        $this->assertStringContainsString('"page":2', \App\Models\DossierWorkerJob::where('kind', 'ai_group')->where('status', 'pending')->firstOrFail()->input['prompt']);
+    }
+
+    public function test_recovery_reuses_verified_attempt_and_queues_only_page_five(): void
+    {
+        $this->source->update(['page_count' => 24]);
+        $this->mockVision([$this->page(), $this->page(), $this->page()]);
+        $run = $this->service->request($this->source, $this->user->id);
+        $this->drain($run, 3);
+        $before = $run->pages()->where('page', '<', 4)->orderBy('page')->get()->toArray();
+        $page = $run->pages()->where('page', 4)->firstOrFail();
+        $job = \App\Models\DossierWorkerJob::where('kind', 'ai_page')->where('subject_id', (string) $page->id)->firstOrFail();
+        $stored = ['data' => [...$this->page(), 'kind' => 'blank', 'text' => null], 'usage' => ['prompt_tokens' => 10], 'mock' => true,
+            'attempt' => 2, 'worker_id' => 'fixture-worker', 'ai_profile' => $run->fresh()->context['ai_profile']];
+        $job->update(['status' => 'failed', 'attempts' => 2, 'result' => ['observations' => [\App\Services\Dossiers\DossierRemoteJobs::digest($stored)]]]);
+        $page->update(['status' => 'failed', 'attempts' => 2, 'raw' => ['attempts' => [$stored]], 'usage' => ['prompt_tokens' => 20]]);
+        $run->update(['status' => 'failed']);
+        $args = ['source' => $this->source->id, 'run' => $run->id, 'page' => 4];
+        $this->artisan('dossiers:recover-blank', $args)->assertFailed();
+        $image = app(\App\Services\Dossiers\DossierObjects::class)->store(\Illuminate\Http\UploadedFile::fake()->image('blank.png', 12, 12), 'preview', [
+            'job_id' => $job->id, 'attempt' => 2, 'slot' => 'image', 'metadata' => ['input_hash' => $job->input_hash]]);
+        $args['--actor'] = $this->user->id;
+        \Illuminate\Support\Facades\Artisan::call('dossiers:recover-blank', $args);
+        $preview = json_decode(trim(\Illuminate\Support\Facades\Artisan::output()), true);
+        $this->assertSame('preview', $preview['status']);
+        $this->assertSame('failed', $page->fresh()->status);
+        $this->artisan('dossiers:recover-blank', $args + ['--apply' => $preview['receipt']])->assertSuccessful();
+        $this->artisan('dossiers:recover-blank', $args + ['--apply' => $preview['receipt']])->assertSuccessful();
+        $this->assertSame($before, $run->pages()->where('page', '<', 4)->orderBy('page')->get()->toArray());
+        $this->assertSame(['prompt_tokens' => 20], $page->fresh()->usage);
+        $this->assertSame('', $page->fresh()->result['text']);
+        $this->assertSame('published', $image->fresh()->status);
+        $next = \App\Models\DossierWorkerJob::where('kind', 'ai_page')->where('status', 'pending')->sole();
+        $this->assertSame(5, $next->input['page']);
+        Http::assertNothingSent();
+    }
+
+    public function test_identity_comparison_rejects_wrong_person_and_bic_without_list_evidence(): void
+    {
+        $first = Driver::create(['name' => 'Mock Driver']);
+        $second = Driver::create(['name' => 'Mock Driver']);
+        $identity = $this->doc('identity', [1], [
+            'person_name' => $this->field('Mock Driver', 'text'), 'birth_date' => $this->field('1990-01-01'), 'identity' => $this->field('000000000001', 'text'),
+        ]);
+        $identity['subject'] = 'driver';
+        $bic = $this->doc('bic_personal', [2, 3]);
+        $bic['subject'] = 'driver';
+        $run = $this->completed([$identity, $bic]);
+        $idProposal = $run->proposals()->orderBy('position')->firstOrFail();
+        $this->service->review($idProposal, $this->reviewData($idProposal, [
+            'subject' => 'driver', 'subject_id' => $first->id, 'verify_identity' => true, 'person_name' => 'Mock Driver', 'birth_date' => '1990-01-01', 'identity' => '000000000001',
+        ]), $this->user->id);
+        $compare = app(\App\Services\Dossiers\Ai\DossierComparison::class);
+        $this->assertSame('match', $compare->compare($idProposal->data, $this->source, 'driver', $first->id)['status']);
+        $this->assertSame('missing', $compare->compare($idProposal->data, $this->source, 'driver', $second->id)['status']);
+        $wrong = $idProposal->data;
+        $wrong['fields']['identity']['value'] = '000000000002';
+        $this->assertSame('mismatch', $compare->compare($wrong, $this->source, 'driver', $first->id)['status']);
+        $this->getJson(route('dossiers.ai.compare', [$idProposal, 'subject' => 'driver', 'subject_id' => $first->id, 'type_id' => $idProposal->data['type_id']]))
+            ->assertOk()->assertJsonPath('fields.identity.web', '••••0001')->assertDontSee('000000000001');
+        $proposal = $run->proposals()->orderByDesc('position')->firstOrFail();
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+        $this->service->review($proposal, $this->reviewData($proposal, [
+            'subject' => 'driver', 'subject_id' => $first->id, 'acknowledge_stale' => true,
+        ]), $this->user->id);
+    }
+
+    public function test_batch_opt_in_reuses_unconfigured_run_after_worker_connects(): void
+    {
+        config(['dossiers.ai.auto_analyze' => false]);
+        $this->source->batch->update(['auto_analyze' => true]);
+        $this->source->update(['status' => 'queued', 'progress' => 0]);
+        \Tests\Support\DossierTestWorker::run($this->source->id, 'prepare');
+        $run = DossierAiRun::sole();
+        $this->assertSame('unconfigured', $run->status);
+        $this->get(route('dossiers.batch', $this->source->batch_id))->assertOk()->assertSee('0/3');
+        $this->mockVision([$this->page()]);
+        $this->assertSame($run->id, $this->service->request($this->source->fresh(), $this->user->id)->id);
+        $this->drain($run, 1);
+        $this->assertSame($run->id, $this->service->request($this->source->fresh(), $this->user->id)->id);
+        $this->assertDatabaseCount('dossier_ai_runs', 1);
+        $this->assertSame(1, $run->pages()->where('status', 'ready')->count());
     }
 }

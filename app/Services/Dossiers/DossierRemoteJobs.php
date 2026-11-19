@@ -377,8 +377,9 @@ class DossierRemoteJobs
             if (str_starts_with($j->kind, 'ai_')) {
                 DB::table('dossier_ai_control')->where('id', 1)->update(['next_call_at' => now()->addSeconds(max(10, (int) config('dossiers.ai.spacing_seconds', 10)))]);
             }
-            if ($j->kind === 'prepare' && config('dossiers.ai.enabled') && config('dossiers.ai.auto_analyze')) {
-                app(DossierAiService::class)->request(DossierSource::findOrFail($j->subject_id), DossierSource::findOrFail($j->subject_id)->user_id, true);
+            if ($j->kind === 'prepare' && config('dossiers.ai.enabled') && $source->page_count <= 60
+                && ($source->batch->auto_analyze ?? config('dossiers.ai.auto_analyze'))) {
+                app(DossierAiService::class)->request($source, $source->user_id, true);
             }
 
             return $j;

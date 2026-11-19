@@ -92,6 +92,19 @@ class DossierReport
         return $rows->values();
     }
 
+    public function pairs(Machine $machine): Collection
+    {
+        $drivers = $this->drivers($machine);
+        $assignment = $this->assignments($machine)->first();
+
+        return ($drivers->isEmpty() ? collect([null]) : $drivers)->map(function ($history) use ($machine, $assignment) {
+            $rows = $this->rows($machine, $history ? [$history->driver_id] : []);
+
+            return ['machine' => $machine, 'driver' => $history?->driver, 'assignment' => $assignment, 'rows' => $rows,
+                'counts' => $this->summary($rows), 'checked_on' => $rows->map(fn ($row) => $row['checked_on'])->filter()->sort()->last()];
+        });
+    }
+
     public function subjectRows(string $subject, int $id, string $group, ?Machine $m = null, ?string $name = null, bool $required = true): Collection
     {
         $records = $this->recordCache[$subject.':'.$id] ?? DossierRecord::with(['type', 'versions' => fn ($q) => $q->orderBy('id')
@@ -112,7 +125,10 @@ class DossierReport
                     $rows->push($this->row($m, $subject, $id, $name, $type, $record, $pending));
                 }
             }
-            if ($required && in_array($group, $type->required_groups, true) && ! $hasCurrent) {
+            $checklist = $group === 'driver' && in_array($type->ai_key, [
+                'identity', 'qualification', 'health', 'safety', 'safety_training', 'bic_personal', 'employment', 'assignment',
+            ], true);
+            if ($required && ($checklist || in_array($group, $type->required_groups, true)) && ! $hasCurrent) {
                 $rows->push($this->row($m, $subject, $id, $name, $type, null, null));
             }
         }
@@ -123,6 +139,8 @@ class DossierReport
     private function row($m, $subject, $id, $name, $type, $record, $version): array
     {
         return ['machine_id' => $m?->id, 'asset_code' => $m?->asset_code, 'subject' => $subject, 'subject_id' => $id,
+            'checked_on' => $version?->provenance['reviewed_at'] ?? null,
+            'checked_by' => $version?->provenance['reviewed_by'] ?? null,
             'subject_name' => $name ?? $m?->asset_code, 'type' => $type, 'record' => $record, 'version' => $version,
             ...$this->status->describe($version, $type->warning_days)];
     }

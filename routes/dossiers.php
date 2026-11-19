@@ -5,12 +5,17 @@ use Illuminate\Support\Facades\Route;
 Route::middleware(['auth', 'can:manage-dossiers'])->prefix('dossiers')->name('dossiers.ai.')->controller(\App\Http\Controllers\DossierAiController::class)->group(function () {
     Route::post('/sources/{source}/ai', 'request')->name('request');
     Route::post('/ai/{run}/control', 'control')->name('control');
+    Route::get('/ai/proposals/{proposal}/compare', 'compare')->name('compare');
     Route::post('/ai/proposals/{proposal}/review', 'review')->name('review');
     Route::post('/ai/{run}/bulk', 'bulk')->name('bulk');
+    Route::post('/ai/{run}/pages/{page}/label', 'label')->whereNumber('page')->name('label');
     Route::get('/ai/{run}/pages/{page}', 'image')->whereNumber('page')->name('image');
     Route::get('/ai-rules', 'rules')->name('rules');
     Route::post('/ai-rules', 'saveRule')->name('rules.save');
 });
+
+Route::post('/dossiers/drivers/{driver}/sender-mapping', \App\Http\Controllers\DossierSenderMappingController::class)
+    ->middleware(['auth', 'can:manage-dossiers'])->name('dossiers.sender.mapping');
 
 // Electronic dossiers share the existing authenticated asset/driver access boundary.
 Route::middleware(['auth', 'can:manage-dossiers'])->prefix('dossiers')->name('dossiers.')->controller(\App\Http\Controllers\DossierController::class)->group(function () {
