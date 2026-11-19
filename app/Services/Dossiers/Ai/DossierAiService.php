@@ -5,6 +5,7 @@ namespace App\Services\Dossiers\Ai;
 use App\Models\DossierAiProposal;
 use App\Models\DossierAiRun;
 use App\Models\DossierSource;
+use App\Models\DossierType;
 use App\Models\DossierVersion;
 use App\Services\Dossiers\DossierAudit;
 use App\Services\Dossiers\DossierService;
@@ -28,9 +29,22 @@ class DossierAiService
             if ($existing = DossierAiRun::where('cache_key', $key)->lockForUpdate()->first()) {
                 return $existing;
             }
+            // The worker binds the model on its first claim. Keep the run queued
+            // before that heartbeat when the source and rules are still the same.
+            $unbound = [...$context, 'ai_profile' => null, 'provider' => null, 'model' => null];
+            $unboundKey = hash('sha256', json_encode([$s->id, $s->sha256, DossierAiSchema::VERSION, $unbound, $settings]));
+            $waiting = DossierAiRun::where('cache_key', $unboundKey)->lockForUpdate()->first();
+            if ($waiting && (empty($waiting->context['ai_profile']) || $waiting->context['ai_profile'] === $context['ai_profile'])) {
+                if ($probe['configured'] && $waiting->status === 'unconfigured' && ! $waiting->paused) {
+                    $waiting->update(['status' => 'queued', 'error' => null]);
+                    $this->schedule($waiting);
+                }
+
+                return $waiting;
+            }
             $r = DossierAiRun::create(['source_id' => $s->id, 'user_id' => $actor, 'cache_key' => $key, 'pipeline' => DossierAiSchema::VERSION, 'source_revision' => $s->revision, 'context' => $context, 'status' => empty($probe['configured']) ? 'unconfigured' : 'queued']);
             $r->refresh();
-            if ($automatic && DossierAiRun::where('id', '!=', $r->id)->count() >= 10) {
+            if ($automatic && ! $s->batch->auto_analyze && DossierAiRun::where('id', '!=', $r->id)->count() >= 10) {
                 $r->update(['paused' => true, 'error' => 'Đã đạt giới hạn tự xếp10bộ pilot. Người dùng kiểm tra rồi chủ động xếp tiếp từng hồ sơ.']);
             }
             $prior = DossierAiRun::where('source_id', $s->id)->where('pipeline', $r->pipeline)->where('id', '!=', $r->id)->latest('id')->get()->first(fn ($old) => ($old->context['model'] ?? null) === ($context['model'] ?? null) && ($old->context['ai_profile'] ?? null) === $context['ai_profile'] && ($old->context['catalog_sha256'] ?? null) === $context['catalog_sha256']);
@@ -85,14 +99,50 @@ class DossierAiService
         $schema = app(DossierAiSchema::class);
         $page = $r->pages()->where('status', 'pending')->orderBy('page')->first();
         if ($page) {
+            $existing = \App\Models\DossierWorkerJob::where('kind', 'ai_page')->where('subject_id', (string) $page->id)
+                ->whereIn('status', ['pending', 'processing'])->get()
+                ->contains(fn ($j) => $j->input['page_revision'] === $page->revision);
+            if ($existing) {
+                return;
+            }
             $o = app(\App\Services\Dossiers\DossierObjects::class)->source($r->source, (bool) $r->source->processed_object_id);
             $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page)], $page->revision);
         } elseif (! $r->pages()->where('status', '!=', 'ready')->exists()) {
-            $pages = $r->pages()->orderBy('page')->get()->map(fn ($p) => ['page' => $p->page, 'data' => $p->result])->all();
+            $pages = $r->pages()->orderBy('page')->get()->reject(fn ($p) => ($p->result['kind'] ?? null) === 'blank')->map(fn ($p) => ['page' => $p->page, 'data' => $p->result])->values()->all();
+            if (! $pages) {
+                $r->update(['status' => 'ready', 'generation' => $r->generation + 1]);
+
+                return;
+            }
             $prompt = $schema->groupPrompt($pages, $r->context);
             app(DossierService::class)->check(strlen($prompt) <= 500000, 'Pilot grouping context limit.');
             $jobs->enqueue('ai_group', $r->id, ['run_id' => $r->id, 'objects' => [], 'generation' => $r->generation, 'prompt' => $prompt, 'pages_digest' => \App\Services\Dossiers\DossierRemoteJobs::digest($pages)], $r->generation);
         }
+    }
+
+    public function label(DossierAiRun $run, int $number, string $kind, int $actor): void
+    {
+        DB::transaction(function () use ($run, $number, $kind, $actor) {
+            DB::table('dossier_ai_control')->where('id', 1)->lockForUpdate()->firstOrFail();
+            $run = DossierAiRun::lockForUpdate()->findOrFail($run->id);
+            $page = $run->pages()->where('page', $number)->lockForUpdate()->firstOrFail();
+            $check = app(DossierService::class);
+            $check->check($page->status === 'ready', 'Chỉ đổi nhãn trang đã đọc.');
+            $jobs = \App\Models\DossierWorkerJob::where('kind', 'ai_group')->where('subject_id', (string) $run->id)
+                ->whereIn('status', ['pending', 'processing'])->lockForUpdate()->get();
+            $check->check(! $jobs->contains(fn ($job) => $job->status === 'processing' && $job->lease_until?->gt(now())), 'Đợi nhóm giấy đang chạy hoàn tất.');
+            if ($page->result['kind'] === $kind) {
+                return;
+            }
+            $previous = $page->raw ?? [];
+            $page->update(['raw' => [...$previous, 'before_label_override' => $previous['before_label_override'] ?? $page->result],
+                'result' => [...$page->result, 'kind' => $kind]]);
+            $jobs->each(fn ($job) => $job->update(['status' => 'cancelled', 'claim_token' => null]));
+            $run->update(['status' => $run->pages()->where('status', 'failed')->exists() ? 'failed' : 'queued',
+                'generation' => $run->generation + 1, 'group_result' => null]);
+            DossierAudit::write('ai_page_label_changed', $page, $actor, ['kind' => $previous['before_label_override']['kind'] ?? null]);
+            $this->schedule($run);
+        }, 3);
     }
 
     public function acceptRemote(\App\Models\DossierWorkerJob $job, array $result, $outputs): void
@@ -121,8 +171,16 @@ class DossierAiService
         } else {
             app(DossierService::class)->check($run->generation === $job->input['generation'] && ! $run->pages()->where('status', '!=', 'ready')->exists(), 'Stale grouping generation.');
             $normalized = $schema->documents($response['data'], $run->source->page_count, $run->context);
+            $blank = $run->pages()->get()->filter(fn ($p) => ($p->result['kind'] ?? null) === 'blank')->pluck('page')->all();
+            foreach ($normalized as $item) {
+                app(DossierService::class)->check(! array_intersect($blank, $item['data']['pages']), 'AI nhóm giấy chứa trang trắng.');
+            }
+            $unreadable = $run->pages()->get()->filter(fn ($p) => ($p->result['kind'] ?? null) === 'unknown')->pluck('page')->all();
             $multi = $run->pages()->get()->filter(fn ($p) => $p->result['multiple_documents'] ?? false)->pluck('page')->all();
             foreach ($normalized as $i => $item) {
+                if (array_intersect($unreadable, $item['data']['pages'])) {
+                    $item['issues'][] = 'Có trang mờ hoặc chưa đọc được; cần kiểm tra riêng.';
+                }
                 if (array_intersect($multi, $item['data']['pages'])) {
                     $item['data']['multiple_documents'] = true;
                     $item['issues'][] = 'Trang chứa nhiều giấy độc lập; cần xử lý thủ công.';
@@ -136,7 +194,7 @@ class DossierAiService
 
     public function review(DossierAiProposal $proposal, array $input, int $actor): DossierVersion
     {
-        $input = \Illuminate\Support\Arr::only($input, ['source_revision', 'reviewed_evidence', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed', 'type_id', 'subject', 'subject_id', 'instance', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'health_signed_on', 'renewal_on', 'effective_at', 'expiry_precision', 'expiry_value', 'month_rule', 'reason', 'note', 'confirmed']);
+        $input = \Illuminate\Support\Arr::only($input, ['source_revision', 'reviewed_evidence', 'verify_identity', 'person_name', 'birth_date', 'identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed', 'type_id', 'subject', 'subject_id', 'record_id', 'instance', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'health_signed_on', 'renewal_on', 'effective_at', 'expiry_precision', 'expiry_value', 'month_rule', 'reason', 'note', 'confirmed']);
 
         return DB::transaction(function () use ($proposal, $input, $actor) {
             $source = DossierSource::lockForUpdate()->findOrFail($proposal->run->source_id);
@@ -150,6 +208,21 @@ class DossierAiService
             $check->check($source->revision === $proposal->run->source_revision || ! empty($input['acknowledge_stale']), 'Kết quả AI cũ hơn sửa tay; đối chiếu lại và xác nhận đã kiểm tra.');
             $check->check(empty($p->data['multiple_documents']), 'Trang nhiều giấy độc lập cần xử lý thủ công, chưa hỗ trợ crop xuất.');
             $check->check(! empty($input['reviewed_evidence']), 'Cần xác nhận đã đối chiếu bằng chứng scan, chủ thể và phạm vi.');
+            $check->check($p->generation === $p->run->generation, 'Đề xuất đã được thay bởi lần nhóm mới.');
+            $verifiedIdentity = null;
+            $insurance = null;
+            if (! empty($input['confirmed']) && $p->data['type_key'] === 'bic_personal') {
+                $comparison = app(DossierComparison::class)->compare($p->data, $source, $input['subject'], (int) $input['subject_id']);
+                $check->check($comparison['status'] === 'match' && DossierType::findOrFail($input['type_id'])->ai_key === 'bic_personal',
+                    'BIC cần dòng danh sách có bằng chứng định danh người được bảo hiểm.');
+                $matching = app(DossierComparison::class);
+                $insurance = $matching->insuranceEvidence($p->data, $matching->identity((int) $input['subject_id']));
+            }
+            if (! empty($input['verify_identity']) && ! empty($input['confirmed'])) {
+                $check->check($input['subject'] === 'driver' && $p->data['type_key'] === 'identity' &&
+                    DossierType::findOrFail($input['type_id'])->ai_key === 'identity', 'Chỉ xác lập định danh từ CCCD đã đối chiếu.');
+                $verifiedIdentity = app(DossierComparison::class)->verifyIdentity($input);
+            }
             $vdata = $input;
             $vdata['request_id'] = (string) Str::uuid();
             $vdata['source_id'] = $source->id;
@@ -169,8 +242,8 @@ class DossierAiService
                 $expiryOrigin = 'document_reviewed';
             }
             Validator::make($input, ['health_signed_on' => 'nullable|date_format:Y-m-d', 'renewal_on' => 'nullable|date_format:Y-m-d'])->validate();
-            $version = $check->saveVersion($vdata, $actor);
-            $version->update(['health_signed_on' => $input['health_signed_on'] ?? null, 'renewal_on' => $input['renewal_on'] ?? null, 'provenance' => ['proposal_id' => $p->id, 'pipeline' => $proposal->run->pipeline, 'evidence' => $p->data['fields'], 'scope_text' => $p->data['scope_text'], 'insured' => $p->data['insured'], 'subject_claim' => $p->data['subject'], 'expiry_origin' => $expiryOrigin, 'rule' => $rule, 'reviewed_by' => $actor, 'reviewed_at' => now()->toIso8601String(), 'reason' => $input['reason']]]);
+            $version = $check->saveVersion($vdata, $actor, insuranceEvidence: $insurance);
+            $version->update(['health_signed_on' => $input['health_signed_on'] ?? null, 'renewal_on' => $input['renewal_on'] ?? null, 'provenance' => ['verified_identity' => $verifiedIdentity, 'insurance_evidence' => $insurance, 'proposal_id' => $p->id, 'pipeline' => $proposal->run->pipeline, 'evidence' => $p->data['fields'], 'scope_text' => $p->data['scope_text'], 'insured' => $p->data['insured'], 'subject_claim' => $p->data['subject'], 'expiry_origin' => $expiryOrigin, 'rule' => $rule, 'reviewed_by' => $actor, 'reviewed_at' => now()->toIso8601String(), 'reason' => $input['reason']]]);
             $p->update(['reviewed' => $input, 'reviewed_by' => $actor, 'version_id' => $version->id]);
             DossierAudit::write('ai_reviewed', $p, $actor);
 

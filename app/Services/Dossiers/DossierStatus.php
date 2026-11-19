@@ -60,6 +60,14 @@ class DossierStatus
             default => 'valid',
         };
 
-        return ['status' => $status, 'label' => self::LABELS[$status], 'days' => $days, 'expires_at' => $end?->format('Y-m-d H:i:s')];
+        $label = match (true) {
+            $status === 'expired' && $days === 0 => 'Đã hết hạn hôm nay',
+            $status === 'expired' => 'Quá hạn '.abs($days).' ngày',
+            $status === 'expiring' && $days === 0 => 'Hết hạn hôm nay',
+            in_array($status, ['valid', 'expiring'], true) => 'Còn '.$days.' ngày',
+            default => self::LABELS[$status],
+        };
+
+        return ['status' => $status, 'label' => $label, 'days' => $days, 'expires_at' => $end?->format('Y-m-d H:i:s')];
     }
 }

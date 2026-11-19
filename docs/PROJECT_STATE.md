@@ -1,6 +1,16 @@
 # Project State
 
-## Current Phase18/18.1 architecture revision — LOCAL VERIFIED / PR#71 DRAFT (2026-10-30)
+## Phase 18.2 — LOCAL (19/11/2026)
+
+Branch `codex/phase18-review-recovery` từ `ea90e44`. Đã fetch `origin/production` tại `435bbdb8` (merge PR #71) và xác minh cây code gốc trùng `ea90e44`. Trạng thái hosting chưa được xác minh trong lượt này.
+
+Đã tái hiện validator lỗi blank/null và triển khai phục hồi theo hash quan sát/ảnh receipt, batch OCR, bảng duyệt và đối chiếu CCCD/máy, mapping chọn đích, checklist và báo cáo. Migration mới chỉ chạy trong kiểm thử cách ly. Chi tiết trong Phase 18.2.
+
+Kiểm thử LOCAL PASS: Laravel full 625/6240; Hồ sơ/Zalo ingestion/OCR/check-in 105/877; chạy lại nhóm AI 27/160 và kiểm tra mapping/nhãn 3/30 sau chỉnh sửa cuối. Diff đã rà soát.
+
+NEXT ACTION: review PR Phase 18.2 vào production và kiểm tra CI trên đúng SHA của PR. Chờ chỉ định riêng để merge/release. Khi được chỉ định phục hồi T-XN0048, xác minh source/run và chạy preview giới hạn trang 4 trước khi áp dụng. Không gọi AI hoặc Telegram trong kiểm thử.
+
+## Historical Phase18/18.1 architecture revision — LOCAL VERIFIED / PR#71 DRAFT (2026-10-30)
 
 User supersedes hosting-binary design: private R2 artifacts, Laravel coordination/validation/UI/expiry/Excel, separate outbound-polling laptop dossier worker for PDF/AI/merge. PR#71 remains draft; no merge/deploy/live code/config/DB/cron/R2 changes in this turn. Branch codex/phase18-electronic-dossiers, starting HEAD35ff1f9; unrelated october-consistency.json and tatus --short preserved.
 

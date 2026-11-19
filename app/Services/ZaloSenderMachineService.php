@@ -66,9 +66,9 @@ class ZaloSenderMachineService
         $this->save($message->sender_id, $machine->id, null, $message->received_at->format('Y-m-d H:i:s'));
     }
 
-    public function save(string $senderId, int $machineId, ?int $userId, ?string $receivedAt = null): void
+    public function save(string $senderId, int $machineId, ?int $userId, ?string $receivedAt = null, bool $effectiveNow = false): void
     {
-        DB::transaction(function () use ($senderId, $machineId, $userId, $receivedAt): void {
+        DB::transaction(function () use ($senderId, $machineId, $userId, $receivedAt, $effectiveNow): void {
             $sender = ZaloMessage::query()->where('sender_id', $senderId)->oldest('received_at')->oldest('id')->lockForUpdate()->first();
             if (! $sender) {
                 throw ValidationException::withMessages(['sender_id' => 'Chọn người gửi đã được Collector ghi nhận.']);
@@ -85,7 +85,7 @@ class ZaloSenderMachineService
             }
             // First manual onboarding intentionally covers the sender's waiting
             // queue. Later edits start now and never rewrite prior history.
-            $at = $receivedAt ?? ($history->isEmpty()
+            $at = $receivedAt ?? (! $effectiveNow && $history->isEmpty()
                 ? ($sender->received_at?->format('Y-m-d H:i:s') ?? now()->format('Y-m-d H:i:s'))
                 : now()->format('Y-m-d H:i:s'));
             foreach ($history->whereNull('valid_to') as $mapping) {

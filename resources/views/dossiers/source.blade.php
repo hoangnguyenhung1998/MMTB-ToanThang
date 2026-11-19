@@ -14,7 +14,7 @@
 <form class="box" method="post" action="{{ route('dossiers.source.save',$source) }}">@csrf<input type="hidden" name="revision" value="{{ $source->revision }}">
 <p>Đối chiếu từ tên: {{ $source->resolution }}. {{ implode(', ',$source->candidates) }}. Hãy kiểm tra nội dung có đúng máy trước khi xác nhận.</p>
 <label>Máy đúng <select name="machine_id" required><option value="">Chọn máy</option>@foreach($machines as $m)<option value="{{ $m->id }}" @selected($source->machine_id===$m->id)>{{ $m->asset_code }} / {{ $m->machine_type }}</option>@endforeach</select></label>
-<details><summary>Đánh dấu trang bỏ khỏi bộ xuất (không xóa nguồn)</summary>@for($p=1;$p<=$source->page_count;$p++)<label><input type="checkbox" name="excluded_pages[]" value="{{ $p }}" @checked(in_array($p,$source->excluded_pages ?? []))> Trang {{ $p }}</label>@endfor</details>
+<details><summary>Đánh dấu trang bỏ khỏi bộ xuất (không xóa nguồn)</summary>@for($p=1;$p<=$source->page_count;$p++)<label><input type="checkbox" name="excluded_pages[]" value="{{ $p }}" @checked(in_array($p,$source->excluded_pages ?? []) || (!$versions->contains(fn($v)=>in_array($p,array_column($v->pages,'page'))) && ($aiRun?->pages->firstWhere('page',$p)?->result['kind'] ?? null)==='blank'))> Trang {{ $p }}</label>@endfor</details>
 <button name="confirm" value="0">Lưu đối chiếu / nháp hồ sơ</button><button name="confirm" value="1">Xác nhận toàn hồ sơ này</button>
 </form>
 @endif

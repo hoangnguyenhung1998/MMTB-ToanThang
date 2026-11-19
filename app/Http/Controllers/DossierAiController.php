@@ -33,6 +33,46 @@ class DossierAiController extends Controller
         return back()->with('success', 'Đã cập nhật tác vụ AI.');
     }
 
+    public function compare(Request $request, DossierAiProposal $proposal, \App\Services\Dossiers\Ai\DossierComparison $compare)
+    {
+        $data = $request->validate(['subject' => 'required|in:driver,machine,assignment', 'subject_id' => 'required|integer|min:1', 'type_id' => 'required|integer|min:1']);
+        $source = $proposal->run->source;
+        $id = (int) $data['subject_id'];
+        $subject = $data['subject'];
+        abort_unless(match ($subject) {
+            'driver' => \App\Models\Driver::whereKey($id)->exists(),
+            'machine' => $source->machine_id === $id,
+            'assignment' => $source->machine?->assignments()->whereKey($id)->exists(),
+        }, 422);
+        $result = $compare->compare($proposal->data, $source, $subject, $id);
+        $labels = ['match' => 'Khớp', 'mismatch' => 'Không khớp', 'missing' => 'Chưa đủ dữ liệu'];
+        foreach ($result['fields'] as $field => &$row) {
+            $row['label'] = $labels[$row['state']];
+            if ($field === 'identity') {
+                foreach (['ocr', 'web'] as $side) {
+                    $row[$side] = $row[$side] ? '••••'.substr($row[$side], -4) : null;
+                }
+            }
+        }
+        unset($row);
+        $records = \App\Models\DossierRecord::with('versions')->where($subject.'_id', $id)->where('type_id', $data['type_id'])->get()
+            ->map(function ($record) {
+                $current = app(\App\Services\Dossiers\DossierStatus::class)->current($record);
+
+                return $current && ! $current->archived ? ['id' => $record->id, 'instance' => $record->instance, 'version' => $current->id] : null;
+            })->filter()->values();
+
+        return response()->json(['label' => $labels[$result['status']], 'fields' => $result['fields'], 'records' => $records], 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    public function label(Request $request, DossierAiRun $run, int $page, DossierAiService $service)
+    {
+        $data = $request->validate(['kind' => 'required|in:blank,document,unknown']);
+        $service->label($run, $page, $data['kind'], $request->user()->id);
+
+        return back()->with('success', 'Đã đổi nhãn và cập nhật đề xuất nhóm giấy.');
+    }
+
     public function review(Request $request, DossierAiProposal $proposal, DossierAiService $service)
     {
         $v = $service->review($proposal, $this->payload($request->all()), $request->user()->id);
@@ -43,23 +83,48 @@ class DossierAiController extends Controller
     public function bulk(Request $request, DossierAiRun $run, DossierAiService $service)
     {
         $d = $request->validate(['items' => 'required|array|min:1|max:50', 'items.*.id' => 'required|integer', 'items.*.data' => 'required|array']);
-        DB::transaction(function () use ($d, $run, $service, $request) {
-            $s = DossierSource::lockForUpdate()->findOrFail($run->source_id);
-            $base = $s->revision;
+        $outcome = DB::transaction(function () use ($d, $run, $service, $request) {
+            $source = DossierSource::lockForUpdate()->findOrFail($run->source_id);
+            $base = $source->revision;
+            $saved = [];
+            $skipped = [];
             foreach ($d['items'] as $item) {
-                $p = DossierAiProposal::where('run_id', $run->id)->findOrFail($item['id']);
-                abort_unless((int) ($item['data']['source_revision'] ?? -1) === $base, 422, 'Hồ sơ vừa đổi; tải lại trước khi duyệt nhiều mục.');
+                $proposal = $run->proposals()->where('generation', $run->generation)->findOrFail($item['id']);
+                abort_unless((int) ($item['data']['source_revision'] ?? -1) === $base && $base === $run->source_revision, 422, 'Hồ sơ vừa đổi; tải lại trước khi duyệt nhiều mục.');
                 $payload = $this->payload($item['data']);
-                $payload['source_revision'] = $s->fresh()->revision;
-                if ($base === $run->source_revision) {
-                    $payload['acknowledge_stale'] = true;
+                $data = $proposal->data;
+                $comparison = app(\App\Services\Dossiers\Ai\DossierComparison::class)->compare($data, $source, $payload['subject'] ?? null, (int) ($payload['subject_id'] ?? 0));
+                $expiry = $data['fields']['expiry'] ?? null;
+                $knownExpiry = ($expiry && $expiry['value'] === ($payload['expiry_value'] ?? null) &&
+                    $expiry['precision'] === ($payload['expiry_precision'] ?? null)) ||
+                    ($data['permanent_explicit'] && ($payload['expiry_precision'] ?? '') === 'permanent') ||
+                    (! empty($data['expiry_suggestion']) && $payload['use_rule'] && $payload['rule_scope_confirmed']);
+                $issues = array_filter($proposal->issues ?? [], fn ($issue) => ! str_starts_with($issue, 'Suy chu kỳ đăng kiểm') &&
+                    ! str_starts_with($issue, 'Phải chọn/xác nhận') && ! str_starts_with($issue, 'Tên trùng chỉ'));
+                if ($comparison['status'] !== 'match' || $issues || ! $knownExpiry || ! $payload['reviewed_evidence'] ||
+                    ($payload['subject'] ?? null) !== $data['subject'] ||
+                    ($data['subject'] === 'machine' && (int) ($payload['subject_id'] ?? 0) !== $source->machine_id) ||
+                    ($data['subject'] === 'assignment' && ! $source->machine?->assignments()->whereKey((int) ($payload['subject_id'] ?? 0))->exists()) ||
+                    (int) ($payload['type_id'] ?? 0) !== $data['type_id'] ||
+                    array_map('intval', array_column($payload['pages'], 'page')) !== $data['pages']) {
+                    $skipped[] = $proposal->id;
+
+                    continue;
                 }
-                // Human explicitly checked every selected form in this request.
-                $service->review($p, $payload, $request->user()->id);
+                $payload['source_revision'] = $source->fresh()->revision;
+                $payload['acknowledge_stale'] = true;
+                $payload['confirmed'] = true;
+                try {
+                    $saved[] = $service->review($proposal, $payload, $request->user()->id)->id;
+                } catch (\Illuminate\Validation\ValidationException) {
+                    $skipped[] = $proposal->id;
+                }
             }
+
+            return ['saved' => $saved, 'skipped' => $skipped];
         }, 3);
 
-        return response()->json(['ok' => true]);
+        return response()->json($outcome, $outcome['saved'] ? 200 : 422);
     }
 
     private function payload(array $data): array
@@ -70,7 +135,7 @@ class DossierAiController extends Controller
         if (strlen($data['effective_at']) === 16) {
             $data['effective_at'] .= ':00';
         }
-        foreach (['confirmed', 'shared_pages', 'reviewed_evidence', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed'] as $k) {
+        foreach (['confirmed', 'shared_pages', 'reviewed_evidence', 'verify_identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed'] as $k) {
             $data[$k] = filter_var($data[$k] ?? false, FILTER_VALIDATE_BOOLEAN);
         }
 

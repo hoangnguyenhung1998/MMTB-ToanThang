@@ -13,26 +13,35 @@ class DossierWorkbook implements WithMultipleSheets
     {
         $summary = [];
         $details = [];
+        $issues = [];
         $report = app(DossierReport::class);
         $machines = Machine::orderBy('asset_code')->get();
         $report->warm($machines);
         foreach ($machines as $m) {
             $rows = $report->rows($m);
-            $counts = $report->summary($rows);
-            $assignment = $report->assignments($m)->first();
-            $summary[] = [$m->asset_code, $m->machine_type, $assignment?->commandCenter?->name, $assignment?->project?->name,
-                $report->drivers($m)->pluck('driver.name')->implode(', '),
-                ...array_map(fn ($s) => $counts[$s] ?? 0, array_keys(DossierStatus::LABELS))];
+            foreach ($report->pairs($m) as $pair) {
+                $assignment = $pair['assignment'];
+                $summary[] = [$m->asset_code, $m->machine_type, $assignment?->commandCenter?->name, $assignment?->project?->name,
+                    $pair['driver']?->name ?? 'Chưa gán tài', ...array_map(fn ($s) => $pair['counts'][$s] ?? 0, array_keys(DossierStatus::LABELS)),
+                    $pair['checked_on'], $pair['rows']->map(fn ($row) => $row['type']->name.' — '.$row['label'])->implode(' | ')];
+            }
             foreach ($rows as $r) {
                 $v = $r['version'];
-                $details[] = [$m->asset_code, $r['subject'], $r['subject_name'], $r['type']->name,
-                    $r['record']?->instance, $v?->id, $v?->number, $v?->issuer, $v?->issued_on, $v?->effective_at,
+                $detail = [$m->asset_code, $r['subject'], $r['subject_name'], $r['type']->name,
+                    $r['record']?->instance, $v?->id, $r['type']->ai_key === 'identity' && $v?->number ? '••••' : $v?->number, $v?->issuer, $v?->issued_on, $v?->effective_at,
                     $v?->certified_on, $v?->expiry_precision, $v?->expiry_value, $r['days'], $r['label'],
-                    $v?->provenance['expiry_origin'] ?? 'manual', $v?->health_signed_on, $v?->renewal_on];
+                    $v?->provenance['expiry_origin'] ?? 'manual', $v?->health_signed_on, $v?->renewal_on, $r['checked_on'], $r['checked_by']];
+                $details[] = $detail;
+                if (in_array($r['status'], ['missing', 'review', 'expired'], true)) {
+                    $issues[] = $detail;
+                }
             }
         }
 
-        return [new DossierWorksheet('Tổng hợp', ['Mã máy', 'Tên / loại', 'BCH', 'Công trình', 'Tài xế hiện tại', ...array_values(DossierStatus::LABELS)], $summary),
-            new DossierWorksheet('Chi tiết', ['Mã máy', 'Chủ thể', 'Tên chủ thể', 'Loại giấy', 'Phạm vi phụ', 'Phiên bản', 'Số giấy', 'Đơn vị cấp', 'Ngày cấp', 'Hiệu lực', 'Chứng thực', 'Độ chính xác hạn', 'Hạn', 'Ngày còn lại', 'Trạng thái', 'Nguồn hạn đã duyệt', 'Ngày ký kết luận sức khỏe', 'Ngày cần làm lại riêng'], $details)];
+        $headings = ['Mã máy', 'Chủ thể', 'Tên chủ thể', 'Loại giấy', 'Phạm vi phụ', 'Phiên bản', 'Số giấy', 'Đơn vị cấp', 'Ngày cấp', 'Hiệu lực', 'Chứng thực', 'Độ chính xác hạn', 'Hạn', 'Ngày còn lại', 'Trạng thái', 'Nguồn hạn đã duyệt', 'Ngày ký kết luận sức khỏe', 'Ngày cần làm lại riêng', 'Ngày kiểm tra', 'Người kiểm tra (ID)'];
+
+        return [new DossierWorksheet('Tổng hợp', ['Mã máy', 'Tên / loại', 'BCH', 'Công trình', 'Tài xế hiện tại', ...array_values(DossierStatus::LABELS), 'Kiểm tra gần nhất', 'Giấy và tình trạng'], $summary),
+            new DossierWorksheet('Chi tiết', $headings, $details), new DossierWorksheet('Cần kiểm tra', $headings, $issues)];
+
     }
 }

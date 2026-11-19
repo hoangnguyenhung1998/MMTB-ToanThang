@@ -87,12 +87,18 @@ class DossierService
         });
     }
 
-    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null): DossierVersion
+    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null): DossierVersion
     {
         if ($draft?->corrects_id) {
             $input['corrects_id'] = $draft->corrects_id;
         }
         $data = Validator::make($input, [
+            'identity_check' => ['nullable', 'array:person_name,birth_date,identity'],
+            'identity_check.person_name' => ['nullable', 'string', 'max:255'],
+            'identity_check.birth_date' => ['nullable', 'date_format:Y-m-d'],
+            'identity_check.identity' => ['nullable', 'string', 'max:12'],
+            'bic_page' => ['nullable', 'integer', 'min:1'],
+            'bic_quote' => ['nullable', 'string', 'max:2000'],
             'request_id' => ['required', 'uuid'], 'source_id' => ['required', 'integer', 'exists:dossier_sources,id'],
             'record_id' => ['nullable', 'integer', 'exists:dossier_records,id'],
             'corrects_id' => ['nullable', 'integer', 'exists:dossier_versions,id'],
@@ -118,7 +124,7 @@ class DossierService
             $data['month_rule'] = null;
         }
 
-        return DB::transaction(function () use ($data, $actor, $draft) {
+        return DB::transaction(function () use ($data, $actor, $draft, $insuranceEvidence) {
             if (! $draft && ($existing = DossierVersion::where('request_id', $data['request_id'])->first())) {
                 return $existing;
             }
@@ -182,7 +188,37 @@ class DossierService
                 $v->provenance = [...($v->provenance ?? $correction->provenance), 'expiry_origin' => 'user_corrected', 'reviewed_by' => $actor,
                     'reviewed_at' => now()->toIso8601String(), 'reason' => $data['reason']];
             }
-            $v->fill(collect($data)->except(['record_id', 'type_id', 'subject', 'subject_id', 'instance'])->all());
+            if ($correction && $correction->record_id !== $record->id && $v->provenance) {
+                $provenance = $v->provenance;
+                unset($provenance['verified_identity']);
+                $v->provenance = $provenance;
+            }
+            if ($data['confirmed']) {
+                $provenance = [...($v->provenance ?? []), 'reviewed_by' => $actor, 'reviewed_at' => now()->toIso8601String()];
+                $compare = app(Ai\DossierComparison::class);
+                if ($type->ai_key === 'identity' && $data['subject'] === 'driver' && array_filter($data['identity_check'] ?? [])) {
+                    $provenance['verified_identity'] = $compare->verifyIdentity([...$data['identity_check'], 'subject_id' => $subject->id]);
+                }
+                if ($type->ai_key === 'bic_personal') {
+                    $identity = $data['subject'] === 'driver' ? $compare->identity($subject->id) : [];
+                    if (! $insuranceEvidence && ! empty($data['bic_quote'])) {
+                        $insuranceEvidence = $compare->insuranceEvidence([
+                            'pages' => $nums, 'insured' => [[
+                                'page' => $data['bic_page'] ?? 0, 'quote' => $data['bic_quote'],
+                                'name' => $identity['person_name'] ?? '', 'identity' => $identity['identity'] ?? '',
+                            ]],
+                        ], $identity);
+                        if ($insuranceEvidence && ! str_contains(mb_strtolower($data['bic_quote']), mb_strtolower($identity['person_name']))) {
+                            $insuranceEvidence = null;
+                        }
+                    }
+                    $this->check($data['subject'] === 'driver' && $insuranceEvidence && in_array($insuranceEvidence['page'], $nums, true),
+                        'Cần chọn đúng tài xế và chỉ rõ trang cùng dòng danh sách BIC có họ tên và số CCCD đã đối chiếu.');
+                    $provenance['insurance_evidence'] = $insuranceEvidence;
+                }
+                $v->provenance = $provenance;
+            }
+            $v->fill(collect($data)->except(['record_id', 'type_id', 'subject', 'subject_id', 'instance', 'identity_check', 'bic_page', 'bic_quote'])->all());
             $v->fill(['record_id' => $record->id, 'user_id' => $actor, 'pages' => $pages])->save();
             // Moving a draft subject is explicit and audited; empty record remains for traceability.
             DossierAudit::write($data['confirmed'] ? 'version_confirmed' : 'version_draft_saved', $v, $actor, $before);

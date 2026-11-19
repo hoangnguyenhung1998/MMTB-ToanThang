@@ -66,3 +66,21 @@ Disk `dossiers` giữ nguyên local legacy `storage/app/dossiers-private`; desti
 - Hai scan T-XX0769.pdf/T-3C0624.pdf vẫn chưa có: acceptance hai mẫu thật chưa hoàn thành. Không dùng fixture thay bằng chứng đó. AI/kết nối thực tế, bucket R2 thật và laptop runtime chưa xác minh. Không thay app DB hoặc live trong lượt này.
 
 Final LOCAL: full Laravel619tests/6187assertions PASS166.29s; module51/562 PASS, Python dossier10/Journal45/reconciliation17 PASS. Actual crash97 after output upload→new process retry1attempt/1receipt/cleanup PASS. Historical manifest copy/retry regression PASS. Owned HTTP/MySQL test processes stopped; evidence retained privately. CI649c5e5/run41030196037 green; latest head checks on PR#71.
+
+## Phục hồi một trang trắng từ phản hồi đã lưu
+
+Case T-XN0048.pdf có 24 trang và theo báo cáo đã hoàn tất trang 1–3. Xác định đúng source ID, AI run ID và kiểm tra trang 4. Cần triển khai code đã duyệt trước khi dùng lệnh mới. Mặc định chỉ preview, không hiện nội dung OCR hoặc CCCD.
+
+```sh
+php artisan dossiers:recover-blank SOURCE_ID RUN_ID 4
+```
+
+Preview chỉ hợp lệ khi checksum bản gốc/bản xử lý khớp, job đúng run/trang/revision/DPI, phản hồi blank rỗng/null được nối với hash quan sát và ảnh staged có receipt đúng attempt, checksum ảnh khớp, ba trang trước đã hoàn tất và lease cũ đã hết. Nếu không đạt thì dừng. Giữ nguyên run và xác định bằng chứng thiếu trước khi quyết định cho đọc lại riêng trang bằng AI.
+
+Sau khi có quyền áp dụng lên đúng bản ghi, chạy lại với receipt vừa preview và ID tài khoản có quyền hồ sơ:
+
+```sh
+php artisan dossiers:recover-blank SOURCE_ID RUN_ID 4 --actor=USER_ID --apply=PREVIEW_RECEIPT
+```
+
+Kiểm tra trang 4 lên Đã xử lý / Trang trắng, ảnh xem được, số lượt gọi và usage giữ nguyên, trang 1–3 giữ nguyên, job kế tiếp là trang 5. Worker sẽ theo luồng bình thường cho trang 5–24 nếu AI được bật và profile vẫn khớp. Chạy cùng lệnh lần hai phải báo đã phục hồi. Đối chiếu nguồn vẫn đủ 24 trang, blank không nằm trong giấy nhóm và xuất mặc định loại trang trắng. Chỉ chạy lệnh áp dụng trên production sau chỉ định riêng.

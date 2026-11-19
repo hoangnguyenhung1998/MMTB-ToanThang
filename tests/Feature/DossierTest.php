@@ -240,6 +240,7 @@ class DossierTest extends TestCase
         $v->expiry_precision = 'minute';
         $v->expiry_value = '2026-10-28 12:00:00';
         $this->assertSame('expiring', $engine->describe($v, [30])['status']);
+        $this->assertSame('Hết hạn hôm nay', $engine->describe($v, [30])['label']);
         $this->assertSame('expired', $engine->describe($v, [30], $engine->now()->addSecond())['status']);
         $v->expiry_precision = 'month';
         $v->expiry_value = '2026-10';
@@ -263,6 +264,8 @@ class DossierTest extends TestCase
         $v = $this->service->saveVersion($this->data($this->source(), ['subject' => 'driver', 'subject_id' => $a->id, 'type_id' => $type->id]), $this->user->id);
         $report = app(DossierReport::class);
         $this->assertCount(2, $report->drivers($this->machine));
+        $this->assertCount(2, $report->pairs($this->machine));
+        $this->assertSame(['Driver A', 'Driver B'], array_column((new DossierWorkbook)->sheets()[0]->array(), 4));
         $history = MachineDriverHistory::where('driver_id', $a->id)->first();
         $this->post(route('dossiers.assign.close', $history), ['ended_at' => '2026-10-28T10:00'])->assertRedirect();
         $this->assertSame([$b->id], $report->drivers($this->machine)->pluck('driver_id')->all());
@@ -331,9 +334,9 @@ class DossierTest extends TestCase
         $this->assertSame(1, $counts['expired']);
         $this->assertSame(1, $counts['missing']);
         $sheets = (new DossierWorkbook)->sheets();
-        $this->assertCount(2, $sheets);
+        $this->assertCount(3, $sheets);
         $this->assertCount(2, $sheets[1]->array());
-        $this->assertSame(['Hết hạn', 'Thiếu giấy bắt buộc'], array_column($sheets[1]->array(), 14));
+        $this->assertSame(['Quá hạn 27 ngày', 'Thiếu giấy bắt buộc'], array_column($sheets[1]->array(), 14));
         $this->get(route('dossiers.index', ['status' => 'missing']))->assertOk()->assertSee($this->machine->asset_code)->assertSee('Thiếu giấy bắt buộc');
         $this->get(route('dossiers.excel'))->assertOk()->assertDownload();
         $this->get(route('dossiers.machine', $this->machine))->assertOk();
@@ -542,5 +545,34 @@ class DossierTest extends TestCase
         $this->actingAs($other)->get(route('dossiers.index'))->assertOk();
         $this->get(route('dossiers.file', [$source, 'source']))->assertOk();
         $this->get(route('dossiers.export.file', $export))->assertForbidden();
+    }
+
+    public function test_dossier_mapping_preview_changes_only_selected_sender_and_driver(): void
+    {
+        $old = Driver::create(['name' => 'Old Driver']);
+        $new = Driver::create(['name' => 'New Driver']);
+        $other = Driver::create(['name' => 'Other Driver']);
+        $this->service->assign($this->machine, $old, '2026-01-01 00:00:00', null, $this->user->id);
+        $this->service->assign($this->machine, $other, '2026-01-01 00:00:00', null, $this->user->id);
+        $otherMachine = Machine::create(['asset_code' => 'T-PREV', 'company' => 'VINCONS', 'chassis_no' => 'PREV', 'status' => 'ACTIVE']);
+        $mapping = app(\App\Services\ZaloSenderMachineService::class);
+        foreach (['selected', 'untouched'] as $id) {
+            ZaloMessage::create(['group_id' => 'mock', 'message_id' => $id, 'sender_id' => $id, 'sender_name' => 'Mock '.$id, 'sent_at' => now()->subDay(), 'received_at' => now()->subDay(), 'raw_payload' => []]);
+            $mapping->save($id, $otherMachine->id, $this->user->id);
+        }
+        \App\Models\ZaloSenderDriverLink::create(['sender_id' => 'selected', 'driver_id' => $old->id, 'valid_from' => '2026-01-01 00:00:00', 'created_by' => $this->user->id]);
+        $history = MachineDriverHistory::where('driver_id', $old->id)->firstOrFail();
+        $before = \App\Models\ZaloSenderMachineMapping::where('sender_id', 'untouched')->firstOrFail()->toArray();
+        $url = route('dossiers.sender.mapping', $new);
+        $data = ['sender_id' => 'selected', 'machine_id' => $this->machine->id, 'replace_history_id' => $history->id];
+        $preview = $this->post($url, $data)->assertOk()->assertSee('T-PREV')->assertSee('Mock selected');
+        $this->assertNull($history->fresh()->ended_at);
+        $this->post($url, $data + ['receipt' => $preview->viewData('receipt')])->assertRedirect(route('dossiers.driver', $new));
+        $this->assertNotNull($history->fresh()->ended_at);
+        $this->assertSame([$other->id, $new->id], MachineDriverHistory::where('machine_id', $this->machine->id)->whereNull('ended_at')->oldest('id')->pluck('driver_id')->all());
+        $this->assertSame($before, \App\Models\ZaloSenderMachineMapping::where('sender_id', 'untouched')->firstOrFail()->toArray());
+        $this->assertDatabaseHas('zalo_sender_machine_mappings', ['sender_id' => 'selected', 'machine_id' => $this->machine->id, 'active_sender_id' => 'selected', 'created_by' => $this->user->id]);
+        $this->assertDatabaseHas('zalo_sender_driver_links', ['sender_id' => 'selected', 'driver_id' => $new->id, 'valid_to' => null]);
+        $this->assertDatabaseCount('ocr_jobs',0);
     }
 }
