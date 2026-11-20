@@ -1,14 +1,16 @@
-<section class="box">
+<section class="d-panel" id="ocr-review">
 <h2>Phân loại và đối chiếu hồ sơ</h2>
 @if(!$aiAvailable)<p>Cần migration additive Phase18.1 trên database LOCAL đã xác minh và sao lưu trước khi dùng AI. Nhập tay Phase18 vẫn dùng được.</p>
 @else
 @unless(app(\App\Services\Dossiers\Ai\DossierVision::class)->probe()['configured'])<p><strong>Chưa cấu hình AI</strong> — chưa gọi API; nhập tay vẫn dùng được.</p>@endunless
-<p>Giấy đủ bằng chứng có thể được xử lý tự động. Mục chưa rõ xuất hiện trong danh sách cần xác nhận. <a href="{{ route('dossiers.ai.rules') }}">Quy tắc hạn nghiệp vụ</a></p>
-@if($source->status==='ready')<form method="post" action="{{ route('dossiers.ai.request',$source) }}">@csrf<button>Phân tích AI / kiểm tra cấu hình và xếp lại</button></form>@endif
+@if($source->status==='ready' && !$aiRun)<form method="post" action="{{ route('dossiers.ai.request',$source) }}">@csrf<button>Phân tích AI / kiểm tra cấu hình và xếp lại</button></form>@endif
 @if($aiRun)
 @php $aiLabels=['unconfigured'=>'Chưa cấu hình AI','queued'=>'Đang xếp hàng','processing'=>'Đang phân tích','ready'=>'Đã phân tích','failed'=>'Có lỗi cần kiểm tra']; @endphp
 <p><strong>{{ $aiRun->paused ? 'Đã dừng xếp tiếp' : ($aiLabels[$aiRun->status] ?? $aiRun->status) }}</strong> · {{ $aiRun->pages->where('status','ready')->count() }}/{{ $aiRun->pages->count() }} trang · Run #{{ $aiRun->id }} · {{ $aiRun->pipeline }}</p>
-@if($aiRun->status==='unconfigured')<p>Điền DOSSIERS_AI_ENDPOINT, DOSSIERS_AI_API_KEY, DOSSIERS_AI_MODEL trong dossier-worker/.env trên máy chạy worker hồ sơ; bật DOSSIERS_AI_ENABLED trên Laravel rồi bấm Phân tích AI. Chưa gọi API, chưa có kết quả. Nhập thủ công vẫn dùng được.</p>@else
+<details><summary>Tùy chọn OCR</summary>
+@if($source->status==='ready')<form method="post" action="{{ route('dossiers.ai.request',$source) }}">@csrf<button>Phân tích AI / kiểm tra cấu hình và xếp lại</button></form>@endif
+<a href="{{ route('dossiers.ai.rules') }}">Quy tắc hạn nghiệp vụ</a>
+@if($aiRun->status==='unconfigured')<p>Điền DOSSIERS_AI_ENDPOINT, DOSSIERS_AI_API_KEY, DOSSIERS_AI_MODEL trong dossier-worker/.env trên máy chạy worker hồ sơ; bật DOSSIERS_AI_ENABLED trên Laravel rồi bấm Phân tích AI. Chưa gọi API. Có thể nhập thủ công.</p>@else
 <p>{{ $aiRun->context['provider'] ?? '' }} / {{ $aiRun->context['model'] ?? '' }} · <a href="{{ route('dossiers.source',$source) }}">Cập nhật tiến độ</a>. Chi phí chưa tính: chưa cấu hình bảng giá đã xác minh.</p>
 @php $usageRows=$aiRun->pages->pluck('usage')->filter()->push($aiRun->group_usage ?? []); @endphp
 <p>Usage API cung cấp: prompt {{ $usageRows->sum(fn($u)=>(int)($u['prompt_tokens']??0)) }}, completion {{ $usageRows->sum(fn($u)=>(int)($u['completion_tokens']??0)) }} tokens (không có số liệu không đồng nghĩa0token thực tế). Thời gian tác vụ đã lưu {{ number_format(($aiRun->pages->sum('elapsed_ms')+($aiRun->group_ms??0))/1000,1) }} giây.</p>
@@ -29,22 +31,18 @@
 <p>Chưa phân loại: {{ implode(', ',$group['unclassified_pages']??[]) }}.</p>
 @foreach($group['suggested_exclusions']??[] as $ex)<p>Đề xuất bỏ trang {{ $ex['page'] }}: {{ $ex['reason'] }}. Chưa tự bỏ; chọn thủ công ở đối chiếu nguồn.</p>@endforeach
 @endif
+</details>
 @if($aiRun->status==='ready')
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
-<aside style="position:sticky;top:8px;align-self:start"><iframe title="Scan và bằng chứng" id="dossier-evidence" name="dossier-evidence" src="{{ route('dossiers.file',[$source,'source']) }}" style="width:100%;height:80vh;border:1px solid #ccc"></iframe></aside>
+<div class="d-review-grid">
+<aside class="d-scan">
+<div class="d-toolbar"><button type="button" class="secondary" data-page-step="-1" aria-label="Trang trước">‹</button>
+<label>Trang <select id="dossier-page-select">@for($page=1;$page<=$source->page_count;$page++)<option value="{{ route('dossiers.ai.image',[$aiRun,$page]) }}">{{ $page }} / {{ $source->page_count }}</option>@endfor</select></label>
+<button type="button" class="secondary" data-page-step="1" aria-label="Trang sau">›</button></div>
+<iframe title="Scan và bằng chứng" id="dossier-evidence" name="dossier-evidence" src="{{ route('dossiers.ai.image',[$aiRun,1]) }}"></iframe>
+</aside>
 <div>
 <h3>Cần xác nhận</h3>
-<table><thead><tr><th>Giấy</th><th>Trang nguồn</th><th>Chủ thể</th><th>Hạn đọc được</th><th>Đối chiếu</th></tr></thead><tbody>
-@foreach($aiRun->proposals->where('generation',$aiRun->generation)->whereNull('version_id') as $proposal)
-@php $comparison=app(\App\Services\Dossiers\Ai\DossierComparison::class)->compare($proposal->data,$source); @endphp
-<tr><td><a href="#proposal-{{ $proposal->id }}" data-page="{{ route('dossiers.ai.image',[$aiRun,$proposal->data['pages'][0]]) }}">{{ $proposal->data['title'] }}</a></td>
-<td>@foreach($proposal->data['pages'] as $pn)<a href="{{ route('dossiers.ai.image',[$aiRun,$pn]) }}" target="dossier-evidence">{{ $pn }}</a> @endforeach</td>
-<td>{{ $proposal->data['fields']['person_name']['value'] ?? $source->machine?->asset_code }}</td>
-<td>{{ $proposal->data['fields']['expiry']['value'] ?? 'Chưa rõ hạn' }}</td>
-<td>{{ ['match'=>'Khớp','mismatch'=>'Không khớp','missing'=>'Chưa đủ dữ liệu'][$comparison['status']] }}</td></tr>
-@endforeach
-</tbody></table>
-@foreach($aiRun->proposals->where('generation',$aiRun->generation)->whereNull('version_id') as $proposal)
+@forelse($aiRun->proposals->where('generation',$aiRun->generation)->whereNull('version_id') as $proposal)
 @php
  $d=$proposal->data;$f=$d['fields'];$value=fn($key)=>$f[$key]['value']??'';
  $expiry=$f['expiry']??null;$precision=$expiry['precision']??($d['permanent_explicit']?'permanent':'unknown');
@@ -53,7 +51,8 @@
  $tracked=in_array($d['type_key'],\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true);
  if(!$tracked)$precision='not_tracked';
 @endphp
-<div class="box" id="proposal-{{ $proposal->id }}"><h3>{{ $d['title'] }} · trang {{ implode(',',$d['pages']) }}</h3>
+<div class="box" id="proposal-{{ $proposal->id }}"><h3><a href="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}" target="dossier-evidence" data-page="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}">{{ $d['title'] }} · trang {{ implode(',',$d['pages']) }}</a></h3>
+<details><summary>Đối chiếu và bằng chứng từng trường</summary>
 <p>Chủ thể AI đọc: {{ $value('person_name') ?: $d['subject'] }}. {{ $d['scope_text'] }}</p>
 @if(($d['replacement_candidates']??[]) && $source->machine_id)<p>Có {{ count($d['replacement_candidates']) }} chuỗi giấy cùng loại trên máy. <a href="{{ route('dossiers.machine',$source->machine_id) }}" target="_blank" rel="noopener">Đối chiếu giấy hiện có</a>, giữ đúng chủ thể/phạm vi phụ nếu thay giấy; chưa tự thay phiên bản.</p>@endif
 @if($d['driver_candidates']??[])<p>Tài xế trùng tên để đối chiếu: #{{ implode(', #',$d['driver_candidates']) }}. Chưa chọn/gán chủ thể.</p>@endif
@@ -65,14 +64,17 @@
 @foreach($proposal->issues as $issue)<p class="warn">{{ $issue }}</p>@endforeach
 <details><summary>Bằng chứng từng trường</summary>@foreach($f as $key=>$e)<p><a href="{{ route('dossiers.ai.image',[$aiRun,$e['page']]) }}" target="dossier-evidence">{{ $key }} · trang {{ $e['page'] }}</a>: {{ $e['value'] }} · “{{ $e['quote'] }}” @if(!empty($e['box']))(vùng {{ implode(',',$e['box']) }})@endif</p>@endforeach</details>
 @if($d['insured'])<details><summary>Danh sách BIC/phạm vi — phải đối chiếu đúng người</summary>@foreach($d['insured'] as $person)<p><a href="{{ route('dossiers.ai.image',[$aiRun,$person['page']]) }}" target="dossier-evidence">{{ $person['name'] }}</a> — {{ $person['quote'] }}</p>@endforeach</details>@endif
+</details>
 @if($proposal->version_id)<p>Đã duyệt thành giấy #{{ $proposal->version_id }}. Sửa/thay qua phần Giấy tờ đã lưu, không áp lại AI.</p>
 @elseif(empty($d['multiple_documents']))
-<form class="ai-proposal-form" data-comparison="{{ route('dossiers.ai.compare',$proposal) }}" data-id="{{ $proposal->id }}" data-page="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}" data-original-type="{{ $d['type_id'] }}" method="post" action="{{ route('dossiers.ai.review',$proposal) }}">@csrf
+<form class="ai-proposal-form" data-comparison="{{ route('dossiers.ai.compare',$proposal) }}" data-id="{{ $proposal->id }}" data-page="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}" data-original-type="{{ $d['type_id'] }}"
+    data-original-pages="{{ implode(',',$d['pages']) }}" data-recorded-expiry="{{ $expiry['value'] ?? '' }}" data-expiry-precision="{{ $precision }}"
+    data-source-ready="{{ (int) ($source->machine_confirmed && $source->revision === $aiRun->source_revision) }}" method="post" action="{{ route('dossiers.ai.review',$proposal) }}">@csrf
 <input type="hidden" name="source_revision" value="{{ $source->revision }}">
 @if($d['type_key']==='identity')
 <fieldset><legend>Định danh tài xế từ CCCD</legend>
 <label>Họ tên pháp lý <input name="person_name" required value="{{ $value('person_name') }}"></label>
-<label>Số CCCD <input name="identity" required inputmode="numeric" autocomplete="off" value="{{ $value('identity') }}"></label>
+<label>Số CCCD <input name="identity" required pattern="[0-9]{9}([0-9]{3})?" inputmode="numeric" autocomplete="off" value="{{ $value('identity') }}"></label>
 <input type="hidden" name="verify_identity" value="1">
 </fieldset>
 @endif
@@ -80,7 +82,7 @@
 <div class="fields">
 <label>Loại giấy <select name="type_id" required><option value="">Chọn đúng loại</option>@foreach($types as $t)<option value="{{ $t->id }}" @selected($t->id===($record?->type_id ?? $d['type_id'] ?? null))>{{ $t->name }}</option>@endforeach</select></label>
 <label class="type-reviewed" hidden><input type="checkbox" name="type_checked" value="1"> Đã kiểm tra loại trước khi dùng hạn</label>
-<label>Chủ thể <select name="subject" class="ai-subject"><option value="machine" @selected($d['subject']==='machine')>Máy/xe</option><option value="driver" @selected($d['subject']==='driver')>Tài xế</option><option value="assignment" @selected($d['subject']==='assignment')>Phân công</option></select></label>
+<label>Chủ thể <select name="subject" class="ai-subject"><option value="machine" @selected(($source->document_target['subject'] ?? $d['subject'])==='machine')>Máy/xe</option><option value="driver" @selected(($source->document_target['subject'] ?? $d['subject'])==='driver')>Tài xế</option><option value="assignment" @selected($d['subject']==='assignment')>Phân công</option></select></label>
 <label>Chọn chủ thể đã đối chiếu <select name="subject_id" class="ai-subject-id" required><option value="">Chọn đúng chủ thể</option><option data-subject="machine" value="{{ $source->machine_id }}" @selected($d['subject']==='machine' && $source->machine_confirmed)>{{ $source->machine?->asset_code }}</option>@foreach($drivers as $driver)<option data-subject="driver" value="{{ $driver->id }}" @selected($record?->driver_id===$driver->id)>{{ $driver->name }} #{{ $driver->id }} @if($d['type_key']==='identity') · Zalo {{ $senderIdentities->filter(fn($ids)=>$ids->contains($driver->id))->keys()->implode(', ') ?: 'chưa liên kết' }} @endif</option>@endforeach @foreach($assignments as $a)<option data-subject="assignment" value="{{ $a->id }}">Phân công #{{ $a->id }} {{ $a->project?->name }}</option>@endforeach</select></label>
 <div><p class="subject-comparison" aria-live="polite"></p><label>Thay phiên bản <select name="record_id" class="replacement-record"><option value="">Chọn nếu thay giấy hiện có</option></select></label></div>
 <label>Phạm vi phụ (giữ đúng tên nếu thay giấy)<input name="instance" value="{{ $record?->instance ?? 'main' }}" required></label>
@@ -106,7 +108,7 @@
 <button name="confirmed" value="1">Xác nhận</button>
 </form>
 @endif</div>
-@endforeach
+@empty<p>Không còn mục chờ xác nhận.</p>@endforelse
 <div class="box" style="position:sticky;bottom:0;background:Canvas"><button type="button" id="ai-bulk">Xác nhận 0 mục đã chọn</button><div id="ai-bulk-status" role="status"></div></div>
 <details><summary>Đã xử lý</summary><ul>
 @foreach($aiRun->proposals->where('generation',$aiRun->generation)->whereNotNull('version_id') as $done)
@@ -127,14 +129,27 @@ function updateBulkCount() {
     button.textContent = 'Xác nhận ' + count + ' mục đã chọn';
     button.disabled = count === 0;
 }
-document.querySelectorAll('a[data-page]').forEach(link => link.addEventListener('click', () => {
-    document.getElementById('dossier-evidence').src = link.dataset.page;
+const pagePicker = document.getElementById('dossier-page-select');
+function showEvidence(url) {
+    if (!pagePicker) return;
+    const option = [...pagePicker.options].find(item => item.value === url);
+    if (option) pagePicker.value = url;
+    document.getElementById('dossier-evidence').src = url;
+}
+pagePicker?.addEventListener('change', () => showEvidence(pagePicker.value));
+document.querySelectorAll('[data-page-step]').forEach(button => button.addEventListener('click', () => {
+    pagePicker.selectedIndex = Math.max(0, Math.min(pagePicker.length - 1, pagePicker.selectedIndex + Number(button.dataset.pageStep)));
+    showEvidence(pagePicker.value);
+}));
+document.querySelectorAll('a[target="dossier-evidence"]').forEach(link => link.addEventListener('click', event => {
+    event.preventDefault();
+    showEvidence(link.href);
 }));
 if (sessionStorage.getItem('dossier-next') === location.pathname) {
     sessionStorage.removeItem('dossier-next');
     const next = document.querySelector('.ai-proposal-form[data-page]');
     if (next) {
-        document.getElementById('dossier-evidence').src = next.dataset.page;
+        showEvidence(next.dataset.page);
         next.scrollIntoView({block:'nearest'});
     }
 }
@@ -150,10 +165,14 @@ document.querySelectorAll('.ai-proposal-form').forEach(form => {
     let sequence = 0;
     function refreshPick() {
         const precision = form.elements.expiry_precision.value;
+        const expiry = form.elements.expiry_value.value;
         const changed = kind.value !== form.dataset.originalType;
+        const checkedRule = form.elements.use_rule?.checked && form.elements.rule_scope_confirmed?.checked;
+        const sameExpiry = precision !== 'unknown' && precision === form.dataset.expiryPrecision && expiry === form.dataset.recordedExpiry;
+        const samePages = form.elements.page_numbers.value.trim().split(/[\s,;]+/).join(',') === form.dataset.originalPages;
         form.querySelector('.type-reviewed').hidden = !changed;
         form.elements.type_checked.required = changed && precision !== 'unknown' && precision !== 'not_tracked';
-        tick.disabled = changed || !matched || !form.elements.reviewed_evidence.checked || precision === 'unknown' || (['day','minute','month'].includes(precision) && !form.elements.expiry_value.value) || !form.checkValidity();
+        tick.disabled = changed || form.dataset.sourceReady !== '1' || !matched || !samePages || !(sameExpiry || checkedRule) || !form.elements.reviewed_evidence.checked || !form.checkValidity();
         if (tick.disabled) tick.checked = false;
         updateBulkCount();
     }

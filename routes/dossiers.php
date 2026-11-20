@@ -29,15 +29,18 @@ Route::middleware(['auth', 'can:manage-dossiers'])->prefix('dossiers')->name('do
     Route::get('/sources/{source}/file/{kind}/{page?}', 'file')->whereNumber('page')->name('file');
     Route::post('/versions', 'version')->name('versions.create');
     Route::post('/versions/{version}', 'version')->name('versions.save');
+    Route::post('/versions/{version}/correction', 'correct')->name('versions.correct');
     Route::match(['get', 'post'], '/versions/{version}/replace', 'replace')->name('versions.replace');
     Route::post('/sources/{source}/cancel-replacement', 'cancelReplacement')->name('sources.cancel-replacement');
     Route::post('/versions/{version}/archive', 'archive')->name('versions.archive');
     Route::get('/machines/{machine}', 'machine')->name('machine');
+    Route::match(['get', 'post'], '/machines/{machine}/documents/add', 'addMachineDocument')->name('machine.documents.add');
     Route::post('/machines/{machine}/group', 'group')->name('group');
     Route::post('/machines/{machine}/drivers', 'assign')->name('assign');
     Route::post('/assignments/{history}/close', 'closeAssignment')->name('assign.close');
     Route::get('/drivers', 'drivers')->name('drivers');
     Route::get('/drivers/{driver}', 'driver')->name('driver');
+    Route::match(['get', 'post'], '/drivers/{driver}/documents/add', 'addDriverDocument')->name('driver.documents.add');
     Route::post('/drivers/{driver}/sender', 'sender')->name('sender');
     Route::post('/senders/{link}/unlink', 'unlinkSender')->name('sender.unlink');
     Route::get('/types', 'types')->name('types');

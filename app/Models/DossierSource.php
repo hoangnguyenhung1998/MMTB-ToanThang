@@ -8,7 +8,7 @@ class DossierSource extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['previews' => 'array', 'candidates' => 'array', 'excluded_pages' => 'array', 'processing' => 'array', 'confirmed' => 'boolean', 'machine_confirmed' => 'boolean'];
+    protected $casts = ['previews' => 'array', 'candidates' => 'array', 'excluded_pages' => 'array', 'processing' => 'array', 'document_target' => 'array', 'confirmed' => 'boolean', 'machine_confirmed' => 'boolean'];
 
     public function machine()
     {
@@ -23,6 +23,11 @@ class DossierSource extends Model
     public function latestAiRun()
     {
         return $this->hasOne(DossierAiRun::class, 'source_id')->latestOfMany();
+    }
+
+    public function versions()
+    {
+        return $this->hasMany(DossierVersion::class, 'source_id');
     }
 
     public function batch()

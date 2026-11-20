@@ -660,4 +660,53 @@ class DossierTest extends TestCase
         $this->expectException(ValidationException::class);
         $this->service->saveVersion($this->data($this->source('CCCD B'), $params + ['subject_id' => $people[1]->id]), $this->user->id);
     }
+
+    public function test_workbench_add_binds_document_to_route_and_inline_edit_keeps_frozen_pdf(): void
+    {
+        $this->get(route('dossiers.index'))->assertOk()->assertSee('Mở hồ sơ')->assertSee('Đợt nhập PDF');
+        $this->get(route('dossiers.index', ['tab' => 'drivers']))->assertOk()->assertSee('Máy theo check-in');
+        $this->get(route('dossiers.index', ['tab' => 'batches']))->assertOk()->assertSee('Chưa có đợt nhập PDF');
+        $machineType = DossierType::where('ai_key', 'machine_inspection')->firstOrFail();
+        $add = route('dossiers.machine.documents.add', $this->machine);
+        $this->post($add, ['type_id' => $machineType->id, 'file' => $this->pdf(marker: 'W-MACHINE')])->assertRedirect();
+        $machineSource = DossierSource::sole();
+        DossierTestWorker::run($machineSource->id, 'prepare');
+        $paper = $this->service->saveVersion($this->data($machineSource->fresh(), ['type_id' => $machineType->id]), $this->user->id);
+        $this->get($add)->assertOk()->assertSee(route('dossiers.versions.replace', $paper));
+        $this->postJson($add, ['type_id' => $machineType->id, 'file' => $this->pdf(marker: 'W-DUP')])->assertUnprocessable();
+
+        $driver = Driver::create(['name' => 'Workspace driver']);
+        $other = Driver::create(['name' => 'Workspace other']);
+        $driverType = DossierType::where('ai_key', 'safety')->firstOrFail();
+        $this->post(route('dossiers.driver.documents.add', $driver), [
+            'subject_id' => $other->id, 'type_id' => $driverType->id, 'file' => $this->pdf('atl.pdf', 'W-DRIVER'),
+        ])->assertRedirect();
+        $source = DossierSource::whereNotNull('document_target')->whereKeyNot($machineSource->id)->sole();
+        $this->assertNull($source->machine_id);
+        $this->assertSame($driver->id, $source->document_target['id']);
+        DossierTestWorker::run($source->id, 'prepare');
+        $payload = $this->data($source->fresh(), ['subject' => 'driver', 'subject_id' => $other->id, 'type_id' => $driverType->id]);
+        $this->postJson(route('dossiers.versions.create'), $payload)->assertUnprocessable();
+        $payload['subject_id'] = $driver->id;
+        $this->post(route('dossiers.versions.create'), $payload)->assertRedirect(route('dossiers.source', $source));
+        $driverVersion = $source->versions()->sole();
+        $this->assertSame($driver->id, $driverVersion->record->driver_id);
+        $this->get(route('dossiers.driver', [$driver, 'progress' => 1]))->assertJsonPath('active', false)->assertSee('atl.pdf');
+
+        $this->post(route('dossiers.exports.print', $this->machine), ['request_id' => (string) Str::uuid()])->assertRedirect();
+        $export = DossierExport::sole();
+        $frozen = $export->manifest;
+        $this->post(route('dossiers.versions.correct', $paper), ['request_id' => (string) Str::uuid(), 'type_id' => $machineType->id,
+            'expiry_precision' => 'day', 'expiry_value' => '2027-04-01', 'reason' => 'Expiry correction'])->assertSessionHasNoErrors();
+        $new = $paper->record->versions()->latest('id')->firstOrFail();
+        $this->assertSame('2027-04-01', $new->expiry_value);
+        $this->assertSame($paper->pages, $new->pages);
+        $this->assertDatabaseHas('activity_logs', ['event' => 'dossier.version_corrected', 'user_id' => $this->user->id]);
+        $this->post(route('dossiers.versions.archive', $new), ['archived' => 1, 'reason' => 'Test archive'])->assertRedirect();
+        DossierTestWorker::run($export->id, 'export');
+        $this->assertSame($frozen, $export->fresh()->manifest);
+        $this->get(route('dossiers.export.file', $export))->assertOk();
+        $this->post(route('dossiers.versions.archive', $new), ['archived' => 0, 'reason' => 'Test restore'])->assertRedirect();
+        $this->assertFalse($new->fresh()->archived);
+    }
 }

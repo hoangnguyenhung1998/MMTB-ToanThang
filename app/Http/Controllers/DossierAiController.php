@@ -39,6 +39,8 @@ class DossierAiController extends Controller
         $source = $proposal->run->source;
         $id = (int) $data['subject_id'];
         $subject = $data['subject'];
+        $target = $source->document_target;
+        abort_if($target && ($target['subject'] !== $subject || $target['id'] !== $id || $target['type_id'] !== (int) $data['type_id']), 422);
         abort_unless(match ($subject) {
             'driver' => \App\Models\Driver::whereKey($id)->exists(),
             'machine' => $source->machine_id === $id,

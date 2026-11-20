@@ -156,6 +156,32 @@ class DossierRemoteTest extends TestCase
         $this->assertSame('prepare', $this->claim()['kind']);
     }
 
+    public function test_workbench_progress_persists_across_reads_and_rejects_an_old_attempt_after_retry(): void
+    {
+        $url = route('dossiers.batch', [$this->source->batch_id, 'progress' => 1]);
+        $read = fn (bool $active) => $this->getJson($url)->assertJsonPath('active', $active)->json('html');
+        $this->assertStringContainsString('Chờ worker', $read(true));
+        $job = $this->claim();
+        $base = '/api/dossiers/v1/jobs/'.$job['id'];
+        $this->postJson($base.'/renew', ['stage' => 'thumbnail', 'progress' => 2], $this->headers($job))->assertOk();
+        $this->assertStringContainsString('2 trang đã chuẩn bị', $read(true));
+        $this->travel(95)->seconds();
+        $this->get(route('dossiers.source', $this->source))->assertSee('Chưa nhận cập nhật từ worker')->assertSee('2 trang đã chuẩn bị');
+        $this->postJson($base.'/fail', ['code' => 'pdf_timeout', 'retryable' => false], $this->headers($job))->assertOk();
+        $this->assertStringContainsString('pdf_timeout', $read(false));
+        $attempt = DossierWorkerJob::findOrFail($job['id'])->attempt_history[0];
+        $this->travel(5)->seconds();
+        $this->assertStringContainsString('00:01:35', $read(false));
+        $this->post(route('dossiers.source.retry', $this->source))->assertRedirect();
+        $this->assertStringContainsString('Chờ worker', $read(true));
+        $new = $this->claim();
+        $this->assertSame($job['id'], $new['id']);
+        $this->postJson($base.'/renew', ['stage' => 'thumbnail', 'progress' => 99], $this->headers($job))->assertConflict();
+        $this->assertStringContainsString('Lần 2', $read(true));
+        $this->assertStringNotContainsString('99 trang', $read(true));
+        $this->assertSame($attempt, DossierWorkerJob::findOrFail($job['id'])->attempt_history[0]);
+    }
+
     public function test_legacy_copy_is_dry_run_by_default_idempotent_and_retains_source_and_manifest(): void
     {
         $legacy = Storage::fake('dossiers');
