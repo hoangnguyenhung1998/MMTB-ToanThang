@@ -3,7 +3,7 @@
 <main class="dossier">
 @include('dossiers.common')
 <header class="d-header"><div><h1>Hồ sơ tài xế {{ $driver->name }}</h1>
-@if($identity)<p>{{ $identity['person_name'] }} · CCCD {{ $identity['identity'] }}</p>@endif
+@if($identity)<p>{{ $identity['person_name'] }} · CCCD {{ $identity['identity'] }} @if(!empty($identity['birth_date'])) · {{ $identity['birth_date'] }} @endif</p>@endif
 </div><div class="d-actions"><a class="d-button secondary" href="#dossier-history">Lịch sử</a><a class="d-button" href="{{ route('dossiers.driver.documents.add',$driver) }}">Thêm giấy tờ</a></div></header>
 <section class="d-panel"><h2>Giấy tờ tài xế</h2>
 @include('dossiers.rows',['group'=>'driver','subjectKey'=>'driver:'.$driver->id])

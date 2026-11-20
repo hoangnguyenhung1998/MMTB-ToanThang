@@ -19,22 +19,50 @@ class DriverController extends Controller
     public function index(Request $request): View
     {
         $query = Driver::query();
+        $roster = app(\App\Services\DossierZaloRoster::class);
+        $identities = $roster->identities()->filter(fn ($ids) => $ids->count() === 1);
+        $senderNames = $roster->names($identities->keys());
+        $senders = $identities->keys()->groupBy(fn ($sender) => $identities[$sender]->first());
+        $machines = $roster->snapshot()['rows']->pluck('machine_id', 'driver_id');
+        $codes = \App\Models\Machine::whereIn('id', $machines->values())->pluck('asset_code', 'id');
+        $legal = collect();
+        if ($request->user()->can('manage-dossiers')) {
+            $legal = \App\Models\DossierRecord::whereNotNull('driver_id')->whereHas('type', fn ($q) => $q->where('ai_key', 'identity'))->distinct()->pluck('driver_id')
+                ->mapWithKeys(fn ($id) => [$id => app(\App\Services\Dossiers\Ai\DossierComparison::class)->identity($id)]);
+        }
+        match ($request->query('zalo')) {
+            'linked' => $query->whereIn('id', $senders->keys()),
+            'unlinked' => $query->whereNotIn('id', $senders->keys()),
+            default => null,
+        };
 
         if ($request->filled('q')) {
             $search = $request->string('q')->toString();
-            $query->where(function ($builder) use ($search) {
+            $extra = $senders->filter(fn ($ids) => $ids->contains(fn ($sender) => str_contains(mb_strtolower($sender.' '.($senderNames[$sender] ?? '')), mb_strtolower($search))))->keys()
+                ->concat($machines->filter(fn ($machine) => str_contains(mb_strtolower($codes[$machine] ?? ''), mb_strtolower($search)))->keys())
+                ->concat($legal->filter(fn ($identity) => str_contains(mb_strtolower(($identity['person_name'] ?? '').' '.($identity['identity'] ?? '')), mb_strtolower($search)))->keys());
+            $query->where(function ($builder) use ($search, $extra) {
                 $builder->where('name', 'like', "%{$search}%")
                     ->orWhere('phone', 'like', "%{$search}%")
-                    ->orWhere('cccd_no', 'like', "%{$search}%");
+                    ->orWhere('cccd_no', 'like', "%{$search}%")->orWhereIn('id', $extra);
             });
         }
 
-        $drivers = $query->orderBy('name')->paginate(20)->withQueryString();
+        $drivers = $query->orderBy('name')->orderBy('id')->paginate(20)->withQueryString();
 
         return view('drivers.index', [
             'drivers' => $drivers,
             'search' => $request->string('q')->toString(),
+            'senders' => $senders, 'senderNames' => $senderNames, 'legal' => $legal, 'machines' => $machines, 'codes' => $codes,
         ]);
+    }
+
+    public function updatePhone(Request $request, Driver $driver): RedirectResponse
+    {
+        $data = $request->validate(['phone' => ['nullable', 'string', 'max:255']]);
+        $driver->update(['phone' => $data['phone'] ?? null]);
+
+        return back()->with('success', 'Đã lưu số điện thoại.');
     }
 
     public function export(Request $request): BinaryFileResponse

@@ -70,7 +70,8 @@ class DailyPhotoController extends Controller
             'senderFocus' => is_string($senderFocus) ? $senderFocus : null,
             'dossierDrivers' => \App\Models\Driver::orderBy('name')->get(['id', 'name']),
             'machines' => \App\Models\Machine::orderBy('asset_code')->get(['id', 'asset_code']),
-            'senders' => $senders,
+            'allSenders' => $senders,
+            'senders' => (new \Illuminate\Pagination\LengthAwarePaginator($senders->forPage($page = \Illuminate\Pagination\Paginator::resolveCurrentPage('senders_page'), 20)->values(), $senders->count(), 20, $page, ['path' => request()->url(), 'pageName' => 'senders_page']))->withQueryString(),
             'report' => $report,
             'reasonLabels' => DailyPhotoExceptionReason::LABELS,
             'recoveryRuns' => \App\Models\DailyPhotoRecoveryRun::where('user_id', request()->user()->id)->latest()->limit(10)->get(),
@@ -82,6 +83,9 @@ class DailyPhotoController extends Controller
         if ($request->has('machine_id') || ! $request->has('driver_id')) {
             $data = $request->validate(['sender_id' => ['required', 'string', 'max:100'], 'machine_id' => ['required', 'integer', 'exists:machines,id']]);
             app(\App\Services\ZaloSenderMachineService::class)->save($data['sender_id'], (int) $data['machine_id'], $request->user()->id);
+            if (\Illuminate\Support\Facades\DB::table('dossier_driver_resets')->where('name', 'phase-18.5')->whereNotNull('completed_at')->exists()) {
+                app(\App\Services\DossierZaloRoster::class)->provisionForMachine((int) $data['machine_id'], $request->user()->id);
+            }
 
             $pending = app(DailyPhotoBacklogService::class)->report(['sender_id' => $data['sender_id']])['auto_recoverable'];
 

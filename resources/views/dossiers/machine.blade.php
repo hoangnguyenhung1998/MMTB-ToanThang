@@ -25,7 +25,7 @@
 @php($ids=app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn($ids)=>$ids->count()===1))
 @forelse($drivers as $history)
 <details class="d-driver" @if($loop->first) open @endif>
-<summary>{{ $history->driver->name }} @php($senders=$ids->filter(fn($rows)=>$rows->contains($history->driver_id))->keys()) @if($senders->isNotEmpty()) · Zalo {{ $senders->implode(', ') }} @endif</summary>
+<summary>{{ $driverLabels[$history->driver_id] ?? $history->driver->name }} @php($senders=$ids->filter(fn($rows)=>$rows->contains($history->driver_id))->keys()) @if($senders->isNotEmpty()) · Zalo {{ $senders->implode(', ') }} @endif</summary>
 <div class="d-actions"><a href="{{ route('dossiers.driver',$history->driver) }}">Mở hồ sơ tài xế</a><a class="d-button secondary" href="{{ route('dossiers.driver.documents.add',$history->driver) }}">Thêm giấy tờ</a></div>
 @include('dossiers.rows',['rows'=>$rows->where('subject','driver')->where('subject_id',$history->driver_id),'group'=>'driver','subjectKey'=>'driver:'.$history->driver_id])
 </details>

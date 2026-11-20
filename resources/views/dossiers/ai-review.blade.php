@@ -48,6 +48,7 @@
  $expiry=$f['expiry']??null;$precision=$expiry['precision']??($d['permanent_explicit']?'permanent':'unknown');
  $effective=app(\App\Services\Dossiers\DossierStatus::class)->now()->format('Y-m-d H:i:s');
  $record=$source->replacementVersion?->record;
+ $suggestedDriver=$record?->driver_id ?? (($source->document_target['subject'] ?? null)==='driver' ? $source->document_target['id'] : app(\App\Services\Dossiers\Ai\DossierComparison::class)->suggestedDriver($d,$source,$drivers));
  $tracked=in_array($d['type_key'],\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true);
  if(!$tracked)$precision='not_tracked';
 @endphp
@@ -75,6 +76,7 @@
 <fieldset><legend>Định danh tài xế từ CCCD</legend>
 <label>Họ tên pháp lý <input name="person_name" required value="{{ $value('person_name') }}"></label>
 <label>Số CCCD <input name="identity" required pattern="[0-9]{9}([0-9]{3})?" inputmode="numeric" autocomplete="off" value="{{ $value('identity') }}"></label>
+<label>Ngày sinh <input type="date" name="birth_date" value="{{ $value('birth_date') }}"></label>
 <input type="hidden" name="verify_identity" value="1">
 </fieldset>
 @endif
@@ -83,7 +85,7 @@
 <label>Loại giấy <select name="type_id" required><option value="">Chọn đúng loại</option>@foreach($types as $t)<option value="{{ $t->id }}" @selected($t->id===($record?->type_id ?? $d['type_id'] ?? null))>{{ $t->name }}</option>@endforeach</select></label>
 <label class="type-reviewed" hidden><input type="checkbox" name="type_checked" value="1"> Đã kiểm tra loại trước khi dùng hạn</label>
 <label>Chủ thể <select name="subject" class="ai-subject"><option value="machine" @selected(($source->document_target['subject'] ?? $d['subject'])==='machine')>Máy/xe</option><option value="driver" @selected(($source->document_target['subject'] ?? $d['subject'])==='driver')>Tài xế</option><option value="assignment" @selected($d['subject']==='assignment')>Phân công</option></select></label>
-<label>Chọn chủ thể đã đối chiếu <select name="subject_id" class="ai-subject-id" required><option value="">Chọn đúng chủ thể</option><option data-subject="machine" value="{{ $source->machine_id }}" @selected($d['subject']==='machine' && $source->machine_confirmed)>{{ $source->machine?->asset_code }}</option>@foreach($drivers as $driver)<option data-subject="driver" value="{{ $driver->id }}" @selected($record?->driver_id===$driver->id)>{{ $driver->name }} #{{ $driver->id }} @if($d['type_key']==='identity') · Zalo {{ $senderIdentities->filter(fn($ids)=>$ids->contains($driver->id))->keys()->implode(', ') ?: 'chưa liên kết' }} @endif</option>@endforeach @foreach($assignments as $a)<option data-subject="assignment" value="{{ $a->id }}">Phân công #{{ $a->id }} {{ $a->project?->name }}</option>@endforeach</select></label>
+<label>Chọn chủ thể đã đối chiếu <select name="subject_id" class="ai-subject-id" required><option value="">Chọn đúng chủ thể</option><option data-subject="machine" value="{{ $source->machine_id }}" @selected($d['subject']==='machine' && $source->machine_confirmed)>{{ $source->machine?->asset_code }}</option>@foreach($drivers as $driver)<option data-subject="driver" value="{{ $driver->id }}" @selected($suggestedDriver===$driver->id)>{{ $driverLabels[$driver->id] ?? $driver->name }} #{{ $driver->id }} @if($d['type_key']==='identity') · Zalo {{ $senderIdentities->filter(fn($ids)=>$ids->contains($driver->id))->keys()->implode(', ') ?: 'chưa liên kết' }} @endif</option>@endforeach @foreach($assignments as $a)<option data-subject="assignment" value="{{ $a->id }}">Phân công #{{ $a->id }} {{ $a->project?->name }}</option>@endforeach</select></label>
 <div><p class="subject-comparison" aria-live="polite"></p><label>Thay phiên bản <select name="record_id" class="replacement-record"><option value="">Chọn nếu thay giấy hiện có</option></select></label></div>
 <label>Phạm vi phụ (giữ đúng tên nếu thay giấy)<input name="instance" value="{{ $record?->instance ?? 'main' }}" required></label>
 <label>Trang theo thứ tự<input name="page_numbers" value="{{ implode(',',$d['pages']) }}" required></label>
@@ -91,9 +93,11 @@
 @if($rule=$d['expiry_suggestion'])
 <input type="hidden" name="{{ $rule['anchor'] }}" value="{{ $rule['anchor_value'] }}">
 @endif
+@if($d['type_key']!=='identity')
 <label>Độ chính xác hạn<select name="expiry_precision">@foreach(['unknown'=>'Chưa đọc được hạn','day'=>'Có hạn theo ngày','minute'=>'Có hạn đến giờ/phút','month'=>'Có hạn theo tháng','permanent'=>'Không có hạn','not_tracked'=>'Chỉ phân loại'] as $k=>$label)<option value="{{ $k }}" @selected($precision===$k)>{{ $label }}</option>@endforeach</select></label>
 <label>Hạn trên giấy<input name="expiry_value" value="{{ $expiry['value']??'' }}" placeholder="YYYY-MM-DD / YYYY-MM / YYYY-MM-DD HH:MM:SS"></label>
 <label>Diễn giải tháng<select name="month_rule"><option value="">Chưa xác nhận</option><option value="end_of_month">Tôi xác nhận hết ngày cuối tháng</option></select></label>
+@else<input type="hidden" name="expiry_precision" value="not_tracked"><input type="hidden" name="expiry_value" value="">@endif
 @if($d['type_key']==='bic_personal')
 <label>Trang danh sách BIC <input name="bic_page" type="number" min="1"></label>
 <label>Dòng danh sách có họ tên và CCCD <textarea name="bic_quote" maxlength="2000"></textarea></label>

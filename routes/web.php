@@ -192,6 +192,8 @@ Route::middleware('auth')->group(function () {
         ->name('drivers.edit');
     Route::put('/drivers/{driver}', [App\Http\Controllers\DriverController::class, 'update'])
         ->name('drivers.update');
+    Route::patch('/drivers/{driver}/phone', [App\Http\Controllers\DriverController::class, 'updatePhone'])
+        ->name('drivers.phone');
     Route::post('/drivers/{driver}/delete', [App\Http\Controllers\DriverController::class, 'destroy'])
         ->name('drivers.delete');
 

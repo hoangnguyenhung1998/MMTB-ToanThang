@@ -22,6 +22,10 @@ class ZaloSenderDriverService
                 throw ValidationException::withMessages(['sender_id' => 'Chọn người gửi đã được Collector ghi nhận.']);
             }
             Driver::query()->lockForUpdate()->findOrFail($data['driver_id']);
+            $owner = Driver::withTrashed()->where('zalo_sender_id', $data['sender_id'])->lockForUpdate()->first();
+            if ($owner && $owner->id !== (int) $data['driver_id']) {
+                throw ValidationException::withMessages(['sender_id' => 'ID Zalo đã thuộc một hồ sơ tài xế khác.']);
+            }
             $overlap = ZaloSenderDriverLink::query()->where('sender_id', $data['sender_id'])
                 ->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $data['valid_from']))
                 ->when($data['valid_to'] ?? null, fn ($q, $end) => $q->where('valid_from', '<', $end))->exists();

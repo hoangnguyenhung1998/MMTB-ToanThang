@@ -22,6 +22,7 @@
 <td><a href="{{ route('dossiers.machine',$item['machine']) }}">Mở hồ sơ<span class="visually-hidden"> {{ $item['machine']->asset_code }}</span></a></td></tr>
 @empty<tr><td colspan="6">Không tìm thấy máy phù hợp.</td></tr>@endforelse
 </tbody></table></div>
+{{ $items->links() }}
 @endif
 </main>
 @endsection
