@@ -31,13 +31,15 @@ class DossierSenderMappingController extends Controller
         return DB::transaction(function () use ($request, $driver, $dossiers, $mapping, $data) {
             $actor = $request->user()->id;
             $machine = Machine::lockForUpdate()->findOrFail($data['machine_id']);
-            $sender = ZaloMessage::where('sender_id', $data['sender_id'])->oldest('received_at')->oldest('id')->lockForUpdate()->firstOrFail();
+            $sender = ZaloMessage::where('sender_id', $data['sender_id'])->oldest('id')->lockForUpdate()->firstOrFail();
             $senderName = ZaloMessage::where('sender_id', $sender->sender_id)->whereNotNull('sender_name')->latest('id')->value('sender_name');
             $at = app(DossierStatus::class)->now()->format('Y-m-d H:i:s');
             $current = ZaloSenderMachineMapping::where('sender_id', $sender->sender_id)->whereNull('valid_to')->lockForUpdate()->first();
             $links = ZaloSenderDriverLink::where('sender_id', $sender->sender_id)->whereNull('valid_to')->lockForUpdate()->get();
             $dossiers->check($links->count() <= 1, 'Sender có nhiều liên kết mở. Xử lý xung đột trước.');
             $link = $links->first();
+            Driver::whereKey($driver->id)->lockForUpdate()->firstOrFail();
+            app(\App\Services\DossierZaloRoster::class)->guardAssociation($sender->sender_id, $driver->id);
             $profile = DossierSenderProfile::where('sender_id', $sender->sender_id)->lockForUpdate()->first();
             $dossiers->check(! $current || $current->valid_from->lte(now()), 'Mapping máy có hiệu lực trong tương lai.');
             $histories = MachineDriverHistory::where('machine_id', $machine->id)->where('started_at', '<=', $at)

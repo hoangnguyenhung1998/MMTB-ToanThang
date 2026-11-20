@@ -6,7 +6,6 @@ use App\Models\DossierRecord;
 use App\Models\DossierType;
 use App\Models\Machine;
 use App\Models\MachineAssignment;
-use App\Models\MachineDriverHistory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -24,8 +23,8 @@ class DossierReport
     {
         $ids = $machines->modelKeys();
         $at = $this->status->now()->format('Y-m-d H:i:s');
-        $histories = MachineDriverHistory::with('driver')->whereIn('machine_id', $ids)->where('started_at', '<=', $at)
-            ->where(fn ($q) => $q->whereNull('ended_at')->orWhere('ended_at', '>', $at))->get()->filter(fn ($h) => $h->driver);
+        $snapshot = app(\App\Services\DossierZaloRoster::class)->snapshot();
+        $histories = $snapshot['rows']->whereIn('machine_id', $ids);
         $assignments = MachineAssignment::with(['project', 'commandCenter'])->whereIn('machine_id', $ids)->where('time_in', '<=', $at)
             ->where(fn ($q) => $q->whereNull('time_out')->orWhere('time_out', '>', $at))->get();
         foreach ($ids as $id) {
@@ -55,12 +54,8 @@ class DossierReport
         if (isset($this->driverCache[$m->id])) {
             return $this->driverCache[$m->id];
         }
-        $at = $this->status->now()->format('Y-m-d H:i:s');
 
-        return MachineDriverHistory::with('driver')->where('machine_id', $m->id)->where('started_at', '<=', $at)
-            ->where(fn ($q) => $q->whereNull('ended_at')->orWhere('ended_at', '>', $at))
-            ->when(DB::transactionLevel() > 0, fn ($q) => $q->lockForUpdate())->get()
-            ->filter(fn ($h) => $h->driver)->unique('driver_id')->values();
+        return app(\App\Services\DossierZaloRoster::class)->snapshot()['rows']->where('machine_id', $m->id)->sortBy('driver_id')->values();
     }
 
     public function assignments(Machine $m): Collection

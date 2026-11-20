@@ -62,9 +62,7 @@ class DailyPhotoMachineResolutionService
                 'metadata' => $job->machine_resolution_metadata,
             ];
         }
-        if ($learn && $imageMachine) {
-            $mappingService->learn($job, $senderMachine ?: $imageMachine);
-        }
+        $mappingReview = $learn && $imageMachine ? $mappingService->learn($job, $imageMachine, $senderMachine) : [];
 
         $machine = $imageMachine ?: $senderMachine;
         $method = $imageMachine
@@ -96,6 +94,7 @@ class DailyPhotoMachineResolutionService
                 'sender_driver_link_id' => $sender['link']?->id,
                 'machine_driver_history_id' => $sender['history']?->id,
                 'sender_resolution_mismatch' => (bool) ($imageMachine && $senderMachine && $imageMachine->id !== $senderMachine->id),
+                'sender_mapping_review' => $mappingReview ?: ($job->machine_resolution_metadata['sender_mapping_review'] ?? null),
                 'sender_candidate_link_ids' => $sender['candidate_link_ids'],
                 'sender_candidate_history_ids' => $sender['candidate_history_ids'],
                 'sender_candidate_machine_ids' => $sender['candidate_machine_ids'],

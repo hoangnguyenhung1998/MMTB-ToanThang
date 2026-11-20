@@ -80,6 +80,7 @@ class DossierController extends Controller
             'aiAvailable' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs'),
             'aiRun' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs') ? \App\Models\DossierAiRun::with(['pages', 'proposals'])->where('source_id', $source->id)->latest('id')->first() : null,
             'replacement' => $replacement,
+            'senderIdentities' => app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn ($ids) => $ids->count() === 1),
             'drivers' => Driver::orderBy('name')->get(), 'types' => DossierType::orderBy('sort_order')->get(),
             'assignments' => $source->machine?->assignments()->with(['project', 'commandCenter'])->get() ?? collect(),
             'versions' => DossierVersion::with(['record.type', 'record.driver', 'record.assignment'])->where('source_id', $source->id)->get()]);
@@ -96,7 +97,7 @@ class DossierController extends Controller
     {
         DB::transaction(function () use ($source, $request) {
             $s = DossierSource::lockForUpdate()->findOrFail($source->id);
-            abort_if($s->status === 'ready', 422);
+            abort_if($s->status === 'ready' || $s->replacement_cancelled_at, 422);
             $before = $s->toArray();
             $s->update(['status' => 'queued', 'error' => null]);
             app(\App\Services\Dossiers\DossierRemoteJobs::class)->prepare($s);
@@ -146,6 +147,35 @@ class DossierController extends Controller
         $v = $service->saveVersion($data, $request->user()->id, $version);
 
         return redirect()->route('dossiers.source', $v->source_id)->with('success', 'Đã lưu phiên bản #'.$v->id);
+    }
+
+    public function replace(Request $request, DossierVersion $version, DossierService $service)
+    {
+        if (! $request->isMethod('post')) {
+            return view('dossiers.replace', ['version' => $version, 'pending' => DossierSource::where('replacement_version_id', $version->id)
+                ->whereNull('replacement_cancelled_at')->first()]);
+        }
+        $request->validate(['file' => 'required|file']);
+        $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $request->user()->id, 'auto_analyze' => true]);
+        $result = $service->upload($batch, $request->file('file'), $request->user()->id, $version);
+
+        return redirect()->route('dossiers.source', $result['source']);
+    }
+
+    public function cancelReplacement(Request $request, DossierSource $source, DossierService $service)
+    {
+        DB::transaction(function () use ($request, $source, $service) {
+            $locked = DossierSource::lockForUpdate()->findOrFail($source->id);
+            $service->check($locked->replacement_version_id && ! DossierVersion::where('source_id', $locked->id)->where('confirmed', true)->exists(),
+                'Chỉ hủy bản thay đang chờ.');
+            if (! $locked->replacement_cancelled_at) {
+                $before = $locked->toArray();
+                $locked->update(['replacement_cancelled_at' => now()]);
+                DossierAudit::write('replacement_cancelled', $locked, $request->user()->id, $before);
+            }
+        }, 3);
+
+        return back()->with('success', 'Đã hủy bản thay. Bản hiện hành giữ nguyên.');
     }
 
     public function archive(Request $request, DossierVersion $version, DossierService $service)
@@ -202,14 +232,34 @@ class DossierController extends Controller
         return back()->with('success', 'Đã kết thúc riêng phân công này.');
     }
 
+    public function drivers()
+    {
+        $snapshot = app(\App\Services\DossierZaloRoster::class)->snapshot();
+        $links = app(\App\Services\DossierZaloRoster::class)->identities()
+            ->filter(fn ($ids) => $ids->count() === 1);
+        $names = ZaloMessage::whereIn('sender_id', $links->keys())->whereIn('id',
+            ZaloMessage::selectRaw('max(id)')->whereIn('sender_id', $links->keys())->groupBy('sender_id'))->pluck('sender_name', 'sender_id');
+
+        return view('dossiers.drivers', ['drivers' => Driver::orderBy('name')->get(), 'links' => $links, 'names' => $names,
+            'machines' => Machine::whereIn('id', $snapshot['rows']->pluck('machine_id'))->pluck('asset_code', 'id'),
+            'roster' => $snapshot['rows']->keyBy('driver_id')]);
+    }
+
     public function driver(Driver $driver, DossierReport $report)
     {
-        return view('dossiers.driver', ['driver' => $driver, 'rows' => $report->subjectRows('driver', $driver->id, 'driver', null, $driver->name),
-            'links' => DossierSenderProfile::where('driver_id', $driver->id)->get(),
-            'senders' => ZaloMessage::select(['sender_id', 'sender_name'])->whereIn('id', ZaloMessage::query()->selectRaw('MAX(id)')->whereNotNull('sender_id')->groupBy('sender_id'))->orderBy('sender_name')->get(),
-            'machines' => Machine::orderBy('asset_code')->get(),
-            'checkinLinks' => \App\Models\ZaloSenderDriverLink::where('driver_id', $driver->id)->orderByDesc('valid_from')->get(),
-            'openHistories' => MachineDriverHistory::whereNull('ended_at')->with(['driver', 'machine'])->get(),
+        $identity = app(\App\Services\Dossiers\Ai\DossierComparison::class)->identity($driver->id);
+        $senderIds = app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn ($ids) => $ids->count() === 1 && $ids->contains($driver->id))->keys();
+        $senderNames = collect();
+        $last = [];
+        foreach (ZaloMessage::whereIn('sender_id', $senderIds)->whereNotNull('sender_name')->select(['sender_id', 'sender_name', 'received_at'])->orderBy('received_at')->orderBy('id')->cursor() as $message) {
+            if (($last[$message->sender_id] ?? null) !== $message->sender_name) {
+                $senderNames->push($message);
+                $last[$message->sender_id] = $message->sender_name;
+            }
+        }
+
+        return view('dossiers.driver', ['driver' => $driver, 'identity' => $identity, 'senderNames' => $senderNames->reverse()->values(),
+            'senderIds' => $senderIds, 'rows' => $report->subjectRows('driver', $driver->id, 'driver', null, $driver->name),
             'histories' => $driver->machineHistories()->with('machine')->latest('started_at')->get(),
             'records' => DossierRecord::with(['type', 'versions'])->where('driver_id', $driver->id)->get()]);
     }
@@ -219,12 +269,23 @@ class DossierController extends Controller
         $d = $request->validate(['sender_id' => ['required', 'string', 'max:100', 'exists:zalo_messages,sender_id']]);
         DB::transaction(function () use ($d, $driver, $request, $service) {
             ZaloMessage::where('sender_id', $d['sender_id'])->oldest('id')->lockForUpdate()->firstOrFail();
+            Driver::lockForUpdate()->findOrFail($driver->id);
             $link = DossierSenderProfile::where('sender_id', $d['sender_id'])->first();
             $at = app(DossierStatus::class)->now()->format('Y-m-d H:i:s');
             $legacyConflict = \App\Models\ZaloSenderDriverLink::where('sender_id', $d['sender_id'])->where('driver_id', '!=', $driver->id)
                 ->where('valid_from', '<=', $at)->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $at))->exists();
             $service->check(! $legacyConflict, 'Sender đang có liên kết tài xế OCR khác. Kiểm tra liên kết hiện có trước; hồ sơ không tự sửa mapping.');
             $service->check(! $link || $link->driver_id === $driver->id, 'Sender đã liên kết tài xế khác; không tự ghi đè.');
+            app(\App\Services\DossierZaloRoster::class)->guardAssociation($d['sender_id'], $driver->id);
+            if ($request->boolean('canonical')) {
+                $active = \App\Models\ZaloSenderDriverLink::where('sender_id', $d['sender_id'])
+                    ->where('driver_id', $driver->id)->whereNull('valid_to')->where('valid_from', '<=', $at)->exists();
+                if (! $active) {
+                    app(\App\Services\ZaloSenderDriverService::class)->link(['sender_id' => $d['sender_id'], 'driver_id' => $driver->id, 'valid_from' => $at], $request->user()->id);
+                }
+
+                return;
+            }
             if (! $link) {
                 $link = DossierSenderProfile::create([...$d, 'driver_id' => $driver->id, 'user_id' => $request->user()->id]);
                 DossierAudit::write('sender_profile_linked', $link, $request->user()->id);
@@ -289,6 +350,14 @@ class DossierController extends Controller
         $e = $service->create($machine, $drivers, $ids, $d['request_id'], $request->boolean('acknowledged'), $request->user()->id);
 
         return redirect()->route('dossiers.export', $e);
+    }
+
+    public function print(Request $request, Machine $machine, DossierExportService $service)
+    {
+        $data = $request->validate(['request_id' => 'required|uuid']);
+        $export = $service->create($machine, [], [], $data['request_id'], true, $request->user()->id, printCurrent: true);
+
+        return redirect()->route('dossiers.export', $export);
     }
 
     public function showExport(Request $request, DossierExport $export)

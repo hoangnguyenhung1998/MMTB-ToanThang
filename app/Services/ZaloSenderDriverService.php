@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
+use App\Models\ActivityLog;
 use App\Models\Driver;
 use App\Models\Machine;
 use App\Models\MachineDriverHistory;
 use App\Models\OcrJob;
-use App\Models\ActivityLog;
 use App\Models\ZaloMessage;
 use App\Models\ZaloSenderDriverLink;
 use Illuminate\Support\Facades\DB;
@@ -18,12 +18,24 @@ class ZaloSenderDriverService
     {
         DB::transaction(function () use ($data, $userId) {
             $sender = ZaloMessage::query()->where('sender_id', $data['sender_id'])->orderBy('id')->lockForUpdate()->first();
-            if (!$sender) throw ValidationException::withMessages(['sender_id' => 'Chọn người gửi đã được Collector ghi nhận.']);
+            if (! $sender) {
+                throw ValidationException::withMessages(['sender_id' => 'Chọn người gửi đã được Collector ghi nhận.']);
+            }
             Driver::query()->lockForUpdate()->findOrFail($data['driver_id']);
             $overlap = ZaloSenderDriverLink::query()->where('sender_id', $data['sender_id'])
                 ->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $data['valid_from']))
                 ->when($data['valid_to'] ?? null, fn ($q, $end) => $q->where('valid_from', '<', $end))->exists();
-            if ($overlap) throw ValidationException::withMessages(['sender_id' => 'Khoảng thời gian ánh xạ bị trùng. Kết thúc ánh xạ cũ trước.']);
+            if ($overlap) {
+                throw ValidationException::withMessages(['sender_id' => 'Khoảng thời gian ánh xạ bị trùng. Kết thúc ánh xạ cũ trước.']);
+            }
+            if (empty($data['valid_to'])) {
+                $identity = app(DossierZaloRoster::class);
+                $profile = \App\Models\DossierSenderProfile::where('sender_id', $data['sender_id'])->first();
+                if ($profile && $profile->driver_id !== (int) $data['driver_id']) {
+                    throw ValidationException::withMessages(['sender_id' => 'Hồ sơ cũ có tài xế khác. Cần đối chiếu.']);
+                }
+                $identity->guardAssociation($data['sender_id'], (int) $data['driver_id']);
+            }
             $id = ZaloSenderDriverLink::query()->create([...$data, 'created_by' => $userId])->id;
             ActivityLog::create(['user_id' => $userId, 'event' => 'zalo.sender_linked', 'description' => 'Ánh xạ người gửi Zalo với lái máy', 'properties' => ['link_id' => $id, ...$data], 'occurred_at' => now()]);
         });
@@ -36,7 +48,9 @@ class ZaloSenderDriverService
             abort_unless($preview, 404);
             ZaloMessage::query()->where('sender_id', $preview->sender_id)->orderBy('id')->lockForUpdate()->first();
             $link = ZaloSenderDriverLink::query()->lockForUpdate()->findOrFail($id);
-            if ($link->valid_to || $end <= $link->valid_from) throw ValidationException::withMessages(['valid_to' => 'Chọn thời điểm kết thúc sau khi bắt đầu cho ánh xạ đang mở.']);
+            if ($link->valid_to || $end <= $link->valid_from) {
+                throw ValidationException::withMessages(['valid_to' => 'Chọn thời điểm kết thúc sau khi bắt đầu cho ánh xạ đang mở.']);
+            }
             $before = $link->getOriginal();
             $link->update(['valid_to' => $end]);
             ActivityLog::create(['user_id' => $userId, 'event' => 'zalo.sender_link_closed', 'description' => 'Kết thúc ánh xạ người gửi',
@@ -56,7 +70,9 @@ class ZaloSenderDriverService
     public function resolveWithProvenance(OcrJob $job, ?string $date, ?string $time): array
     {
         $sender = $job->attachment?->message?->sender_id;
-        if (!$sender || !$date || !$time) return $this->result('MISSING_INPUT');
+        if (! $sender || ! $date || ! $time) {
+            return $this->result('MISSING_INPUT');
+        }
         $at = $date.' '.(strlen($time) === 5 ? $time.':00' : $time);
 
         return DB::transaction(function () use ($sender, $at): array {
@@ -64,18 +80,24 @@ class ZaloSenderDriverService
             $links = ZaloSenderDriverLink::query()->where('sender_id', $sender)->where('valid_from', '<=', $at)
                 ->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $at))
                 ->orderBy('id')->lockForUpdate()->get();
-            if ($links->isEmpty()) return $this->result('NO_LINK');
-            if ($links->count() !== 1) return $this->result('AMBIGUOUS_LINK', linkIds: $links->modelKeys());
+            if ($links->isEmpty()) {
+                return $this->result('NO_LINK');
+            }
+            if ($links->count() !== 1) {
+                return $this->result('AMBIGUOUS_LINK', linkIds: $links->modelKeys());
+            }
 
             $link = $links->first();
-            if (!Driver::query()->lockForUpdate()->find($link->driver_id)) {
+            if (! Driver::query()->lockForUpdate()->find($link->driver_id)) {
                 return $this->result('DRIVER_NOT_FOUND', $link);
             }
 
             $histories = MachineDriverHistory::query()->where('driver_id', $link->driver_id)->where('started_at', '<=', $at)
                 ->where(fn ($q) => $q->whereNull('ended_at')->orWhere('ended_at', '>', $at))
                 ->orderBy('id')->lockForUpdate()->get();
-            if ($histories->isEmpty()) return $this->result('NO_MACHINE_HISTORY', $link);
+            if ($histories->isEmpty()) {
+                return $this->result('NO_MACHINE_HISTORY', $link);
+            }
 
             $machineIds = $histories->pluck('machine_id')->unique()->values();
             if ($machineIds->count() !== 1) {
@@ -83,7 +105,9 @@ class ZaloSenderDriverService
             }
 
             $machine = Machine::query()->find($machineIds->first());
-            if (!$machine) return $this->result('MACHINE_NOT_FOUND', $link, historyIds: $histories->modelKeys(), machineIds: $machineIds->all());
+            if (! $machine) {
+                return $this->result('MACHINE_NOT_FOUND', $link, historyIds: $histories->modelKeys(), machineIds: $machineIds->all());
+            }
 
             $history = $histories->firstWhere('machine_id', $machine->id);
 

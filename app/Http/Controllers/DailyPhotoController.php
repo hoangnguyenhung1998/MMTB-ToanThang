@@ -49,8 +49,25 @@ class DailyPhotoController extends Controller
             return $row;
         });
 
+        $senderFocus = request()->query('sender_id');
+        if (is_string($senderFocus)) {
+            $senders = $senders->sortByDesc(fn ($row) => $row['sender_id'] === $senderFocus);
+        }
+        $focus = request()->integer('machine_id');
+        if ($focus) {
+            $senders = $senders->sortByDesc(fn ($row) => ($row['mapping']?->machine_id ?? null) === $focus);
+        }
+
+        $mappingReviews = request()->user()->can('manage-dossiers')
+            ? \App\Models\OcrJob::whereNotNull('machine_resolution_metadata->sender_mapping_review->observed_machine_id')
+                ->latest('id')->limit(50)->get(['id', 'machine_resolution_metadata']) : collect();
+
         return view('daily-photos.settings', [
-            'dossierProfiles' => \App\Models\DossierSenderProfile::with('driver')->get()->keyBy('sender_id'),
+            'mappingReviews' => $mappingReviews,
+            'focusMachine' => $focus,
+            'mappingIssues' => app(\App\Services\DossierZaloRoster::class)->snapshot()['issues'],
+            'dossierIdentities' => app(\App\Services\DossierZaloRoster::class)->identities(),
+            'senderFocus' => is_string($senderFocus) ? $senderFocus : null,
             'dossierDrivers' => \App\Models\Driver::orderBy('name')->get(['id', 'name']),
             'machines' => \App\Models\Machine::orderBy('asset_code')->get(['id', 'asset_code']),
             'senders' => $senders,

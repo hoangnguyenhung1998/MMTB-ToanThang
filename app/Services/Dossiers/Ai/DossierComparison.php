@@ -109,13 +109,18 @@ class DossierComparison
 
     public function verifyIdentity(array $input): array
     {
-        $values = validator($input, ['person_name' => 'required|string|max:255', 'birth_date' => 'required|date_format:Y-m-d', 'identity' => 'required|regex:/^\d{9}(\d{3})?$/D'])->validate();
+        $values = validator($input, ['person_name' => 'required|string|max:255', 'birth_date' => 'nullable|date_format:Y-m-d', 'identity' => 'required|regex:/^\d{9}(\d{3})?$/D'])->validate();
         $driver = Driver::lockForUpdate()->findOrFail($input['subject_id']);
         app(DossierService::class)->check(! $this->otherDriverHasNumber($driver->id, $values['identity']),
             'Số CCCD đã được đối chiếu trong hồ sơ của người khác.');
+        if (empty($values['birth_date'])) {
+            $linked = app(\App\Services\DossierZaloRoster::class)->identities()
+                ->contains(fn ($ids) => $ids->count() === 1 && $ids->contains($driver->id));
+            app(DossierService::class)->check($linked, 'Cần xác nhận ID Zalo của tài xế trong cấu hình check-in trước khi lưu CCCD.');
+        }
         $existing = $this->identity($driver->id);
-        app(DossierService::class)->check(! $existing || $existing === $values, 'CCCD đã đối chiếu khác hồ sơ hiện có. Kiểm tra riêng trước khi thay.');
+        app(DossierService::class)->check(! $existing || ($existing['identity'] === $values['identity'] && $this->normalize('person_name', $existing['person_name']) === $this->normalize('person_name', $values['person_name'])), 'CCCD đã đối chiếu khác hồ sơ hiện có. Kiểm tra riêng trước khi thay.');
 
-        return $values;
+        return [...$existing, ...array_filter($values, fn ($value) => $value !== null)];
     }
 }

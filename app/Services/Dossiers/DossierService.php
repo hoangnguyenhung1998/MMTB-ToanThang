@@ -20,7 +20,7 @@ use Illuminate\Validation\ValidationException;
 
 class DossierService
 {
-    public function upload(DossierBatch $batch, UploadedFile $file, int $actor): array
+    public function upload(DossierBatch $batch, UploadedFile $file, int $actor, ?DossierVersion $replacement = null): array
     {
         Validator::make(['file' => $file], ['file' => ['required', 'file', 'mimes:pdf', 'max:'.config('dossiers.max_upload_kb')]])->validate();
         $stream = fopen($file->getRealPath(), 'rb');
@@ -33,6 +33,8 @@ class DossierService
         $hash = hash_file('sha256', $file->getRealPath());
         $existing = DossierSource::where('sha256', $hash)->first();
         if ($existing) {
+            $this->check(! $replacement || $existing->replacement_version_id === $replacement->id, 'PDF đã thuộc một nguồn khác.');
+
             return ['source' => $existing, 'duplicate' => true];
         }
         $name = basename(str_replace('\\', '/', $file->getClientOriginalName()));
@@ -40,10 +42,18 @@ class DossierService
         $objects = app(DossierObjects::class);
         $object = $objects->store($file, 'source');
         try {
-            $source = DB::transaction(function () use ($batch, $file, $actor, $hash, $name, $resolved, $object) {
-                $source = DossierSource::create(['batch_id' => $batch->id, 'machine_id' => $resolved['machine']?->id,
+            $source = DB::transaction(function () use ($batch, $file, $actor, $hash, $name, $resolved, $object, $replacement) {
+                if ($replacement) {
+                    $record = DossierRecord::lockForUpdate()->findOrFail($replacement->record_id);
+                    $current = app(DossierStatus::class)->current($record->load('versions'));
+                    $this->check($current?->id === $replacement->id && ! $current->archived, 'Bản hiện hành đã đổi. Tải lại trước khi thay.');
+                    $this->check(! DossierSource::where('replacement_version_id', $replacement->id)->whereNull('replacement_cancelled_at')->exists(),
+                        'Đã có bản thay đang xử lý. Mở lại hoặc hủy bản đó trước.');
+                }
+                $source = DossierSource::create(['batch_id' => $batch->id, 'machine_id' => $replacement ? $replacement->source->machine_id : $resolved['machine']?->id,
+                    'replacement_version_id' => $replacement?->id, 'machine_confirmed' => (bool) $replacement,
                     'user_id' => $actor, 'original_name' => $name, 'sha256' => $hash, 'path' => $object->key, 'object_id' => $object->id,
-                    'bytes' => $file->getSize(), 'resolution' => $resolved['status'], 'candidates' => $resolved['candidate_asset_codes']]);
+                    'bytes' => $file->getSize(), 'resolution' => $replacement && $replacement->record->machine_id && $resolved['machine'] && $resolved['machine']->id !== $replacement->record->machine_id ? 'REPLACEMENT_MISMATCH' : $resolved['status'], 'candidates' => $resolved['candidate_asset_codes']]);
                 $object->update(['status' => 'published']);
                 DossierAudit::write('source_uploaded', $source, $actor);
                 app(DossierRemoteJobs::class)->prepare($source);
@@ -53,6 +63,8 @@ class DossierService
         } catch (\Throwable $e) {
             $objects->deleteUnreferencedStaged($object->fresh());
             if ($e instanceof \Illuminate\Database\UniqueConstraintViolationException && ($existing = DossierSource::where('sha256', $hash)->first())) {
+                $this->check(! $replacement || $existing->replacement_version_id === $replacement->id, 'PDF đã thuộc một nguồn khác.');
+
                 return ['source' => $existing, 'duplicate' => true];
             }
             throw $e;
@@ -87,7 +99,7 @@ class DossierService
         });
     }
 
-    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null): DossierVersion
+    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null, bool $newScopeOnly = false): DossierVersion
     {
         if ($draft?->corrects_id) {
             $input['corrects_id'] = $draft->corrects_id;
@@ -110,7 +122,7 @@ class DossierService
             'issuer' => ['nullable', 'string', 'max:255'], 'issued_on' => ['nullable', 'date_format:Y-m-d'],
             'certified_on' => ['nullable', 'date_format:Y-m-d'], 'effective_at' => ['required', 'date_format:Y-m-d H:i:s'],
             'health_signed_on' => ['nullable', 'date_format:Y-m-d'], 'renewal_on' => ['nullable', 'date_format:Y-m-d'],
-            'expiry_precision' => ['required', 'in:day,minute,month,permanent,unknown'], 'expiry_value' => ['nullable', 'string', 'max:30'],
+            'expiry_precision' => ['required', 'in:day,minute,month,permanent,unknown,not_tracked'], 'expiry_value' => ['nullable', 'string', 'max:30'],
             'month_rule' => ['nullable', 'in:end_of_month'], 'note' => ['nullable', 'string', 'max:5000'],
             'reason' => ['required', 'string', 'max:2000'], 'confirmed' => ['required', 'boolean'],
         ])->validate();
@@ -124,7 +136,7 @@ class DossierService
             $data['month_rule'] = null;
         }
 
-        return DB::transaction(function () use ($data, $actor, $draft, $insuranceEvidence) {
+        return DB::transaction(function () use ($data, $actor, $draft, $insuranceEvidence, $newScopeOnly) {
             if (! $draft && ($existing = DossierVersion::where('request_id', $data['request_id'])->first())) {
                 return $existing;
             }
@@ -147,6 +159,7 @@ class DossierService
             };
             $this->check($data['subject'] === 'driver' || ($data['subject'] === 'machine' ? $subject->id : $subject->machine_id) === $source->machine_id, 'Chủ thể khác máy nguồn.');
             $type = DossierType::findOrFail($data['type_id']);
+            $this->check($data['expiry_precision'] !== 'not_tracked' || ! in_array($type->ai_key, Ai\DossierAiSchema::EXPIRY_TYPES, true), 'Loại giấy này cần trạng thái hạn.');
             $group = $data['subject'] === 'driver' ? 'driver' : $source->machine->dossier_group;
             $this->check(in_array($group, $type->groups, true), 'Loại giấy không áp dụng cho nhóm chủ thể này.');
             $scopeKey = implode(':', [$data['subject'], $subject->id, $type->id, $data['instance']]);
@@ -155,6 +168,7 @@ class DossierService
             // Current locking reads matter under MySQL REPEATABLE READ: the request-id
             // lookup above may have established a snapshot before waiting for this subject.
             $record = DossierRecord::where('scope_key', $scopeKey)->lockForUpdate()->first();
+            $this->check(! $newScopeOnly || ! $record, 'Loại giấy đã có trong phạm vi này; cần đối chiếu trước khi thay.');
             $record ??= DossierRecord::create(['scope_key' => $scopeKey,
                 'type_id' => $type->id, $data['subject'].'_id' => $subject->id, 'instance' => $data['instance'],
             ]);
@@ -163,6 +177,19 @@ class DossierService
                 $this->check($other->record_id === $record->id || $other->record_id === $correction?->record_id || ! array_intersect($nums, array_column($other->pages, 'page')) || ($data['shared_pages'] && $other->shared_pages), 'Trang dùng trùng: xác nhận dùng chung trên cả hai giấy.');
             }
             $this->check(empty($data['record_id']) || (int) $data['record_id'] === $record->id || $correction?->record_id === (int) $data['record_id'] || ($draft && $draft->record_id === (int) $data['record_id']), 'Chuỗi giấy gốc không khớp với yêu cầu sửa.');
+            if ($source->replacement_version_id) {
+                $blanks = $source->latestAiRun?->pages()->where('status', 'ready')->get()
+                    ->filter(fn ($page) => ($page->result['kind'] ?? null) === 'blank')->pluck('page')->all() ?? [];
+                $expected = array_values(array_diff(range(1, $source->page_count), $blanks, $source->excluded_pages ?? []));
+                $selected = $nums;
+                sort($selected);
+                $this->check($selected === $expected && $expected !== [], 'Bản thay cần đủ mọi trang giấy.');
+
+                $target = $source->replacementVersion;
+                $current = app(DossierStatus::class)->current($record->load('versions'));
+                $this->check(! $source->replacement_cancelled_at && $target->record_id === $record->id
+                    && $current?->id === $target->id && ! $current->archived, 'Nguồn thay đã hủy hoặc loại, chủ thể, bản hiện hành đã đổi.');
+            }
             $v = $draft ? DossierVersion::lockForUpdate()->findOrFail($draft->id) : new DossierVersion;
             $this->check(! $v->exists || (! $v->confirmed && $v->source_id === $source->id), 'Phiên bản xác nhận bất biến; tạo phiên bản thay thế.');
             $this->check(! $v->exists || $v->request_id === $data['request_id'], 'Mã nháp không khớp.');
@@ -238,6 +265,10 @@ class DossierService
         DB::transaction(function () use ($version, $archived, $reason, $actor) {
             $v = DossierVersion::lockForUpdate()->findOrFail($version->id);
             $before = $v->toArray();
+            $record = DossierRecord::whereKey($v->record_id)->lockForUpdate()->firstOrFail();
+            $current = app(DossierStatus::class)->current($record->load('versions'));
+            $this->check($archived || ! $v->confirmed || $current?->id === $v->id,
+                'Đã có bản hiện hành khác. Kiểm tra lịch sử trước khi khôi phục.');
             $v->update(['archived' => $archived]);
             $before['operation_reason'] = $reason;
             DossierAudit::write($archived ? 'archived' : 'restored', $v, $actor, $before);

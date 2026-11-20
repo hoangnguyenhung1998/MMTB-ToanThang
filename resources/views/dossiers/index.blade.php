@@ -2,7 +2,7 @@
 @section('content')
 <main class="dossier">
 @include('dossiers.common')
-<h1>Hồ sơ điện tử máy / xe</h1>
+<h1>Hồ sơ điện tử máy / xe</h1><p><a href="{{ route('dossiers.drivers') }}">Tài xế</a></p>
 <p>Các trạng thái được hiển thị đồng thời; giấy thiếu hoặc hết hạn luôn có số riêng.</p>
 <form method="get" class="box"><label>Mã máy <input name="q" value="{{ request('q') }}"></label><label>Trạng thái <select name="status"><option value="">Tất cả</option>@foreach($labels as $key => $label)<option value="{{ $key }}" @selected(request('status') === $key)>{{ $label }} ({{ $totals[$key] }})</option>@endforeach</select></label><button>Lọc</button></form>
 <form method="post" action="{{ route('dossiers.batches.create') }}">@csrf<label>OCR tự động <select name="auto_analyze"><option value="0">Tắt</option><option value="1">Bật sau khi chuẩn bị PDF</option></select></label><button>Tạo đợt upload PDF</button></form>

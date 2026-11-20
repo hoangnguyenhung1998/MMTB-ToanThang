@@ -616,4 +616,41 @@ class DossierAiTest extends TestCase
         $this->assertDatabaseCount('dossier_ai_runs', 1);
         $this->assertSame(1, $run->pages()->where('status', 'ready')->count());
     }
+
+    public function test_matching_machine_document_with_printed_expiry_is_processed_without_review(): void
+    {
+        $run = $this->completed([
+            $this->doc(fields: ['chassis_no' => $this->field('FRAME01', 'text'), 'expiry' => $this->field('2027-01-01')]),
+        ]);
+        $version = \App\Models\DossierVersion::findOrFail($run->proposals()->sole()->version_id);
+        $this->assertTrue($version->confirmed);
+        $this->assertSame('2027-01-01', $version->expiry_value);
+        $this->assertSame($this->machine->id, $version->record->machine_id);
+    }
+
+    public function test_clearly_classified_replacement_processes_without_date_fields(): void
+    {
+        $driver = Driver::create(['name' => 'Fixture trained']);
+        $type = DossierType::where('ai_key', 'qualification')->firstOrFail();
+        $old = app(\App\Services\Dossiers\DossierService::class)->saveVersion([
+            'request_id' => (string) Str::uuid(), 'source_id' => $this->source->id, 'type_id' => $type->id, 'subject' => 'driver',
+            'subject_id' => $driver->id, 'instance' => 'main', 'pages' => [['page' => 1, 'rotation' => 0]],
+            'shared_pages' => false, 'effective_at' => '2026-01-01 00:00:00', 'expiry_precision' => 'not_tracked', 'reason' => 'Fixture', 'confirmed' => true,
+        ], $this->user->id);
+        $other = $this->source->replicate();
+        $other->sha256 = str_repeat('4', 64);
+        $other->replacement_version_id = $old->id;
+        $other->save();
+        $doc = $this->doc('qualification', [1, 2, 3]);
+        $doc['subject'] = 'driver';
+        $this->mockVision([$this->page(), $this->page(), $this->page(), $this->group([$doc])]);
+        $run = $this->service->request($other, $this->user->id);
+        $this->drain($run);
+        $proposal = $run->proposals()->sole();
+        $this->assertNotNull($proposal->version_id);
+        $new = \App\Models\DossierVersion::findOrFail($proposal->version_id);
+        $this->assertSame('not_tracked', $new->expiry_precision);
+        $this->assertSame($old->id, $new->replaces_id);
+        $this->assertCount(3, $new->pages);
+    }
 }

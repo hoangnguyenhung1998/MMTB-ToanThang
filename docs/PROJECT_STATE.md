@@ -1,5 +1,15 @@
 # Project State
 
+## Phase 18.3 — LOCAL (20/11/2026)
+
+Branch `codex/phase18-review-recovery`, đã tích hợp `origin/production` tại `17a7614` (merge PR #72). Hồ sơ đọc ánh xạ check-in theo Zalo sender ID, hiển thị xung đột dữ liệu cũ và giữ lịch sử vận hành riêng. Đã bổ sung danh bạ tài xế, duyệt OCR rút gọn, thay trọn giấy và bộ PDF in theo phiên bản đã chốt.
+
+Laravel hồi quy 125 test / 988 assertion PASS. Đã xác minh trên MySQL 8.4.3 cách ly bằng hai process PHP và hai kết nối độc lập. Cả hai thao tác được tuần tự hóa, chỉ còn một ánh xạ đang hoạt động, mỗi lần chuyển thực tế có một sự kiện và gửi lại cùng đích không thêm sự kiện. Trình duyệt LOCAL đã hiển thị một máy có hai tài xế và liên kết đến đúng máy trong check-in. Đã dừng DB và web fixture cách ly. Chi tiết migration nằm trong Phase 18.3.
+
+Hồi quy phát hành 146/1139 PASS. OCR đọc mã khác máy hiện gắn giữ nguyên ánh xạ kể cả khi ảnh cũ hơn phân công hiện tại. Mã trên ảnh vẫn dùng cho nhật trình, chênh lệch được lưu trong metadata OCR và hiện ở cấu hình check-in.
+
+NEXT ACTION: xác minh CI trên SHA của PR Phase 18.3. Khi CI thành công, merge, xác minh DB hosting và backup trước khi phát hành, rồi chạy riêng migration Phase 18.3 theo runbook. Kiểm tra heartbeat, quyền mở hồ sơ và UI. Người dùng tự nghiệm thu hồ sơ thật. Giữ worker laptop, Journal và Collector đang chạy.
+
 ## Phase 18.2 — LOCAL (19/11/2026)
 
 Branch `codex/phase18-review-recovery` từ `ea90e44`. Đã fetch `origin/production` tại `435bbdb8` (merge PR #71) và xác minh cây code gốc trùng `ea90e44`. Trạng thái hosting chưa được xác minh trong lượt này.
