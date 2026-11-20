@@ -9,6 +9,7 @@
 @elseif(!$versions->contains('confirmed',true))<form method="post" action="{{ route('dossiers.sources.cancel-replacement',$source) }}">@csrf<button>Hủy bản thay</button></form>@endif
 @endif
 @include('dossiers.progress',['progressUrl'=>route('dossiers.source',[$source,'progress'=>1])])
+@if($source->machine_id && $drivers->isEmpty())<p class="d-alert">Chưa xác định chủ thể giấy cá nhân. <a href="{{ route('daily-photos.settings',['machine_id'=>$source->machine_id]) }}">Kiểm tra ánh xạ của máy</a></p>@endif
 @if($source->confirmed)<p>Đã xác nhận hồ sơ</p>@endif
 @unless($source->replacement_cancelled_at)@include('dossiers.ai-review')@endunless
 <details class="d-panel"><summary>File gốc và thông tin kỹ thuật</summary>

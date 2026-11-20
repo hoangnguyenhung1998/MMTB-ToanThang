@@ -76,6 +76,36 @@ class DossierTest extends TestCase
         return DossierBatch::create(['id' => Str::uuid(), 'user_id' => $this->user->id]);
     }
 
+    public function test_upload_provisions_distinct_sender_ids_once_and_driver_directory_keeps_leading_zero(): void
+    {
+        foreach (['source-a', 'source-b'] as $sender) {
+            ZaloMessage::create(['group_id' => 'test', 'message_id' => $sender, 'sender_id' => $sender, 'sender_name' => 'Tên Zalo giống nhau', 'sent_at' => now(), 'received_at' => now(), 'raw_payload' => []]);
+            app(\App\Services\ZaloSenderMachineService::class)->save($sender, $this->machine->id, $this->user->id);
+        }
+        $old = Driver::create(['name' => 'Tài xế cũ']);
+        $batch = $this->batch();
+        $this->service->upload($batch, $this->pdf(), $this->user->id);
+        $this->service->upload($batch, $this->pdf(), $this->user->id);
+        $this->assertDatabaseCount('drivers', 3);
+        $this->assertDatabaseCount('zalo_sender_driver_links', 2);
+        $this->assertCount(2, app(DossierReport::class)->drivers($this->machine));
+        $this->get(route('drivers.index', ['zalo' => 'unlinked']))->assertOk()->assertSee($old->name)->assertDontSee('source-a');
+        $url = route('drivers.index', ['zalo' => 'linked', 'q' => $this->machine->asset_code]);
+        $this->get($url)->assertOk()->assertSee('source-a')->assertSee('source-b')->assertDontSee($old->name);
+        $driver = Driver::whereKeyNot($old->id)->firstOrFail();
+        $this->from($url)->patch(route('drivers.phone', $driver), ['phone' => '0912345678'])->assertRedirect($url);
+        $this->assertSame('0912345678', $driver->fresh()->phone);
+        $source = DossierSource::sole();
+        $roster = app(\App\Services\DossierZaloRoster::class);
+        $compare = app(\App\Services\Dossiers\Ai\DossierComparison::class);
+        foreach ($roster->applicants($source) as $offset => $applicant) {
+            $applicant->update(['cccd_no' => '00000000001'.$offset]);
+            $data = ['subject' => 'driver', 'type_key' => 'qualification', 'fields' => ['identity' => ['value' => $applicant->cccd_no]]];
+            $this->assertSame($applicant->id, $compare->suggestedDriver($data, $source, $roster->applicants($source)));
+        }
+        $this->assertNull($compare->suggestedDriver(['subject' => 'driver', 'type_key' => 'qualification', 'fields' => ['person_name' => ['value' => 'Tên Zalo giống nhau']]], $source, $roster->applicants($source)));
+    }
+
     private function pdf(string $name = 'T-XX0769.pdf', string $marker = 'fixture'): UploadedFile
     {
         $pdf = new \FPDF;

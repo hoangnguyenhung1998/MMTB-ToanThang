@@ -30,8 +30,18 @@ class DossierComparison
 
     private function otherDriverHasNumber(int $driver, string $number): bool
     {
-        return DossierRecord::whereNotNull('driver_id')->where('driver_id', '!=', $driver)->whereHas('versions',
+        return Driver::whereKeyNot($driver)->where('cccd_no', $number)->exists() || DossierRecord::whereNotNull('driver_id')->where('driver_id', '!=', $driver)->whereHas('versions',
             fn ($query) => $query->where('confirmed', true)->where('provenance->verified_identity->identity', $number))->exists();
+    }
+
+    public function suggestedDriver(array $data, DossierSource $source, \Illuminate\Support\Collection $drivers): ?int
+    {
+        if ($data['subject'] !== 'driver') {
+            return null;
+        }
+        $matches = $drivers->filter(fn ($driver) => $this->compare($data, $source, 'driver', $driver->id)['status'] === 'match');
+
+        return $matches->count() === 1 ? $matches->first()->id : null;
     }
 
     public function compare(array $data, DossierSource $source, ?string $subject = null, ?int $id = null): array
@@ -40,6 +50,9 @@ class DossierComparison
         $fields = $data['fields'];
         if ($subject === 'driver') {
             $expected = $id ? $this->identity($id) : [];
+            if ($id && ! $expected && ($number = Driver::whereKey($id)->value('cccd_no')) && ! $this->otherDriverHasNumber($id, $number)) {
+                $expected = ['identity' => $number];
+            }
             $keys = ['person_name', 'birth_date', 'identity'];
         } else {
             $machine = $source->machine;
@@ -119,7 +132,7 @@ class DossierComparison
             app(DossierService::class)->check($linked, 'Cần xác nhận ID Zalo của tài xế trong cấu hình check-in trước khi lưu CCCD.');
         }
         $existing = $this->identity($driver->id);
-        app(DossierService::class)->check(! $existing || ($existing['identity'] === $values['identity'] && $this->normalize('person_name', $existing['person_name']) === $this->normalize('person_name', $values['person_name'])), 'CCCD đã đối chiếu khác hồ sơ hiện có. Kiểm tra riêng trước khi thay.');
+        app(DossierService::class)->check((! $driver->cccd_no || $driver->cccd_no === $values['identity']) && (! $existing || ($existing['identity'] === $values['identity'] && $this->normalize('person_name', $existing['person_name']) === $this->normalize('person_name', $values['person_name']) && (empty($existing['birth_date']) || empty($values['birth_date']) || $existing['birth_date'] === $values['birth_date']))), 'CCCD đã đối chiếu khác hồ sơ hiện có. Kiểm tra riêng trước khi thay.');
 
         return [...$existing, ...array_filter($values, fn ($value) => $value !== null)];
     }

@@ -34,7 +34,7 @@ class DossierController extends Controller
             return $this->drivers();
         }
         if ($request->query('tab') === 'batches') {
-            return view('dossiers.index', ['batches' => DossierBatch::withCount('sources')->latest()->paginate(25)->withQueryString()]);
+            return view('dossiers.index', ['batches' => DossierBatch::withCount(['sources' => fn ($q) => $q->whereNull('driver_reset_retired_at')])->latest()->paginate(25)->withQueryString()]);
         }
         $machines = Machine::orderBy('asset_code')->when($request->filled('q'), fn ($q) => $q->where('asset_code', 'like', '%'.$request->string('q').'%'))->get();
         $report->warm($machines);
@@ -61,7 +61,7 @@ class DossierController extends Controller
             $items = $items->filter(fn ($i) => ($i['counts'][$request->string('status')->toString()] ?? 0) > 0);
         }
 
-        return view('dossiers.index', ['items' => $items, 'totals' => $totals, 'labels' => DossierStatus::LABELS, 'batches' => null]);
+        return view('dossiers.index', ['items' => $this->paginate($items), 'totals' => $totals, 'labels' => DossierStatus::LABELS, 'batches' => null]);
     }
 
     public function batch(Request $request)
@@ -73,10 +73,10 @@ class DossierController extends Controller
 
     public function showBatch(DossierBatch $batch)
     {
-        $sources = DossierSource::with('machine')->where('batch_id', $batch->id)->orderBy('id')->get();
-        $progress = app(DossierProgress::class)->forSources($sources);
+        $sources = DossierSource::with('machine')->whereNull('driver_reset_retired_at')->where('batch_id', $batch->id)->orderBy('id')->paginate(20, ['*'], 'files_page')->withQueryString();
+        $progress = app(DossierProgress::class)->forSources($sources->getCollection());
 
-        return request()->boolean('progress') ? $this->progressResponse($progress) : view('dossiers.batch', compact('batch', 'progress'));
+        return request()->boolean('progress') ? $this->progressResponse($progress) : view('dossiers.batch', compact('batch', 'progress', 'sources'));
     }
 
     public function upload(Request $request, DossierBatch $batch, DossierService $service)
@@ -97,20 +97,33 @@ class DossierController extends Controller
 
     public function source(DossierSource $source)
     {
+        abort_if($source->driver_reset_retired_at, 404);
         $progress = app(DossierProgress::class)->forSources(DossierSource::with('machine')->whereKey($source)->get());
         if (request()->boolean('progress')) {
             return $this->progressResponse($progress);
         }
         $replacement = request()->filled('replace') ? DossierVersion::with('record')->where('source_id', $source->id)->where('confirmed', true)->findOrFail(request('replace')) : null;
 
+        $roster = app(\App\Services\DossierZaloRoster::class);
+        $applicants = $roster->applicants($source);
+
         return view('dossiers.source', ['source' => $source, 'progress' => $progress, 'machines' => Machine::orderBy('asset_code')->get(),
             'aiAvailable' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs'),
             'aiRun' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs') ? \App\Models\DossierAiRun::with(['pages', 'proposals'])->where('source_id', $source->id)->latest('id')->first() : null,
             'replacement' => $replacement,
             'senderIdentities' => app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn ($ids) => $ids->count() === 1),
-            'drivers' => Driver::orderBy('name')->get(), 'types' => DossierType::orderBy('sort_order')->get(),
+            'driverLabels' => $roster->labels($applicants),
+            'drivers' => $applicants, 'types' => DossierType::orderBy('sort_order')->get(),
             'assignments' => $source->machine?->assignments()->with(['project', 'commandCenter'])->get() ?? collect(),
             'versions' => DossierVersion::with(['record.type', 'record.driver', 'record.assignment'])->where('source_id', $source->id)->get()]);
+    }
+
+    private function paginate(\Illuminate\Support\Collection $items): \Illuminate\Pagination\LengthAwarePaginator
+    {
+        $page = \Illuminate\Pagination\Paginator::resolveCurrentPage();
+
+        return (new \Illuminate\Pagination\LengthAwarePaginator($items->forPage($page, 20)->values(), $items->count(), 20, $page,
+            ['path' => request()->url()]))->withQueryString();
     }
 
     private function progressResponse($progress)
@@ -127,6 +140,7 @@ class DossierController extends Controller
 
     public function retrySource(Request $request, DossierSource $source)
     {
+        abort_if($source->driver_reset_retired_at, 404);
         DB::transaction(function () use ($source, $request) {
             $s = DossierSource::lockForUpdate()->findOrFail($source->id);
             abort_if($s->status === 'ready' || $s->replacement_cancelled_at, 422);
@@ -141,6 +155,7 @@ class DossierController extends Controller
 
     public function file(DossierSource $source, string $kind, ?int $page = null)
     {
+        abort_if($source->driver_reset_retired_at, 404);
         abort_unless(in_array($kind, ['source', 'processed', 'thumbnail'], true), 404);
         $id = match ($kind) {
             'source' => $source->object_id, 'processed' => $source->processed_object_id, default => $source->previews[$page] ?? null
@@ -287,6 +302,7 @@ class DossierController extends Controller
         }
 
         return view('dossiers.machine', ['machine' => $machine, 'rows' => $report->rows($machine), 'drivers' => $drivers, 'progress' => $progress, 'editTypes' => DossierType::orderBy('sort_order')->get(),
+            'driverLabels' => app(\App\Services\DossierZaloRoster::class)->labels($drivers->pluck('driver')),
             'allDrivers' => Driver::orderBy('name')->get(), 'histories' => $machine->driverHistories()->with('driver')->latest('started_at')->get(),
             'exports' => DossierExport::where('machine_id', $machine->id)->where('user_id', auth()->id())->latest()->limit(20)->get(),
             'records' => DossierRecord::with(['type', 'versions'])->where('machine_id', $machine->id)->get()]);
@@ -338,7 +354,7 @@ class DossierController extends Controller
         $names = ZaloMessage::whereIn('sender_id', $links->keys())->whereIn('id',
             ZaloMessage::selectRaw('max(id)')->whereIn('sender_id', $links->keys())->groupBy('sender_id'))->pluck('sender_name', 'sender_id');
 
-        return view('dossiers.drivers', ['drivers' => Driver::orderBy('name')->get(), 'links' => $links, 'names' => $names,
+        return view('dossiers.drivers', ['drivers' => Driver::orderBy('name')->orderBy('id')->paginate(20)->withQueryString(), 'links' => $links, 'names' => $names,
             'machines' => Machine::whereIn('id', $snapshot['rows']->pluck('machine_id'))->pluck('asset_code', 'id'),
             'roster' => $snapshot['rows']->keyBy('driver_id')]);
     }

@@ -15,7 +15,7 @@
 <label>Chủ thể <select name="subject" class="subject-kind"><option value="machine" @selected($subject==='machine')>Máy / xe</option><option value="driver" @selected($subject==='driver')>Tài xế</option><option value="assignment" @selected($subject==='assignment')>Phân công / công trình</option></select></label>
 <label>Chọn đúng chủ thể <select name="subject_id" class="subject-id" required>
 <option data-subject="machine" value="{{ $source->machine_id }}" @selected($subject==='machine')>{{ $source->machine?->asset_code }}</option>
-@foreach($drivers as $d)<option data-subject="driver" value="{{ $d->id }}" @selected($subject==='driver' && $subjectId===$d->id)>{{ $d->name }} (#{{ $d->id }})</option>@endforeach
+@foreach($drivers as $d)<option data-subject="driver" value="{{ $d->id }}" @selected($subject==='driver' && $subjectId===$d->id)>{{ $driverLabels[$d->id] ?? $d->name }} (#{{ $d->id }})</option>@endforeach
 @foreach($assignments as $a)<option data-subject="assignment" value="{{ $a->id }}" @selected($subject==='assignment' && $subjectId===$a->id)>#{{ $a->id }} {{ $a->project?->name }} / {{ $a->commandCenter?->name }} / {{ $a->time_in }}</option>@endforeach
 </select></label>
 <label>Phạm vi phụ / giấy cùng loại <input name="instance" value="{{ $record?->instance ?? 'main' }}" required maxlength="100"><small>Giữ cùng tên để thay phiên bản; tên khác cho giấy cùng loại độc lập.</small></label>

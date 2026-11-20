@@ -1,5 +1,19 @@
 # Project State
 
+## Phase 18.5 — RESET LOCAL (20/11/2026)
+
+Nhánh `codex/phase18-5-zalo-dossier-roster`, base `4932538`. MySQL LOCAL `mmtb` tại Laragon đã backup và restore thử trên MySQL cách ly. Đã áp migration tồn đọng Phase 18 tới `2026_11_20_000003_prepare_zalo_driver_reset` theo path và chạy reset. Xóa 310 Driver và 7 lịch sử phân công. Giữ 269 máy, 787 sự kiện máy, 2 nguồn. DB này không có Zalo–máy, giấy cá nhân hoặc PDF xuất trước reset, nên seed tạo 0 tài xế.
+
+MySQL cách ly có fixture giấy hỗn hợp giữ 1 nguồn và 1 phiên bản máy, xóa 1 phiên bản cá nhân và 1 export. Hai tiến trình seed đồng thời tạo đúng 2 Driver cho 2 sender trùng tên. Preview SQLite đã reset riêng và dựng lại 2 sender. Số điện thoại được lưu qua trình duyệt trong cùng bộ lọc. Link tải PDF cá nhân cũ trả 404.
+
+NEXT ACTION: mở PR Phase 18.5 vào `production`, kiểm CI trên SHA nhánh rồi merge trong phiên ChatGPT. Chủ hệ thống chạy thủ công `docs/runbooks/DOSSIERS-DRIVER-RESET.md` trên SHA phát hành đã merge. Reset LOCAL đã được duyệt; OCR scan thật còn chờ nghiệm thu.
+
+## Phase 18.5 — LOCAL (20/11/2026)
+
+Nhánh `codex/phase18-5-zalo-dossier-roster` từ `4932538` (PR #74). Đã thêm tạo Driver theo sender ID cùng ánh xạ check-in, chọn chủ thể dựa trên bằng chứng CCCD, danh mục tài xế và phân trang. Thử hai process PHP trên SQLite preview, chỉ có một Driver và một liên kết. Không có migration mới hoặc đổi worker.
+
+NEXT ACTION: nghiệm thu qua `http://127.0.0.1:8864/drivers?zalo=linked&q=T-DEMO02` và `/dossiers` bằng hồ sơ thử. Xác minh thêm scan thật được phép dùng và concurrency MySQL trước phát hành. Giữ LOCAL, không push, merge, deploy hoặc đồng bộ lịch sử hosting.
+
 ## Phase 18.4 — LOCAL (20/11/2026)
 
 Branch `codex/phase18-4-dossier-workspace` từ `origin/production` `317190d` (PR #73). Ba tab Hồ sơ, luồng thêm/sửa giấy theo đúng chủ thể và tiến độ PDF tải lại được đã triển khai. Dùng stage/số trang thumbnail qua renew và số trang OCR đã lưu, không đổi hợp đồng worker. Migration additive Phase 18.4 mới chạy trên DB kiểm thử và SQLite dành cho preview.

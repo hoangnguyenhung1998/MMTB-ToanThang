@@ -39,7 +39,7 @@
 <form method="POST" action="{{ route('daily-photos.link') }}" class="row g-3 mb-4">
 @csrf
 <label class="col-md-5">Người gửi / ID Zalo <input class="form-control" name="sender_id" list="known-senders" required value="{{ old('sender_id',$senderFocus) }}"></label>
-<datalist id="known-senders">@foreach($senders as $sender)<option value="{{ $sender['sender_id'] }}">{{ $sender['sender_name'] }}</option>@endforeach</datalist>
+<datalist id="known-senders">@foreach($allSenders as $sender)<option value="{{ $sender['sender_id'] }}">{{ $sender['sender_name'] }}</option>@endforeach</datalist>
 <label class="col-md-5">Máy mặc định <select name="machine_id" class="form-select" required><option value="">Chọn máy</option>@foreach($machines as $machine)<option value="{{ $machine->id }}" @selected($focusMachine===$machine->id)>{{ $machine->asset_code }}</option>@endforeach</select></label>
 <div><button class="btn btn-primary">Lưu ánh xạ</button></div>
 </form>
@@ -80,6 +80,7 @@
     @endif
 </td></tr>@endforeach
 </tbody></table></div>
+{{ $senders->links() }}
 
 <h2 class="h5 mt-4">Phân loại backlog read-only</h2>
 <table class="table table-sm"><thead><tr><th>Reason</th><th>Mô tả</th><th>Số ảnh</th></tr></thead><tbody>

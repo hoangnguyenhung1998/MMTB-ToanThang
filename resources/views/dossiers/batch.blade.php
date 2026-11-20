@@ -11,6 +11,7 @@
 <div data-upload-status role="status"></div>
 </form>
 </section>
-@include('dossiers.progress',['progressUrl'=>route('dossiers.batch',[$batch,'progress'=>1])])
+@include('dossiers.progress',['progressUrl'=>route('dossiers.batch',[$batch,'progress'=>1,'files_page'=>$sources->currentPage()])])
+{{ $sources->links() }}
 </main>
 @endsection

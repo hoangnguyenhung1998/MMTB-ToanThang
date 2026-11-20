@@ -18,7 +18,10 @@ class DossierAiService
     public function request(DossierSource $source, int $actor, bool $automatic = false): DossierAiRun
     {
         app(DossierService::class)->check(\Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs'), 'Cần migration additive Phase18.1 sau khi xác minh và backup LOCAL.');
-        app(DossierService::class)->check($source->status === 'ready' && $source->page_count <= 60, 'PDF chưa sẵn sàng hoặc quá60trang cho pilot AI; nhập tay vẫn dùng được.');
+        app(DossierService::class)->check($source->status === 'ready' && ! $source->driver_reset_retired_at && $source->page_count <= 60, 'PDF chưa sẵn sàng hoặc quá60trang cho pilot AI; nhập tay vẫn dùng được.');
+        if ($source->machine_id && ! $source->replacement_cancelled_at) {
+            app(\App\Services\DossierZaloRoster::class)->provisionForMachine($source->machine_id, $actor);
+        }
         $probe = app(DossierVision::class)->probe();
 
         return DB::transaction(function () use ($source, $actor, $probe, $automatic) {
@@ -204,19 +207,30 @@ class DossierAiService
             return;
         }
         $target = $source->replacementVersion;
+        $candidates = app(\App\Services\DossierZaloRoster::class)->applicants($source);
+        $compare = app(DossierComparison::class);
         $proposals = $run->proposals()->where('generation', $run->generation)->get();
         foreach ($proposals as $proposal) {
             $data = $proposal->data;
             $type = $data['type_key'];
             $issues = array_filter($proposal->issues, fn ($issue) => ! str_starts_with($issue, 'Phải chọn/xác nhận') &&
                 ! str_starts_with($issue, 'Tên trùng chỉ') && ! str_starts_with($issue, 'Suy chu kỳ đăng kiểm'));
-            if (! $data['type_id'] || $data['multiple_documents'] || $issues || $type === 'identity') {
+            if (! $data['type_id'] || $data['multiple_documents'] || $issues) {
                 continue;
             }
             $record = $target?->record;
             $subject = $data['subject'];
-            $id = $subject === 'machine' ? $source->machine_id : $record?->driver_id;
-            $comparison = app(DossierComparison::class)->compare($data, $source, $subject, $id);
+            $id = $subject === 'machine' ? $source->machine_id : ($record?->driver_id ?? $compare->suggestedDriver($data, $source, $candidates));
+            $comparison = $compare->compare($data, $source, $subject, $id);
+            $identity = [];
+            if ($type === 'identity') {
+                $fields = $data['fields'];
+                if ($subject !== 'driver' || $comparison['status'] !== 'match' || empty($fields['person_name']['value']) || empty($fields['identity']['value']) || empty($fields['birth_date']['value'])) {
+                    continue;
+                }
+                $identity = ['verify_identity' => true, 'person_name' => $fields['person_name']['value'],
+                    'identity' => $fields['identity']['value'], 'birth_date' => $fields['birth_date']['value']];
+            }
             $tracking = in_array($type, DossierAiSchema::EXPIRY_TYPES, true);
             $expiry = $data['fields']['expiry'] ?? null;
             if ($target) {
@@ -227,7 +241,7 @@ class DossierAiService
                     continue;
                 }
             } else {
-                $sameType = $proposals->filter(fn ($candidate) => $candidate->data['type_id'] === $data['type_id'] && $candidate->data['subject'] === $subject);
+                $sameType = $proposals->filter(fn ($candidate) => $candidate->data['type_id'] === $data['type_id'] && $candidate->data['subject'] === $subject && ($subject !== 'driver' || $compare->suggestedDriver($candidate->data, $source, $candidates) === $id));
                 if ($sameType->count() !== 1 || ! $id || $comparison['status'] !== 'match') {
                     continue;
                 }
@@ -238,6 +252,7 @@ class DossierAiService
             $pages = $run->pages()->whereIn('page', $data['pages'])->get()->keyBy('page');
             try {
                 $this->review($proposal, [
+                    ...$identity,
                     'source_revision' => $source->revision, 'acknowledge_stale' => true,
                     'reviewed_evidence' => true, 'type_id' => $data['type_id'], 'subject' => $subject, 'subject_id' => $id,
                     'record_id' => $record?->id, 'instance' => $record?->instance ?? 'main',

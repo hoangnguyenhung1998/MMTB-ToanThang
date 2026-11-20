@@ -33,8 +33,13 @@ class DossierService
         $hash = hash_file('sha256', $file->getRealPath());
         $existing = DossierSource::where('sha256', $hash)->first();
         if ($existing) {
+            $this->check(! $existing->driver_reset_retired_at, 'Nguồn đã ngừng sử dụng sau reset tài xế.');
             $this->check(! $replacement || $existing->replacement_version_id === $replacement->id, 'PDF đã thuộc một nguồn khác.');
             $this->check(! $target || $existing->document_target === $target, 'PDF đã thuộc một hồ sơ khác.');
+
+            if ($existing->machine_id) {
+                app(\App\Services\DossierZaloRoster::class)->provisionForMachine($existing->machine_id, $actor);
+            }
 
             return ['source' => $existing, 'duplicate' => true];
         }
@@ -80,6 +85,10 @@ class DossierService
             throw $e;
         }
 
+        if ($source->machine_id) {
+            app(\App\Services\DossierZaloRoster::class)->provisionForMachine($source->machine_id, $actor);
+        }
+
         return ['source' => $source->fresh(), 'duplicate' => false];
     }
 
@@ -91,7 +100,7 @@ class DossierService
             'excluded_pages.*' => ['integer', 'min:1'], 'confirm' => ['required', 'boolean']])->validate();
         DB::transaction(function () use ($source, $data, $actor) {
             $s = DossierSource::lockForUpdate()->findOrFail($source->id);
-            $this->check(! $s->confirmed && $s->status === 'ready', 'Hồ sơ đã xác nhận hoặc PDF chưa sẵn sàng.');
+            $this->check(! $s->confirmed && $s->status === 'ready' && ! $s->driver_reset_retired_at, 'Hồ sơ đã xác nhận hoặc PDF chưa sẵn sàng.');
             $this->check($s->revision === (int) $data['revision'], 'Trang đã được sửa ở phiên khác; tải lại trước khi lưu.');
             $versions = DossierVersion::where('source_id', $s->id)->get();
             $fixed = $s->document_target || $s->replacement_version_id;
@@ -110,6 +119,9 @@ class DossierService
                 'confirmed' => $data['confirm'], 'revision' => $s->revision + 1]);
             DossierAudit::write($data['confirm'] ? 'source_confirmed' : 'source_draft_saved', $s, $actor, $before);
         });
+        if ($machineId = $source->fresh()->machine_id) {
+            app(\App\Services\DossierZaloRoster::class)->provisionForMachine($machineId, $actor);
+        }
     }
 
     public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null, bool $newScopeOnly = false, bool $inlineCorrection = false): DossierVersion
@@ -157,7 +169,7 @@ class DossierService
             if (! $draft && ($existing = DossierVersion::where('request_id', $data['request_id'])->lockForUpdate()->first())) {
                 return $existing;
             }
-            $this->check($source->status === 'ready' && $source->machine_confirmed, 'Lưu đối chiếu máy trước; nguồn phải sẵn sàng.');
+            $this->check($source->status === 'ready' && ! $source->driver_reset_retired_at && $source->machine_confirmed, 'Lưu đối chiếu máy trước; nguồn phải sẵn sàng.');
             $correction = empty($data['corrects_id']) ? null : DossierVersion::where('source_id', $source->id)->where('confirmed', true)->lockForUpdate()->findOrFail($data['corrects_id']);
             $this->check(! $correction?->archived, 'Giấy sửa đã lưu trữ; tải lại và kiểm tra chuỗi hiện tại.');
             $pages = array_map(fn ($p) => ['page' => (int) $p['page'], 'rotation' => (int) $p['rotation']], $data['pages']);

@@ -12,5 +12,6 @@
 <td>{{ $machines[$roster[$driver->id]->machine_id ?? 0] ?? '—' }}</td></tr>
 @endforeach
 </tbody></table></div>
+{{ $drivers->links() }}
 </main>
 @endsection
