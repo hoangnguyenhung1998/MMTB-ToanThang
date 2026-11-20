@@ -43,7 +43,7 @@ class DossierRemoteJobs
         $existing = DossierWorkerJob::where('dedupe_key', $key)->first();
         if ($existing) {
             if ($existing->status === 'cancelled') {
-                $existing->update(['status' => 'pending', 'attempts' => 0, 'claim_token' => null, 'worker_id' => null, 'lease_until' => null, 'available_at' => null, 'error_code' => null]);
+                $existing->update(['status' => 'pending', 'queued_at' => now(), 'attempts' => 0, 'claim_token' => null, 'worker_id' => null, 'lease_until' => null, 'available_at' => null, 'error_code' => null]);
             }
 
             return $existing;
@@ -63,7 +63,7 @@ class DossierRemoteJobs
             $obj = app(DossierObjects::class)->source($s);
             $job = $this->enqueue('prepare', $s->id, ['objects' => ['source' => app(DossierObjects::class)->descriptor($obj)], 'max_pages' => config('dossiers.max_pages')]);
             if ($job->status === 'failed') {
-                $job->update(['status' => 'pending', 'attempts' => 0, 'claim_token' => null, 'worker_id' => null, 'lease_until' => null, 'available_at' => null, 'error_code' => null]);
+                $job->update(['status' => 'pending', 'queued_at' => now(), 'attempts' => 0, 'claim_token' => null, 'worker_id' => null, 'lease_until' => null, 'available_at' => null, 'error_code' => null]);
             }
 
             return $job;
@@ -145,7 +145,7 @@ class DossierRemoteJobs
                     continue;
                 }
                 if ($j->attempts >= config('dossiers.worker.max_attempts', 3)) {
-                    $j->update(['status' => 'failed', 'error_code' => 'attempts_exhausted']);
+                    $j->update(['status' => 'failed', 'error_code' => 'attempts_exhausted', 'attempt_history' => $j->status === 'processing' ? $j->finishedAttempt('expired', 'attempts_exhausted') : $j->attempt_history]);
                     $this->domainFailure($j);
 
                     continue;
@@ -165,7 +165,11 @@ class DossierRemoteJobs
                     }
                     $r->update(['context' => [...$r->context, 'ai_profile' => $worker->ai_profile, 'provider' => $worker->provider, 'model' => $worker->model], 'status' => 'processing']);
                 }
-                $j->update(['status' => 'processing', 'worker_id' => $worker->id, 'claim_token' => (string) Str::uuid(), 'attempts' => $j->attempts + 1, 'claimed_at' => now(), 'lease_until' => now()->addSeconds(config('dossiers.worker.lease_seconds', 180)), 'ai_profile' => str_starts_with($j->kind, 'ai_') ? $worker->ai_profile : null, 'error_code' => null]);
+                $reclaimed = $j->status === 'processing';
+                $j->update(['status' => 'processing', 'stage' => 'download', 'progress' => 0, 'worker_id' => $worker->id,
+                    'attempt_history' => $reclaimed ? $j->finishedAttempt('expired', 'lease_expired') : $j->attempt_history,
+                    'queued_at' => $reclaimed ? $j->lease_until : ($j->queued_at ?? $j->created_at),
+                    'claim_token' => (string) Str::uuid(), 'attempts' => $j->attempts + 1, 'claimed_at' => now(), 'lease_until' => now()->addSeconds(config('dossiers.worker.lease_seconds', 180)), 'ai_profile' => str_starts_with($j->kind, 'ai_') ? $worker->ai_profile : null, 'error_code' => null]);
 
                 return $j->fresh();
             }
@@ -378,7 +382,7 @@ class DossierRemoteJobs
             foreach ($out as $o) {
                 $o->update(['status' => 'published']);
             }
-            $j->update(['status' => 'succeeded', 'result' => $r, 'result_hash' => $digest, 'error_code' => null]);
+            $j->update(['status' => 'succeeded', 'result' => $r, 'result_hash' => $digest, 'error_code' => null, 'attempt_history' => $j->finishedAttempt('succeeded')]);
             if (str_starts_with($j->kind, 'ai_')) {
                 DB::table('dossier_ai_control')->where('id', 1)->update(['next_call_at' => now()->addSeconds(max(10, (int) config('dossiers.ai.spacing_seconds', 10)))]);
             }
@@ -399,7 +403,8 @@ class DossierRemoteJobs
             $j = DossierWorkerJob::lockForUpdate()->findOrFail($job->id);
             $this->owner($j, ...$claim);
             $retry = $retryable && $j->attempts < config('dossiers.worker.max_attempts', 3);
-            $j->update(['status' => $retry ? 'pending' : 'failed', 'lease_until' => null, 'available_at' => now()->addSeconds($j->attempts > 1 ? 120 : 30), 'error_code' => $code]);
+            $j->update(['status' => $retry ? 'pending' : 'failed', 'lease_until' => null, 'available_at' => now()->addSeconds($j->attempts > 1 ? 120 : 30), 'error_code' => $code,
+                'attempt_history' => $j->finishedAttempt('failed', $code), 'queued_at' => $retry ? now() : $j->queued_at]);
             if (! $retry) {
                 $this->domainFailure($j);
             }

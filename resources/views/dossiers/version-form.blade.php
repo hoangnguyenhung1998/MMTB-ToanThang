@@ -2,15 +2,16 @@
     $draft = $draft ?? null;
     $values = $draft ?? ($replacement ?? null);
     $record = $values?->record ?? $source->replacementVersion?->record;
-    $subject = $record?->driver_id ? 'driver' : ($record?->assignment_id ? 'assignment' : 'machine');
-    $subjectId = $record?->driver_id ?? $record?->assignment_id ?? $source->machine_id;
+    $target = $source->document_target;
+    $subject = $record?->driver_id ? 'driver' : ($record?->assignment_id ? 'assignment' : ($target['subject'] ?? 'machine'));
+    $subjectId = $record?->driver_id ?? $record?->assignment_id ?? $target['id'] ?? $source->machine_id;
 @endphp
 <form class="box version-form" method="post" action="{{ $draft ? route('dossiers.versions.save',$draft) : route('dossiers.versions.create') }}">@csrf
 <input type="hidden" name="request_id" value="{{ $draft?->request_id ?? (string) Str::uuid() }}"><input type="hidden" name="source_id" value="{{ $source->id }}">
 @if($record)<input type="hidden" name="record_id" value="{{ $record->id }}">@endif
 @if($replacement ?? $draft?->corrects_id)<input type="hidden" name="corrects_id" value="{{ $replacement?->id ?? $draft?->corrects_id }}">@endif
 <div class="fields">
-<label>Loại giấy <select name="type_id" required>@foreach($types as $t)<option value="{{ $t->id }}" @selected($record?->type_id===$t->id)>{{ $t->name }}</option>@endforeach</select></label>
+<label>Loại giấy <select name="type_id" required>@foreach($types as $t)<option value="{{ $t->id }}" @selected(($record?->type_id ?? $target['type_id'] ?? null)===$t->id)>{{ $t->name }}</option>@endforeach</select></label>
 <label>Chủ thể <select name="subject" class="subject-kind"><option value="machine" @selected($subject==='machine')>Máy / xe</option><option value="driver" @selected($subject==='driver')>Tài xế</option><option value="assignment" @selected($subject==='assignment')>Phân công / công trình</option></select></label>
 <label>Chọn đúng chủ thể <select name="subject_id" class="subject-id" required>
 <option data-subject="machine" value="{{ $source->machine_id }}" @selected($subject==='machine')>{{ $source->machine?->asset_code }}</option>
@@ -33,7 +34,6 @@
 <details><summary>Đối chiếu CCCD hoặc bằng chứng danh sách BIC</summary>
 <p>Chỉ điền định danh khi đã đối chiếu CCCD với người được chọn.</p>
 <label>Họ tên pháp lý <input name="identity_check[person_name]" autocomplete="off"></label>
-<label>Ngày sinh <input type="date" name="identity_check[birth_date]"></label>
 <label>Số CCCD <input name="identity_check[identity]" inputmode="numeric" autocomplete="off"></label>
 <label>Trang danh sách BIC <input type="number" name="bic_page" min="1" max="{{ $source->page_count }}"></label>
 <label>Dòng đã đối chiếu trong danh sách BIC <textarea name="bic_quote" maxlength="2000"></textarea></label>

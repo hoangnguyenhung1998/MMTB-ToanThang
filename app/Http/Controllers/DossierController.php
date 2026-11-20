@@ -16,6 +16,7 @@ use App\Models\MachineDriverHistory;
 use App\Models\ZaloMessage;
 use App\Services\Dossiers\DossierAudit;
 use App\Services\Dossiers\DossierExportService;
+use App\Services\Dossiers\DossierProgress;
 use App\Services\Dossiers\DossierReport;
 use App\Services\Dossiers\DossierService;
 use App\Services\Dossiers\DossierStatus;
@@ -29,9 +30,29 @@ class DossierController extends Controller
 {
     public function index(Request $request, DossierReport $report)
     {
+        if ($request->query('tab') === 'drivers') {
+            return $this->drivers();
+        }
+        if ($request->query('tab') === 'batches') {
+            return view('dossiers.index', ['batches' => DossierBatch::withCount('sources')->latest()->paginate(25)->withQueryString()]);
+        }
         $machines = Machine::orderBy('asset_code')->when($request->filled('q'), fn ($q) => $q->where('asset_code', 'like', '%'.$request->string('q').'%'))->get();
         $report->warm($machines);
-        $items = $machines->flatMap(fn ($machine) => $report->pairs($machine));
+        $sources = DossierSource::whereNull('replacement_cancelled_at')->with(['replacementVersion.record', 'latestAiRun' => fn ($q) => $q->withCount([
+            'proposals as needs_review' => fn ($p) => $p->whereNull('version_id')->whereColumn('generation', 'dossier_ai_runs.generation'),
+        ])])->whereHas('latestAiRun', fn ($q) => $q->where('status', 'ready'))->get();
+        $byDriver = $sources->groupBy(fn ($s) => $s->replacementVersion?->record?->driver_id ?? (($s->document_target['subject'] ?? null) === 'driver' ? $s->document_target['id'] : null));
+        $byMachine = $byDriver->get('', collect())->groupBy('machine_id');
+        $items = $machines->map(function ($machine) use ($report, $byDriver, $byMachine) {
+            $rows = $report->rows($machine);
+            $drivers = $report->drivers($machine);
+            $pending = $byMachine->get($machine->id, collect())->concat($drivers->flatMap(fn ($h) => $byDriver->get($h->driver_id, collect())));
+
+            $counts = $report->summary($rows);
+            $counts['review'] = ($counts['review'] ?? 0) + $pending->sum('latestAiRun.needs_review');
+
+            return compact('machine', 'drivers', 'counts');
+        });
         $totals = [];
         foreach (array_keys(DossierStatus::LABELS) as $s) {
             $totals[$s] = $items->sum(fn ($i) => $i['counts'][$s] ?? 0);
@@ -40,8 +61,7 @@ class DossierController extends Controller
             $items = $items->filter(fn ($i) => ($i['counts'][$request->string('status')->toString()] ?? 0) > 0);
         }
 
-        return view('dossiers.index', ['items' => $items, 'totals' => $totals, 'labels' => DossierStatus::LABELS,
-            'batches' => DossierBatch::latest()->limit(20)->get()]);
+        return view('dossiers.index', ['items' => $items, 'totals' => $totals, 'labels' => DossierStatus::LABELS, 'batches' => null]);
     }
 
     public function batch(Request $request)
@@ -53,7 +73,10 @@ class DossierController extends Controller
 
     public function showBatch(DossierBatch $batch)
     {
-        return view('dossiers.batch', ['batch' => $batch, 'sources' => DossierSource::with(['machine', 'latestAiRun' => fn ($query) => $query->withCount(['pages', 'pages as ready_pages_count' => fn ($pages) => $pages->where('status', 'ready')])])->where('batch_id', $batch->id)->get()]);
+        $sources = DossierSource::with('machine')->where('batch_id', $batch->id)->orderBy('id')->get();
+        $progress = app(DossierProgress::class)->forSources($sources);
+
+        return request()->boolean('progress') ? $this->progressResponse($progress) : view('dossiers.batch', compact('batch', 'progress'));
     }
 
     public function upload(Request $request, DossierBatch $batch, DossierService $service)
@@ -74,9 +97,13 @@ class DossierController extends Controller
 
     public function source(DossierSource $source)
     {
+        $progress = app(DossierProgress::class)->forSources(DossierSource::with('machine')->whereKey($source)->get());
+        if (request()->boolean('progress')) {
+            return $this->progressResponse($progress);
+        }
         $replacement = request()->filled('replace') ? DossierVersion::with('record')->where('source_id', $source->id)->where('confirmed', true)->findOrFail(request('replace')) : null;
 
-        return view('dossiers.source', ['source' => $source, 'machines' => Machine::orderBy('asset_code')->get(),
+        return view('dossiers.source', ['source' => $source, 'progress' => $progress, 'machines' => Machine::orderBy('asset_code')->get(),
             'aiAvailable' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs'),
             'aiRun' => \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs') ? \App\Models\DossierAiRun::with(['pages', 'proposals'])->where('source_id', $source->id)->latest('id')->first() : null,
             'replacement' => $replacement,
@@ -84,6 +111,11 @@ class DossierController extends Controller
             'drivers' => Driver::orderBy('name')->get(), 'types' => DossierType::orderBy('sort_order')->get(),
             'assignments' => $source->machine?->assignments()->with(['project', 'commandCenter'])->get() ?? collect(),
             'versions' => DossierVersion::with(['record.type', 'record.driver', 'record.assignment'])->where('source_id', $source->id)->get()]);
+    }
+
+    private function progressResponse($progress)
+    {
+        return response()->json(['html' => view('dossiers.progress-rows', compact('progress'))->render(), 'active' => $progress->contains('pending', true)], 200, ['Cache-Control' => 'private, no-store']);
     }
 
     public function saveSource(Request $request, DossierSource $source, DossierService $service)
@@ -159,7 +191,67 @@ class DossierController extends Controller
         $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $request->user()->id, 'auto_analyze' => true]);
         $result = $service->upload($batch, $request->file('file'), $request->user()->id, $version);
 
+        if ($request->expectsJson()) {
+            return response()->json(['url' => route('dossiers.source', $result['source']), 'duplicate' => $result['duplicate']]);
+        }
+
         return redirect()->route('dossiers.source', $result['source']);
+    }
+
+    public function addMachineDocument(Request $request, Machine $machine, DossierService $service)
+    {
+        return $this->addDocument($request, $service, 'machine', $machine->id, $machine->dossier_group, $machine->asset_code);
+    }
+
+    public function addDriverDocument(Request $request, Driver $driver, DossierService $service)
+    {
+        return $this->addDocument($request, $service, 'driver', $driver->id, 'driver', $driver->name);
+    }
+
+    private function addDocument(Request $request, DossierService $service, string $subject, int $id, string $group, string $name)
+    {
+        if ($request->isMethod('get')) {
+            $types = DossierType::whereJsonContains('groups', $group)->orderBy('sort_order')->get();
+            $existing = DossierRecord::where($subject.'_id', $id)->where('instance', 'main')->with('versions')->get()
+                ->mapWithKeys(fn ($record) => [$record->type_id => app(DossierStatus::class)->current($record)])->filter(fn ($v) => $v && ! $v->archived);
+
+            return view('dossiers.add', compact('types', 'existing', 'name'));
+        }
+        $data = $request->validate(['type_id' => ['required', 'integer', 'exists:dossier_types,id'], 'file' => 'required|file']);
+        $type = DossierType::findOrFail($data['type_id']);
+        $service->check(in_array($group, $type->groups, true), 'Loại giấy không áp dụng cho hồ sơ này.');
+        $target = ['subject' => $subject, 'id' => $id, 'type_id' => $type->id, 'scope' => "$subject:$id:{$type->id}:main"];
+        $actor = $request->user()->id;
+        $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $actor, 'auto_analyze' => $request->boolean('auto_analyze')]);
+        try {
+            $result = $service->upload($batch, $request->file('file'), $actor, target: $target);
+        } finally {
+            DossierBatch::whereKey($batch)->doesntHave('sources')->delete();
+        }
+
+        return $request->expectsJson() ? response()->json(['url' => route('dossiers.source', $result['source']), 'duplicate' => $result['duplicate']]) : redirect()->route('dossiers.source', $result['source']);
+    }
+
+    public function correct(Request $request, DossierVersion $version, DossierService $service)
+    {
+        $data = $request->validate(['request_id' => 'required|uuid', 'type_id' => 'required|integer|exists:dossier_types,id', 'reason' => 'required|string|max:2000',
+            'expiry_precision' => 'nullable|in:unknown,day,month,minute,permanent', 'expiry_value' => 'nullable|string|max:30', 'month_rule' => 'nullable|in:end_of_month']);
+        $record = $version->record;
+        $type = DossierType::findOrFail($data['type_id']);
+        $tracked = in_array($type->ai_key, \App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES, true);
+        $subject = $record->driver_id ? 'driver' : ($record->assignment_id ? 'assignment' : 'machine');
+        $metadata = $version->only(['source_id', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'note']);
+        if ($record->type->ai_key === 'identity' && $record->type_id !== $type->id) {
+            $metadata['number'] = null;
+        }
+        $service->saveVersion([
+            ...$metadata, ...$data,
+            'record_id' => $record->id, 'corrects_id' => $version->id, 'subject' => $subject, 'subject_id' => $record->{$subject.'_id'},
+            'instance' => $record->instance, 'confirmed' => true, 'effective_at' => app(DossierStatus::class)->now()->format('Y-m-d H:i:s'),
+            'expiry_precision' => $tracked ? ($data['expiry_precision'] ?? 'unknown') : 'not_tracked',
+        ], $request->user()->id, insuranceEvidence: $type->id === $record->type_id ? ($version->provenance['insurance_evidence'] ?? null) : null, inlineCorrection: true);
+
+        return back()->with('success', 'Đã sửa giấy và ghi lịch sử phiên bản.');
     }
 
     public function cancelReplacement(Request $request, DossierSource $source, DossierService $service)
@@ -188,7 +280,13 @@ class DossierController extends Controller
 
     public function machine(Machine $machine, DossierReport $report)
     {
-        return view('dossiers.machine', ['machine' => $machine, 'rows' => $report->rows($machine), 'drivers' => $report->drivers($machine),
+        $drivers = $report->drivers($machine);
+        $progress = $this->subjectProgress($machine->id, $drivers->pluck('driver_id')->all());
+        if (request()->boolean('progress')) {
+            return $this->progressResponse($progress);
+        }
+
+        return view('dossiers.machine', ['machine' => $machine, 'rows' => $report->rows($machine), 'drivers' => $drivers, 'progress' => $progress, 'editTypes' => DossierType::orderBy('sort_order')->get(),
             'allDrivers' => Driver::orderBy('name')->get(), 'histories' => $machine->driverHistories()->with('driver')->latest('started_at')->get(),
             'exports' => DossierExport::where('machine_id', $machine->id)->where('user_id', auth()->id())->latest()->limit(20)->get(),
             'records' => DossierRecord::with(['type', 'versions'])->where('machine_id', $machine->id)->get()]);
@@ -247,6 +345,10 @@ class DossierController extends Controller
 
     public function driver(Driver $driver, DossierReport $report)
     {
+        $progress = $this->subjectProgress(null, [$driver->id]);
+        if (request()->boolean('progress')) {
+            return $this->progressResponse($progress);
+        }
         $identity = app(\App\Services\Dossiers\Ai\DossierComparison::class)->identity($driver->id);
         $senderIds = app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn ($ids) => $ids->count() === 1 && $ids->contains($driver->id))->keys();
         $senderNames = collect();
@@ -258,10 +360,25 @@ class DossierController extends Controller
             }
         }
 
-        return view('dossiers.driver', ['driver' => $driver, 'identity' => $identity, 'senderNames' => $senderNames->reverse()->values(),
+        return view('dossiers.driver', ['driver' => $driver, 'identity' => $identity, 'senderNames' => $senderNames->reverse()->values(), 'progress' => $progress, 'editTypes' => DossierType::orderBy('sort_order')->get(),
             'senderIds' => $senderIds, 'rows' => $report->subjectRows('driver', $driver->id, 'driver', null, $driver->name),
             'histories' => $driver->machineHistories()->with('machine')->latest('started_at')->get(),
             'records' => DossierRecord::with(['type', 'versions'])->where('driver_id', $driver->id)->get()]);
+    }
+
+    private function subjectProgress(?int $machine, array $drivers)
+    {
+        $sources = DossierSource::with(['machine', 'replacementVersion.record'])->withExists(['versions' => fn ($q) => $q->where('confirmed', true)])->where(function ($query) use ($machine, $drivers) {
+            $query->where(fn ($q) => $q->where('document_target->subject', 'driver')->whereIn('document_target->id', $drivers));
+            if ($machine) {
+                $query->orWhere(fn ($q) => $q->where('document_target->subject', 'machine')->where('machine_id', $machine));
+            }
+            $query->orWhereHas('replacementVersion.record', function ($q) use ($machine, $drivers) {
+                $q->whereIn('driver_id', $drivers)->when($machine, fn ($q) => $q->orWhere('machine_id', $machine));
+            });
+        })->latest('id')->limit(50)->get();
+
+        return app(DossierProgress::class)->forSources($sources);
     }
 
     public function sender(Request $request, Driver $driver, DossierService $service)

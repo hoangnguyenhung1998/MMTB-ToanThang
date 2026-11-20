@@ -1,5 +1,15 @@
 # Project State
 
+## Phase 18.4 — LOCAL (20/11/2026)
+
+Branch `codex/phase18-4-dossier-workspace` từ `origin/production` `317190d` (PR #73). Ba tab Hồ sơ, luồng thêm/sửa giấy theo đúng chủ thể và tiến độ PDF tải lại được đã triển khai. Dùng stage/số trang thumbnail qua renew và số trang OCR đã lưu, không đổi hợp đồng worker. Migration additive Phase 18.4 mới chạy trên DB kiểm thử và SQLite dành cho preview.
+
+Laravel Hồ sơ/Zalo/OCR/check-in 148 test / 1195 assertion PASS. Trình duyệt desktop và 390 px đã kiểm ba tab, hồ sơ hai tài xế, chọn scan đúng trang, ô duyệt lô và gửi PDF bốn trang. Đóng/mở lại vẫn thấy mốc nhận và thời gian. Thử lại sau lỗi rồi hoàn tất 4/4 bằng công cụ PDF LOCAL. OCR mock, chưa gọi AI thật.
+
+Đã nghiệm thu thanh điều hướng bốn nút trên desktop và ở 390 px. Preview LOCAL tại `http://127.0.0.1:8864/dossiers`.
+
+NEXT ACTION: phiên ChatGPT mở PR từ `codex/phase18-4-dossier-workspace` vào `production`, xác minh CI trên SHA đã push rồi thực hiện merge theo yêu cầu của người dùng. Lượt commit/push này dừng ở nhánh Phase 18.4.
+
 ## Phase 18.3 — LOCAL (20/11/2026)
 
 Branch `codex/phase18-review-recovery`, đã tích hợp `origin/production` tại `17a7614` (merge PR #72). Hồ sơ đọc ánh xạ check-in theo Zalo sender ID, hiển thị xung đột dữ liệu cũ và giữ lịch sử vận hành riêng. Đã bổ sung danh bạ tài xế, duyệt OCR rút gọn, thay trọn giấy và bộ PDF in theo phiên bản đã chốt.

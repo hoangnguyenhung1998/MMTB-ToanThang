@@ -11,4 +11,9 @@ class DossierBatch extends Model
     public $incrementing = false;
 
     protected $keyType = 'string';
+
+    public function sources()
+    {
+        return $this->hasMany(DossierSource::class, 'batch_id');
+    }
 }
