@@ -17,8 +17,14 @@ class DossierExportService
         $service->check(count($drivers) === count(array_unique($drivers)) && ! array_diff($drivers, $report->drivers($machine)->pluck('driver_id')->all()), 'Chọn tài xế đang phân công máy.');
         $service->check(count($ids) > 0 && count($ids) === count(array_unique($ids)) && count($ids) <= 200, 'Chọn giấy không trùng, tối đa 200.');
         $rows = $report->rows($machine, $drivers);
-        $allowed = $rows->filter(fn ($r) => $r['version'])->keyBy(fn ($r) => $r['version']->id);
+        $allowed = $rows->filter(fn ($r) => $r['version']?->confirmed && ! $r['version']->archived && $r['status'] !== 'future')->keyBy(fn ($r) => $r['version']->id);
         $warnings = $rows->whereIn('status', ['missing', 'expired', 'review', 'future', 'archived'])->map(fn ($r) => $r['type']->name.': '.$r['subject_name'].' — '.$r['label'])->all();
+        $pendingTargets = \App\Models\DossierSource::whereIn('replacement_version_id', $allowed->keys())
+            ->whereNull('replacement_cancelled_at')->get()->keyBy('replacement_version_id');
+        foreach ($pendingTargets as $versionId => $pending) {
+            $row = $allowed[$versionId];
+            $warnings[] = $row['type']->name.' / '.$row['subject_name'].' — bản thay #'.$pending->id.' đang chờ ('.$pending->status.'). Dùng bản hiện hành.';
+        }
         $manifest = [];
         $seen = [];
         foreach ($ids as $id) {
@@ -55,7 +61,7 @@ class DossierExportService
         return ['manifest' => $manifest, 'warnings' => array_values($warnings), 'drivers' => $drivers];
     }
 
-    public function create(Machine $machine, array $drivers, array $ids, string $requestId, bool $acknowledged, int $actor): DossierExport
+    public function create(Machine $machine, array $drivers, array $ids, string $requestId, bool $acknowledged, int $actor, bool $printCurrent = false): DossierExport
     {
         $existing = DossierExport::where('request_id', $requestId)->first();
         if ($existing) {
@@ -64,7 +70,7 @@ class DossierExportService
             return $existing;
         }
 
-        return DB::transaction(function () use ($machine, $drivers, $ids, $requestId, $acknowledged, $actor) {
+        return DB::transaction(function () use ($machine, $drivers, $ids, $requestId, $acknowledged, $actor, $printCurrent) {
             // Lock subjects and version records so confirmation/archive cannot race manifest capture.
             Machine::whereKey($machine->id)->lockForUpdate()->firstOrFail();
             $existing = DossierExport::where('request_id', $requestId)->lockForUpdate()->first();
@@ -72,6 +78,16 @@ class DossierExportService
                 abort_unless($existing->user_id === $actor && $existing->machine_id === $machine->id, 403);
 
                 return $existing;
+            }
+            if ($printCurrent) {
+                $report = app(DossierReport::class);
+                $drivers = $report->drivers($machine)->pluck('driver_id')->all();
+                $ids = $report->rows($machine, $drivers)
+                    ->filter(fn ($row) => $row['version']?->confirmed && ! $row['version']->archived && $row['status'] !== 'future')
+                    ->sortBy([fn ($a, $b) => ($a['subject'] === 'driver') <=> ($b['subject'] === 'driver'),
+                        ['subject_id', 'asc'], ['type.sort_order', 'asc'], ['version.id', 'asc']])
+                    ->map(fn ($row) => $row['version']->id)->unique()->values()->all();
+                $acknowledged = true;
             }
             $versions = DossierVersion::whereIn('id', $ids)->get();
             \App\Models\DossierRecord::whereIn('id', $versions->pluck('record_id'))->orderBy('id')->lockForUpdate()->get();

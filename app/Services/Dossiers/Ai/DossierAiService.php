@@ -23,6 +23,7 @@ class DossierAiService
 
         return DB::transaction(function () use ($source, $actor, $probe, $automatic) {
             $s = DossierSource::lockForUpdate()->findOrFail($source->id);
+            app(DossierService::class)->check(! $s->replacement_cancelled_at, 'Bản thay đã hủy.');
             $context = ['machine_id' => $s->machine_id, 'group' => $s->machine?->dossier_group, 'asset_code' => $s->machine?->asset_code, 'chassis_no' => $s->machine?->chassis_no, 'plate' => $s->machine?->plate_no, 'manufacture_year' => $s->machine?->manufacture_year, 'ai_profile' => $probe['ai_profile'] ?? null, 'catalog_sha256' => hash('sha256', DB::table('dossier_types')->whereNotNull('ai_key')->orderBy('ai_key')->pluck('ai_key')->toJson()), 'rule_ids' => DB::table('dossier_ai_rules')->where('enabled', true)->where('effective_from', '<=', app(\App\Services\Dossiers\DossierStatus::class)->now()->toDateString())->pluck('id')->all(), 'provider' => $probe['provider'] ?? null, 'model' => $probe['model'] ?? null];
             $settings = [DB::table('dossier_types')->orderBy('id')->get()->toArray(), DB::table('dossier_ai_rules')->orderBy('id')->get()->toArray()];
             $key = hash('sha256', json_encode([$s->id, $s->sha256, DossierAiSchema::VERSION, $context, $settings]));
@@ -106,7 +107,7 @@ class DossierAiService
                 return;
             }
             $o = app(\App\Services\Dossiers\DossierObjects::class)->source($r->source, (bool) $r->source->processed_object_id);
-            $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page)], $page->revision);
+            $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page, $r->source->replacementVersion?->record?->type?->ai_key)], $page->revision);
         } elseif (! $r->pages()->where('status', '!=', 'ready')->exists()) {
             $pages = $r->pages()->orderBy('page')->get()->reject(fn ($p) => ($p->result['kind'] ?? null) === 'blank')->map(fn ($p) => ['page' => $p->page, 'data' => $p->result])->values()->all();
             if (! $pages) {
@@ -150,7 +151,8 @@ class DossierAiService
         Validator::make($result, ['response.data' => 'required|array', 'response.usage' => 'present|array', 'elapsed_ms' => 'required|integer|min:0|max:3600000'])->validate();
         // Lock source before run, matching human review lock order.
         $run = DossierAiRun::findOrFail($job->input['run_id']);
-        DossierSource::lockForUpdate()->findOrFail($run->source_id);
+        $source = DossierSource::lockForUpdate()->findOrFail($run->source_id);
+        app(DossierService::class)->check(! $source->replacement_cancelled_at, 'Bản thay đã hủy.');
         $run = DossierAiRun::lockForUpdate()->findOrFail($run->id);
         app(DossierService::class)->check($run->status !== 'ready', 'AI run paused/completed.');
         $schema = app(DossierAiSchema::class);
@@ -188,15 +190,75 @@ class DossierAiService
                 $run->proposals()->create(['generation' => $run->generation + 1, 'position' => $i, 'data' => $item['data'], 'issues' => $item['issues']]);
             }
             $run->update(['generation' => $run->generation + 1, 'status' => 'ready', 'group_attempts' => $job->attempts, 'error' => null]);
+            if ($run->pipeline === DossierAiSchema::VERSION) {
+                $this->autoClassify($run, $blank);
+            }
         }
         $this->schedule($run->fresh());
     }
 
-    public function review(DossierAiProposal $proposal, array $input, int $actor): DossierVersion
+    private function autoClassify(DossierAiRun $run, array $blank): void
     {
-        $input = \Illuminate\Support\Arr::only($input, ['source_revision', 'reviewed_evidence', 'verify_identity', 'person_name', 'birth_date', 'identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed', 'type_id', 'subject', 'subject_id', 'record_id', 'instance', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'health_signed_on', 'renewal_on', 'effective_at', 'expiry_precision', 'expiry_value', 'month_rule', 'reason', 'note', 'confirmed']);
+        $source = $run->source->fresh();
+        if (! $source->machine_confirmed || $source->resolution === 'REPLACEMENT_MISMATCH' || $source->replacement_cancelled_at || $source->revision !== $run->source_revision) {
+            return;
+        }
+        $target = $source->replacementVersion;
+        $proposals = $run->proposals()->where('generation', $run->generation)->get();
+        foreach ($proposals as $proposal) {
+            $data = $proposal->data;
+            $type = $data['type_key'];
+            $issues = array_filter($proposal->issues, fn ($issue) => ! str_starts_with($issue, 'Phải chọn/xác nhận') &&
+                ! str_starts_with($issue, 'Tên trùng chỉ') && ! str_starts_with($issue, 'Suy chu kỳ đăng kiểm'));
+            if (! $data['type_id'] || $data['multiple_documents'] || $issues || $type === 'identity') {
+                continue;
+            }
+            $record = $target?->record;
+            $subject = $data['subject'];
+            $id = $subject === 'machine' ? $source->machine_id : $record?->driver_id;
+            $comparison = app(DossierComparison::class)->compare($data, $source, $subject, $id);
+            $tracking = in_array($type, DossierAiSchema::EXPIRY_TYPES, true);
+            $expiry = $data['fields']['expiry'] ?? null;
+            if ($target) {
+                $expected = array_values(array_diff(range(1, $source->page_count), $blank));
+                if ($proposals->count() !== 1 || $data['pages'] !== $expected || $record->type_id !== $data['type_id'] ||
+                    ($subject === 'driver' ? ! $record->driver_id : $subject !== 'machine' || $record->machine_id !== $id) ||
+                    $comparison['status'] === 'mismatch' || ($tracking && $comparison['status'] !== 'match')) {
+                    continue;
+                }
+            } else {
+                $sameType = $proposals->filter(fn ($candidate) => $candidate->data['type_id'] === $data['type_id'] && $candidate->data['subject'] === $subject);
+                if ($sameType->count() !== 1 || ! $id || $comparison['status'] !== 'match') {
+                    continue;
+                }
+            }
+            if ($tracking && ($expiry ? ! in_array($expiry['precision'], ['day', 'minute'], true) : ! $data['permanent_explicit'])) {
+                continue;
+            }
+            $pages = $run->pages()->whereIn('page', $data['pages'])->get()->keyBy('page');
+            try {
+                $this->review($proposal, [
+                    'source_revision' => $source->revision, 'acknowledge_stale' => true,
+                    'reviewed_evidence' => true, 'type_id' => $data['type_id'], 'subject' => $subject, 'subject_id' => $id,
+                    'record_id' => $record?->id, 'instance' => $record?->instance ?? 'main',
+                    'pages' => array_map(fn ($page) => ['page' => $page, 'rotation' => $pages[$page]->result['rotation'] ?? 0], $data['pages']),
+                    'effective_at' => app(\App\Services\Dossiers\DossierStatus::class)->now()->format('Y-m-d H:i:s'),
+                    'expiry_precision' => ! $tracking ? 'not_tracked' : ($expiry['precision'] ?? 'permanent'),
+                    'expiry_value' => $expiry['value'] ?? null, 'confirmed' => true, 'reason' => 'Tự phân loại theo hồ sơ và bằng chứng OCR.',
+                ], $run->user_id, automatic: true);
+                $source->refresh();
+                $run->update(['source_revision' => $source->revision]);
+            } catch (\Illuminate\Validation\ValidationException) {
+                // The unchanged proposal remains available for manual review.
+            }
+        }
+    }
 
-        return DB::transaction(function () use ($proposal, $input, $actor) {
+    public function review(DossierAiProposal $proposal, array $input, int $actor, bool $automatic = false): DossierVersion
+    {
+        $input = \Illuminate\Support\Arr::only($input, ['source_revision', 'reviewed_evidence', 'type_checked', 'bic_page', 'bic_quote', 'verify_identity', 'person_name', 'birth_date', 'identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed', 'type_id', 'subject', 'subject_id', 'record_id', 'instance', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'health_signed_on', 'renewal_on', 'effective_at', 'expiry_precision', 'expiry_value', 'month_rule', 'reason', 'note', 'confirmed']);
+
+        return DB::transaction(function () use ($proposal, $input, $actor, $automatic) {
             $source = DossierSource::lockForUpdate()->findOrFail($proposal->run->source_id);
             $p = DossierAiProposal::lockForUpdate()->findOrFail($proposal->id);
             $check = app(DossierService::class);
@@ -208,10 +270,17 @@ class DossierAiService
             $check->check($source->revision === $proposal->run->source_revision || ! empty($input['acknowledge_stale']), 'Kết quả AI cũ hơn sửa tay; đối chiếu lại và xác nhận đã kiểm tra.');
             $check->check(empty($p->data['multiple_documents']), 'Trang nhiều giấy độc lập cần xử lý thủ công, chưa hỗ trợ crop xuất.');
             $check->check(! empty($input['reviewed_evidence']), 'Cần xác nhận đã đối chiếu bằng chứng scan, chủ thể và phạm vi.');
+            $check->check(! $source->replacement_cancelled_at, 'Bản thay đã hủy.');
             $check->check($p->generation === $p->run->generation, 'Đề xuất đã được thay bởi lần nhóm mới.');
+            $type = DossierType::findOrFail($input['type_id']);
+            $tracking = in_array($type->ai_key, DossierAiSchema::EXPIRY_TYPES, true);
+            if ($tracking && (int) $input['type_id'] !== $p->data['type_id'] && ($input['expiry_precision'] ?? 'unknown') !== 'unknown') {
+                $check->check(! empty($input['type_checked']), 'Xác nhận đúng loại giấy trước khi lưu hạn.');
+            }
+            $check->check(! $tracking || ($input['expiry_precision'] ?? '') !== 'not_tracked', 'Loại giấy này cần trạng thái hạn.');
             $verifiedIdentity = null;
             $insurance = null;
-            if (! empty($input['confirmed']) && $p->data['type_key'] === 'bic_personal') {
+            if (! empty($input['confirmed']) && $p->data['type_key'] === 'bic_personal' && empty($input['bic_quote'])) {
                 $comparison = app(DossierComparison::class)->compare($p->data, $source, $input['subject'], (int) $input['subject_id']);
                 $check->check($comparison['status'] === 'match' && DossierType::findOrFail($input['type_id'])->ai_key === 'bic_personal',
                     'BIC cần dòng danh sách có bằng chứng định danh người được bảo hiểm.');
@@ -224,6 +293,15 @@ class DossierAiService
                 $verifiedIdentity = app(DossierComparison::class)->verifyIdentity($input);
             }
             $vdata = $input;
+            if (! $tracking) {
+                $vdata['expiry_precision'] = 'not_tracked';
+            }
+            if ($source->replacement_version_id) {
+                $processed = $p->run->pages()->where('status', 'ready')->get()->reject(fn ($page) => ($page->result['kind'] ?? null) === 'blank')->pluck('page')->sort()->values()->all();
+                $selected = array_map('intval', array_column($input['pages'], 'page'));
+                sort($selected);
+                $check->check($selected === $processed && $processed !== [], 'Bản thay phải có đủ mọi trang giấy, theo đối chiếu trang nguồn.');
+            }
             $vdata['request_id'] = (string) Str::uuid();
             $vdata['source_id'] = $source->id;
             $vdata['shared_pages'] = (bool) ($input['shared_pages'] ?? false);
@@ -232,7 +310,7 @@ class DossierAiService
             $rule = null;
             if (! empty($input['use_rule'])) {
                 $rule = $p->data['expiry_suggestion'] ?? null;
-                $check->check($rule && ! empty($input['rule_scope_confirmed']) && empty($p->data['fields']['expiry']), 'Quy tắc cần đủ căn cứ/phạm vi xác nhận; không ghi đè hạn trên giấy.');
+                $check->check($tracking && $rule && ! empty($input['rule_scope_confirmed']) && empty($p->data['fields']['expiry']), 'Quy tắc cần đủ căn cứ/phạm vi xác nhận; không ghi đè hạn trên giấy.');
                 $check->check((int) $input['type_id'] === (int) $p->data['type_id'], 'Đổi loại giấy: không dùng quy tắc cũ.');
                 $check->check(($input[$rule['anchor']] ?? null) === $rule['anchor_value'], 'Ngày gốc đã sửa: nhập hạn được kiểm tra hoặc phân tích lại, không dùng hạn tính từ ngày cũ.');
                 $vdata['expiry_value'] = $rule['value'];
@@ -242,10 +320,11 @@ class DossierAiService
                 $expiryOrigin = 'document_reviewed';
             }
             Validator::make($input, ['health_signed_on' => 'nullable|date_format:Y-m-d', 'renewal_on' => 'nullable|date_format:Y-m-d'])->validate();
-            $version = $check->saveVersion($vdata, $actor, insuranceEvidence: $insurance);
-            $version->update(['health_signed_on' => $input['health_signed_on'] ?? null, 'renewal_on' => $input['renewal_on'] ?? null, 'provenance' => ['verified_identity' => $verifiedIdentity, 'insurance_evidence' => $insurance, 'proposal_id' => $p->id, 'pipeline' => $proposal->run->pipeline, 'evidence' => $p->data['fields'], 'scope_text' => $p->data['scope_text'], 'insured' => $p->data['insured'], 'subject_claim' => $p->data['subject'], 'expiry_origin' => $expiryOrigin, 'rule' => $rule, 'reviewed_by' => $actor, 'reviewed_at' => now()->toIso8601String(), 'reason' => $input['reason']]]);
+            $version = $check->saveVersion($vdata, $actor, insuranceEvidence: $insurance,
+                newScopeOnly: $automatic && ! $source->replacement_version_id);
+            $version->update(['health_signed_on' => $input['health_signed_on'] ?? null, 'renewal_on' => $input['renewal_on'] ?? null, 'provenance' => ['verified_identity' => $verifiedIdentity, 'insurance_evidence' => $insurance ?? ($version->provenance['insurance_evidence'] ?? null), 'proposal_id' => $p->id, 'pipeline' => $proposal->run->pipeline, 'evidence' => $p->data['fields'], 'scope_text' => $p->data['scope_text'], 'insured' => $p->data['insured'], 'subject_claim' => $p->data['subject'], 'expiry_origin' => $expiryOrigin, 'rule' => $rule, 'reviewed_by' => $actor, 'reviewed_at' => now()->toIso8601String(), 'reason' => $input['reason']]]);
             $p->update(['reviewed' => $input, 'reviewed_by' => $actor, 'version_id' => $version->id]);
-            DossierAudit::write('ai_reviewed', $p, $actor);
+            DossierAudit::write($automatic ? 'ai_auto_classified' : 'ai_reviewed', $p, $actor);
 
             return $version;
         }, 3);

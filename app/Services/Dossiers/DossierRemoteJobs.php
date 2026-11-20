@@ -138,14 +138,19 @@ class DossierRemoteJobs
             }
             $jobs = DossierWorkerJob::whereIn('kind', $kinds)->where(fn ($q) => $q->where('status', 'pending')->orWhere(fn ($q) => $q->where('status', 'processing')->where('lease_until', '<=', now())))->where(fn ($q) => $q->whereNull('available_at')->orWhere('available_at', '<=', now()))->oldest('created_at')->orderBy('id')->lockForUpdate()->get();
             foreach ($jobs as $j) {
+                $r = str_starts_with($j->kind, 'ai_') ? DossierAiRun::findOrFail($j->input['run_id']) : null;
+                if ($r?->source->replacement_cancelled_at) {
+                    $j->update(['status' => 'cancelled', 'claim_token' => null]);
+
+                    continue;
+                }
                 if ($j->attempts >= config('dossiers.worker.max_attempts', 3)) {
                     $j->update(['status' => 'failed', 'error_code' => 'attempts_exhausted']);
                     $this->domainFailure($j);
 
                     continue;
                 }
-                if (str_starts_with($j->kind, 'ai_')) {
-                    $r = DossierAiRun::findOrFail($j->input['run_id']);
+                if ($r) {
                     if ($r->paused) {
                         continue;
                     }
@@ -377,7 +382,7 @@ class DossierRemoteJobs
             if (str_starts_with($j->kind, 'ai_')) {
                 DB::table('dossier_ai_control')->where('id', 1)->update(['next_call_at' => now()->addSeconds(max(10, (int) config('dossiers.ai.spacing_seconds', 10)))]);
             }
-            if ($j->kind === 'prepare' && config('dossiers.ai.enabled') && $source->page_count <= 60
+            if ($j->kind === 'prepare' && ! $source->replacement_cancelled_at && config('dossiers.ai.enabled') && $source->page_count <= 60
                 && ($source->batch->auto_analyze ?? config('dossiers.ai.auto_analyze'))) {
                 app(DossierAiService::class)->request($source, $source->user_id, true);
             }

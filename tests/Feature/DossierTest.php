@@ -573,6 +573,91 @@ class DossierTest extends TestCase
         $this->assertSame($before, \App\Models\ZaloSenderMachineMapping::where('sender_id', 'untouched')->firstOrFail()->toArray());
         $this->assertDatabaseHas('zalo_sender_machine_mappings', ['sender_id' => 'selected', 'machine_id' => $this->machine->id, 'active_sender_id' => 'selected', 'created_by' => $this->user->id]);
         $this->assertDatabaseHas('zalo_sender_driver_links', ['sender_id' => 'selected', 'driver_id' => $new->id, 'valid_to' => null]);
-        $this->assertDatabaseCount('ocr_jobs',0);
+        $this->assertDatabaseCount('ocr_jobs', 0);
+    }
+
+    public function test_settings_transfer_moves_dossier_only_and_print_snapshots_new_roster(): void
+    {
+        $second = Machine::create(['asset_code' => 'T-MOVE', 'company' => 'VINCONS', 'chassis_no' => 'MOVE', 'status' => 'ACTIVE', 'dossier_group' => 'machine']);
+        $a = Driver::create(['name' => 'Fixture Alpha']);
+        $b = Driver::create(['name' => 'Fixture Beta']);
+        $mapping = app(\App\Services\ZaloSenderMachineService::class);
+        foreach ([$a, $b] as $driver) {
+            $sender = 'fixture-'.$driver->id;
+            ZaloMessage::create(['group_id' => 'test', 'message_id' => $sender, 'sender_id' => $sender, 'sender_name' => $driver->name, 'sent_at' => now()->subDay(), 'received_at' => now()->subDay(), 'raw_payload' => []]);
+            app(\App\Services\ZaloSenderDriverService::class)->link(['sender_id' => $sender, 'driver_id' => $driver->id, 'valid_from' => '2026-01-01 00:00:00'], $this->user->id);
+            $mapping->save($sender, $this->machine->id, $this->user->id);
+        }
+        $this->service->assign($this->machine, $a, '2026-01-01 00:00:00', null, $this->user->id);
+        $operational = MachineDriverHistory::all()->toArray();
+        $type = DossierType::where('ai_key', 'qualification')->firstOrFail();
+        $paper = $this->service->saveVersion($this->data($this->source('MOVING'), [
+            'subject' => 'driver', 'subject_id' => $a->id, 'type_id' => $type->id, 'expiry_precision' => 'not_tracked',
+        ]), $this->user->id);
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Fixture Alpha')->assertSee('Fixture Beta');
+        $this->post(route('daily-photos.link'), ['sender_id' => 'fixture-'.$a->id, 'machine_id' => $second->id])->assertRedirect();
+        $this->post(route('daily-photos.link'), ['sender_id' => 'fixture-'.$a->id, 'machine_id' => $second->id])->assertRedirect();
+        $this->assertSame($operational, MachineDriverHistory::all()->toArray());
+        $this->assertEquals([$b->id], app(DossierReport::class)->drivers($this->machine)->pluck('driver_id')->all());
+        $this->assertEquals([$a->id], app(DossierReport::class)->drivers($second)->pluck('driver_id')->all());
+        $this->assertSame(1, DB::table('activity_logs')->where('event', 'zalo.driver_transferred')->count());
+        $this->get(route('dossiers.machine', $second))->assertOk()->assertSee('Fixture Alpha')->assertSee('Xuất PDF để in');
+        $this->get(route('dossiers.drivers'))->assertOk()->assertSee('T-MOVE');
+        $this->post(route('dossiers.exports.print', $second), ['request_id' => (string) Str::uuid()])->assertRedirect();
+        $export = DossierExport::sole();
+        $this->assertSame([$paper->id], array_column($export->manifest, 'version_id'));
+        $this->assertNotEmpty($export->warnings);
+        DossierTestWorker::run($export->id, 'export');
+        $this->assertSame('ready', $export->fresh()->status);
+        $this->get(route('dossiers.export.file', $export))->assertDownload();
+    }
+
+    public function test_replacement_keeps_old_pages_until_complete_and_delete_restore_checks_conflicts(): void
+    {
+        $driver = Driver::create(['name' => 'Fixture ATLĐ']);
+        $this->service->assign($this->machine, $driver, '2026-01-01 00:00:00', null, $this->user->id);
+        $type = DossierType::where('ai_key', 'safety')->firstOrFail();
+        $scope = ['subject' => 'driver', 'subject_id' => $driver->id, 'type_id' => $type->id];
+        $old = $this->service->saveVersion($this->data($this->source('OLD'), $scope), $this->user->id);
+        $this->get(route('dossiers.versions.replace', $old))->assertOk()->assertSee($type->name);
+        $this->post(route('dossiers.versions.replace', $old), ['file' => $this->pdf(marker: 'NEW')])->assertRedirect();
+        $source = DossierSource::where('replacement_version_id', $old->id)->sole();
+        DossierTestWorker::run($source->id, 'prepare');
+        $preview = app(DossierExportService::class)->preview($this->machine, [$driver->id], [$old->id]);
+        $this->assertStringContainsString('bản thay', implode(' ', $preview['warnings']));
+        $data = $this->data($source->fresh(), $scope + ['effective_at' => '2026-10-28 10:00:00', 'record_id' => $old->record_id]);
+        try {
+            $this->service->saveVersion($data, $this->user->id);
+            $this->fail('Accepted partial replacement');
+        } catch (ValidationException $error) {
+            $this->assertStringContainsString('đủ mọi trang', $error->getMessage());
+        }
+        $data['pages'] = array_map(fn ($page) => ['page' => $page, 'rotation' => 0], range(1, 4));
+        $new = $this->service->saveVersion($data, $this->user->id);
+        $this->assertSame($old->id, $new->replaces_id);
+        $this->assertCount(4, $new->pages);
+        $this->post(route('dossiers.versions.archive', $new), ['archived' => 1, 'reason' => 'fixture'])->assertRedirect();
+        $this->assertTrue($new->fresh()->archived);
+        $this->post(route('dossiers.versions.archive', $old), ['archived' => 0, 'reason' => 'fixture'])->assertSessionHasErrors();
+        $this->post(route('dossiers.versions.archive', $new), ['archived' => 0, 'reason' => 'fixture'])->assertRedirect();
+        $this->assertFalse($new->fresh()->archived);
+    }
+
+    public function test_verified_cccd_preserves_leading_zero_and_rejects_duplicate_without_birth_date(): void
+    {
+        $type = DossierType::where('ai_key', 'identity')->firstOrFail();
+        $people = [Driver::create(['name' => 'Fixture One']), Driver::create(['name' => 'Fixture Two'])];
+        foreach ($people as $person) {
+            $id = 'cccd-fixture-'.$person->id;
+            ZaloMessage::create(['group_id' => 'test', 'message_id' => $id, 'sender_id' => $id, 'sent_at' => now(), 'received_at' => now(), 'raw_payload' => []]);
+            app(\App\Services\ZaloSenderDriverService::class)->link(['sender_id' => $id, 'driver_id' => $person->id, 'valid_from' => '2026-01-01 00:00:00'], $this->user->id);
+        }
+        $params = ['type_id' => $type->id, 'subject' => 'driver', 'expiry_precision' => 'not_tracked', 'identity_check' => ['person_name' => 'Fixture Legal', 'identity' => '000000000009']];
+        $v = $this->service->saveVersion($this->data($this->source('CCCD A'), $params + ['subject_id' => $people[0]->id]), $this->user->id);
+        $this->assertSame('000000000009', $v->provenance['verified_identity']['identity']);
+        $this->get(route('dossiers.driver', $people[0]))->assertOk()->assertSee('000000000009');
+        $this->get(route('dossiers.drivers'))->assertOk()->assertDontSee('000000000009');
+        $this->expectException(ValidationException::class);
+        $this->service->saveVersion($this->data($this->source('CCCD B'), $params + ['subject_id' => $people[1]->id]), $this->user->id);
     }
 }

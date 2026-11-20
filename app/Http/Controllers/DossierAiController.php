@@ -62,7 +62,10 @@ class DossierAiController extends Controller
                 return $current && ! $current->archived ? ['id' => $record->id, 'instance' => $record->instance, 'version' => $current->id] : null;
             })->filter()->values();
 
-        return response()->json(['label' => $labels[$result['status']], 'fields' => $result['fields'], 'records' => $records], 200, ['Cache-Control' => 'private, no-store']);
+        $issues = array_filter($proposal->issues ?? [], fn ($issue) => ! str_starts_with($issue, 'Suy chu kỳ đăng kiểm') &&
+            ! str_starts_with($issue, 'Phải chọn/xác nhận') && ! str_starts_with($issue, 'Tên trùng chỉ'));
+
+        return response()->json(['bulk_match' => ! $issues && $result['status'] === 'match' && (int) $data['type_id'] === $proposal->data['type_id'], 'label' => $labels[$result['status']], 'fields' => $result['fields'], 'records' => $records], 200, ['Cache-Control' => 'private, no-store']);
     }
 
     public function label(Request $request, DossierAiRun $run, int $page, DossierAiService $service)
@@ -91,11 +94,16 @@ class DossierAiController extends Controller
             foreach ($d['items'] as $item) {
                 $proposal = $run->proposals()->where('generation', $run->generation)->findOrFail($item['id']);
                 abort_unless((int) ($item['data']['source_revision'] ?? -1) === $base && $base === $run->source_revision, 422, 'Hồ sơ vừa đổi; tải lại trước khi duyệt nhiều mục.');
+                if ($proposal->version_id) {
+                    $skipped[] = $proposal->id;
+
+                    continue;
+                }
                 $payload = $this->payload($item['data']);
                 $data = $proposal->data;
                 $comparison = app(\App\Services\Dossiers\Ai\DossierComparison::class)->compare($data, $source, $payload['subject'] ?? null, (int) ($payload['subject_id'] ?? 0));
                 $expiry = $data['fields']['expiry'] ?? null;
-                $knownExpiry = ($expiry && $expiry['value'] === ($payload['expiry_value'] ?? null) &&
+                $knownExpiry = (! in_array($data['type_key'], \App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES, true) && ($payload['expiry_precision'] ?? null) === 'not_tracked') || ($expiry && $expiry['value'] === ($payload['expiry_value'] ?? null) &&
                     $expiry['precision'] === ($payload['expiry_precision'] ?? null)) ||
                     ($data['permanent_explicit'] && ($payload['expiry_precision'] ?? '') === 'permanent') ||
                     (! empty($data['expiry_suggestion']) && $payload['use_rule'] && $payload['rule_scope_confirmed']);
@@ -135,7 +143,7 @@ class DossierAiController extends Controller
         if (strlen($data['effective_at']) === 16) {
             $data['effective_at'] .= ':00';
         }
-        foreach (['confirmed', 'shared_pages', 'reviewed_evidence', 'verify_identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed'] as $k) {
+        foreach (['confirmed', 'shared_pages', 'reviewed_evidence', 'type_checked', 'verify_identity', 'acknowledge_stale', 'use_rule', 'rule_scope_confirmed'] as $k) {
             $data[$k] = filter_var($data[$k] ?? false, FILTER_VALIDATE_BOOLEAN);
         }
 

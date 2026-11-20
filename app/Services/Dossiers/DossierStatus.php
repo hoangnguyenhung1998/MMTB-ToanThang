@@ -12,6 +12,7 @@ class DossierStatus
         'missing' => 'Thiếu giấy bắt buộc', 'review' => 'Chưa xác định hạn / cần kiểm tra',
         'future' => 'Chưa có hiệu lực', 'valid' => 'Còn hiệu lực', 'expiring' => 'Sắp hết hạn',
         'expired' => 'Hết hạn', 'permanent' => 'Không thời hạn', 'archived' => 'Đã lưu trữ',
+        'classified' => 'Đã phân loại',
         'superseded' => 'Đã thay thế',
     ];
 
@@ -53,6 +54,7 @@ class DossierStatus
             $v->archived => 'archived',
             ! $v->confirmed => 'review',
             $v->effective_at > $at->format('Y-m-d H:i:s') => 'future',
+            $v->expiry_precision === 'not_tracked' => 'classified',
             $v->expiry_precision === 'permanent' => 'permanent',
             ! $end => 'review',
             $at->greaterThan($end) => 'expired',

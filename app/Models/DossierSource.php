@@ -15,6 +15,11 @@ class DossierSource extends Model
         return $this->belongsTo(Machine::class, 'machine_id');
     }
 
+    public function replacementVersion()
+    {
+        return $this->belongsTo(DossierVersion::class);
+    }
+
     public function latestAiRun()
     {
         return $this->hasOne(DossierAiRun::class, 'source_id')->latestOfMany();

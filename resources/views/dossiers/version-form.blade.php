@@ -1,7 +1,7 @@
 @php
     $draft = $draft ?? null;
     $values = $draft ?? ($replacement ?? null);
-    $record = $values?->record;
+    $record = $values?->record ?? $source->replacementVersion?->record;
     $subject = $record?->driver_id ? 'driver' : ($record?->assignment_id ? 'assignment' : 'machine');
     $subjectId = $record?->driver_id ?? $record?->assignment_id ?? $source->machine_id;
 @endphp
