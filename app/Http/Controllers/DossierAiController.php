@@ -16,7 +16,11 @@ class DossierAiController extends Controller
 {
     public function request(Request $request, DossierSource $source, DossierAiService $service)
     {
-        $run = $service->request($source, $request->user()->id);
+        $manual = $request->boolean('manual');
+        $run = $service->request($source, $request->user()->id, manual: $manual);
+        if ($manual) {
+            return redirect()->route('dossiers.source', $source)->with('success', 'Đã mở phân loại thủ công.');
+        }
 
         if ($run->paused) {
             return redirect()->route('dossiers.source', $source)->with('success', 'AI đang dừng xếp tiếp; kiểm tra giới hạn pilot rồi chủ động bấm Xếp tiếp trên hồ sơ.');
@@ -76,6 +80,24 @@ class DossierAiController extends Controller
         $service->label($run, $page, $data['kind'], $request->user()->id);
 
         return back()->with('success', 'Đã đổi nhãn và cập nhật đề xuất nhóm giấy.');
+    }
+
+    public function classify(Request $request, DossierAiRun $run, DossierAiService $service)
+    {
+        $data = $request->validate(['type_id' => 'required|integer|exists:dossier_types,id',
+            'pages' => 'required|array|min:1|max:60', 'pages.*' => 'required|integer|min:1|distinct',
+            'proposal_id' => 'nullable|integer']);
+        $proposal = isset($data['proposal_id']) ? $run->proposals()->findOrFail($data['proposal_id']) : null;
+        $service->classify($run, DossierType::findOrFail($data['type_id']), array_map('intval', $data['pages']), $request->user()->id, $proposal);
+
+        return back()->with('success', 'Đã lưu phân loại giấy.');
+    }
+
+    public function information(DossierAiProposal $proposal, DossierAiService $service)
+    {
+        $service->requestInformation($proposal);
+
+        return back()->with('success', 'Đã xếp OCR thông tin riêng cho giấy.');
     }
 
     public function review(Request $request, DossierAiProposal $proposal, DossierAiService $service)
