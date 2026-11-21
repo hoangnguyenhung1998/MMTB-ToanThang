@@ -139,7 +139,7 @@ class DossierRemoteJobs
             $jobs = DossierWorkerJob::whereIn('kind', $kinds)->where(fn ($q) => $q->where('status', 'pending')->orWhere(fn ($q) => $q->where('status', 'processing')->where('lease_until', '<=', now())))->where(fn ($q) => $q->whereNull('available_at')->orWhere('available_at', '<=', now()))->oldest('created_at')->orderBy('id')->lockForUpdate()->get();
             foreach ($jobs as $j) {
                 $r = str_starts_with($j->kind, 'ai_') ? DossierAiRun::findOrFail($j->input['run_id']) : null;
-                if ($r?->source->replacement_cancelled_at) {
+                if ($r && ($r->source->replacement_cancelled_at || $r->source->driver_reset_retired_at)) {
                     $j->update(['status' => 'cancelled', 'claim_token' => null]);
 
                     continue;
@@ -151,6 +151,14 @@ class DossierRemoteJobs
                     continue;
                 }
                 if ($r) {
+                    if (isset($j->input['proposal_id'])) {
+                        $proposal = $r->proposals()->where('generation', $r->generation)->whereNull('version_id')->find($j->input['proposal_id']);
+                        if (! $proposal || ($proposal->data['information_revision'] ?? null) !== $j->input['information_revision']) {
+                            $j->update(['status' => 'cancelled', 'claim_token' => null]);
+
+                            continue;
+                        }
+                    }
                     if ($r->paused) {
                         continue;
                     }
@@ -159,11 +167,16 @@ class DossierRemoteJobs
                         continue;
                     }
                     if (($r->context['ai_profile'] ?? null) && $r->context['ai_profile'] !== $worker->ai_profile) {
-                        $r->update(['status' => 'unconfigured', 'error' => 'Cấu hình AI worker đã đổi. Bấm Phân tích AI để tạo đề xuất riêng.']);
+                        if (isset($j->input['proposal_id'])) {
+                            $j->update(['status' => 'failed', 'error_code' => 'ai_profile_changed']);
+                            $this->domainFailure($j);
+                        } else {
+                            $r->update(['status' => 'unconfigured', 'error' => 'Cấu hình AI worker đã đổi. Bấm Phân tích AI để tạo đề xuất riêng.']);
+                        }
 
                         continue;
                     }
-                    $r->update(['context' => [...$r->context, 'ai_profile' => $worker->ai_profile, 'provider' => $worker->provider, 'model' => $worker->model], 'status' => 'processing']);
+                    $r->update(['context' => [...$r->context, 'ai_profile' => $worker->ai_profile, 'provider' => $worker->provider, 'model' => $worker->model], 'status' => isset($j->input['proposal_id']) ? $r->status : 'processing']);
                 }
                 $reclaimed = $j->status === 'processing';
                 $j->update(['status' => 'processing', 'stage' => 'download', 'progress' => 0, 'worker_id' => $worker->id,
@@ -277,7 +290,7 @@ class DossierRemoteJobs
 
     private function observeAiResponse(DossierWorkerJob $job, array $claim, array $data): void
     {
-        if (! str_starts_with($job->kind, 'ai_') || ! isset($data['result']['response']['data'])) {
+        if (isset($job->input['proposal_id']) || ! str_starts_with($job->kind, 'ai_') || ! isset($data['result']['response']['data'])) {
             return;
         }
         DB::transaction(function () use ($job, $claim, $data) {
@@ -292,7 +305,7 @@ class DossierRemoteJobs
             }
             abort_unless(($data['input_hash'] ?? null) === $j->input_hash && ($data['pipeline'] ?? null) === $j->pipeline, 409);
             $r = $data['result'];
-            Validator::make($r, ['response.data' => 'required|array', 'response.usage' => 'present|array', 'elapsed_ms' => 'required|integer|min:0|max:3600000'])->validate();
+            Validator::make($r, ['response.data' => $j->kind === 'ai_group' ? 'present|array' : 'required|array', 'response.usage' => 'present|array', 'elapsed_ms' => 'required|integer|min:0|max:3600000'])->validate();
             $usage = [];
             foreach (['prompt_tokens', 'completion_tokens', 'total_tokens'] as $key) {
                 if (isset($r['response']['usage'][$key])) {
@@ -427,6 +440,12 @@ class DossierRemoteJobs
             default => 'Worker hồ sơ chưa hoàn tất; kiểm tra trạng thái và log worker'
         };
         $error = $reason.' ('.$j->error_code.'). File nguồn và dữ liệu đã lưu được giữ; có thể retry riêng.';
+        if (isset($j->input['proposal_id'])) {
+            $run = DossierAiRun::lockForUpdate()->findOrFail($j->input['run_id']);
+            app(DossierAiService::class)->acceptInformation($run, $j, null);
+
+            return;
+        }
         if ($j->kind === 'prepare') {
             DossierSource::whereKey($j->subject_id)->where('status', '!=', 'ready')->update(['status' => 'failed', 'error' => $error]);
         } elseif ($j->kind === 'export') {

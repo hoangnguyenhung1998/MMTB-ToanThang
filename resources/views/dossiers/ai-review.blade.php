@@ -3,7 +3,7 @@
 @if(!$aiAvailable)<p>Cần migration additive Phase18.1 trên database LOCAL đã xác minh và sao lưu trước khi dùng AI. Nhập tay Phase18 vẫn dùng được.</p>
 @else
 @unless(app(\App\Services\Dossiers\Ai\DossierVision::class)->probe()['configured'])<p><strong>Chưa cấu hình AI</strong> — chưa gọi API; nhập tay vẫn dùng được.</p>@endunless
-@if($source->status==='ready' && !$aiRun)<form method="post" action="{{ route('dossiers.ai.request',$source) }}">@csrf<button>Phân tích AI / kiểm tra cấu hình và xếp lại</button></form>@endif
+@if($source->status==='ready' && !$aiRun)<form method="post" action="{{ route('dossiers.ai.request',$source) }}">@csrf<button>Phân loại bằng AI</button><button class="secondary" name="manual" value="1">Phân loại thủ công</button></form>@endif
 @if($aiRun)
 @php $aiLabels=['unconfigured'=>'Chưa cấu hình AI','queued'=>'Đang xếp hàng','processing'=>'Đang phân tích','ready'=>'Đã phân tích','failed'=>'Có lỗi cần kiểm tra']; @endphp
 <p><strong>{{ $aiRun->paused ? 'Đã dừng xếp tiếp' : ($aiLabels[$aiRun->status] ?? $aiRun->status) }}</strong> · {{ $aiRun->pages->where('status','ready')->count() }}/{{ $aiRun->pages->count() }} trang · Run #{{ $aiRun->id }} · {{ $aiRun->pipeline }}</p>
@@ -26,22 +26,33 @@
 <option value="{{ $key }}" @selected($ap->result['kind']===$key)>{{ $label }}</option>@endforeach</select></label><button>Lưu nhãn</button></form>@endif
 @if($aiRun->status!=='unconfigured')<form method="post" action="{{ route('dossiers.ai.control',$aiRun) }}">@csrf<input type="hidden" name="page" value="{{ $ap->page }}"><button name="action" value="retry">Đọc lại riêng trang ở300dpi</button></form>@endif</div>@endforeach
 </details>
-@if($aiRun->status==='ready' && $aiRun->group_result)
-@php $group=$aiRun->group_result['data']??[]; @endphp
-<p>Chưa phân loại: {{ implode(', ',$group['unclassified_pages']??[]) }}.</p>
-@foreach($group['suggested_exclusions']??[] as $ex)<p>Đề xuất bỏ trang {{ $ex['page'] }}: {{ $ex['reason'] }}. Chưa tự bỏ; chọn thủ công ở đối chiếu nguồn.</p>@endforeach
-@endif
 </details>
-@if($aiRun->status==='ready')
+@if($source->status==='ready')
+@php
+    $classified = $aiRun->proposals->where('generation',$aiRun->generation);
+    $remaining = array_diff(range(1,$source->page_count),$classified->flatMap(fn($p) => $p->data['pages'])->all());
+@endphp
+@if($remaining)
+<form class="box" method="post" action="{{ route('dossiers.ai.classify',$aiRun) }}">@csrf
+<h3>Chưa phân loại</h3>
+<a href="{{ route('dossiers.file',[$source,'source']) }}" target="_blank" rel="noopener">Xem PDF gốc</a>
+@foreach($remaining as $number)
+<label><input type="checkbox" name="pages[]" value="{{ $number }}"> Trang {{ $number }}</label>
+<a href="{{ route('dossiers.file',[$source,'thumbnail',$number]) }}" target="_blank" rel="noopener">Xem trang</a>
+@endforeach
+<label>Loại giấy <select name="type_id" required><option value="">Chọn loại</option>@foreach($types as $t)<option value="{{ $t->id }}">{{ $t->name }}</option>@endforeach</select></label>
+<button>Lưu phân loại</button>
+</form>
+@endif
 <div class="d-review-grid">
 <aside class="d-scan">
 <div class="d-toolbar"><button type="button" class="secondary" data-page-step="-1" aria-label="Trang trước">‹</button>
-<label>Trang <select id="dossier-page-select">@for($page=1;$page<=$source->page_count;$page++)<option value="{{ route('dossiers.ai.image',[$aiRun,$page]) }}">{{ $page }} / {{ $source->page_count }}</option>@endfor</select></label>
+<label>Trang <select id="dossier-page-select">@for($page=1;$page<=$source->page_count;$page++)<option value="{{ ($aiRun->pages->firstWhere('page',$page)?->image_object_id ? route('dossiers.ai.image',[$aiRun,$page]) : route('dossiers.file',[$source,'thumbnail',$page])) }}">{{ $page }} / {{ $source->page_count }}</option>@endfor</select></label>
 <button type="button" class="secondary" data-page-step="1" aria-label="Trang sau">›</button></div>
-<iframe title="Scan và bằng chứng" id="dossier-evidence" name="dossier-evidence" src="{{ route('dossiers.ai.image',[$aiRun,1]) }}"></iframe>
+<iframe title="Scan và bằng chứng" id="dossier-evidence" name="dossier-evidence" src="{{ $aiRun->pages->firstWhere('page',1)?->image_object_id ? route('dossiers.ai.image',[$aiRun,1]) : route('dossiers.file',[$source,'thumbnail',1]) }}"></iframe>
 </aside>
 <div>
-<h3>Cần xác nhận</h3>
+<h3>Giấy đã phân loại</h3>
 @forelse($aiRun->proposals->where('generation',$aiRun->generation)->whereNull('version_id') as $proposal)
 @php
  $d=$proposal->data;$f=$d['fields'];$value=fn($key)=>$f[$key]['value']??'';
@@ -52,7 +63,18 @@
  $tracked=in_array($d['type_key'],\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true);
  if(!$tracked)$precision='not_tracked';
 @endphp
-<div class="box" id="proposal-{{ $proposal->id }}"><h3><a href="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}" target="dossier-evidence" data-page="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}">{{ $d['title'] }} · trang {{ implode(',',$d['pages']) }}</a></h3>
+<div class="box" id="proposal-{{ $proposal->id }}"><h3><a href="{{ ($aiRun->pages->firstWhere('page',$d['pages'][0])?->image_object_id ? route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) : route('dossiers.file',[$source,'thumbnail',$d['pages'][0]])) }}" target="dossier-evidence" data-page="{{ ($aiRun->pages->firstWhere('page',$d['pages'][0])?->image_object_id ? route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) : route('dossiers.file',[$source,'thumbnail',$d['pages'][0]])) }}">{{ $d['title'] }} · trang {{ implode(',',$d['pages']) }}</a></h3>
+<form method="post" action="{{ route('dossiers.ai.classify',$aiRun) }}">@csrf
+<input type="hidden" name="proposal_id" value="{{ $proposal->id }}">
+@foreach($d['pages'] as $number)<input type="hidden" name="pages[]" value="{{ $number }}">@endforeach
+<label>Loại giấy <select name="type_id" required>@foreach($types as $t)<option value="{{ $t->id }}" @selected($d['type_id']===$t->id)>{{ $t->name }}</option>@endforeach</select></label>
+<button>Đổi loại</button>
+</form>
+@if(app(\App\Services\Dossiers\Ai\DossierAiSchema::class)->informationFields($d['type_key']))
+<form method="post" action="{{ route('dossiers.ai.information',$proposal) }}">@csrf<button>OCR thông tin</button></form>
+@if(in_array('pending',$d['information_pages']??[],true))<p>Đang chờ OCR thông tin.</p>@endif
+@if(in_array('failed',$d['information_pages']??[],true))<p class="warn">OCR thông tin lỗi ở một hoặc nhiều trang. Phân loại đã lưu. Có thể nhập tay.</p>@endif
+@endif
 <details><summary>Đối chiếu và bằng chứng từng trường</summary>
 <p>Chủ thể AI đọc: {{ $value('person_name') ?: $d['subject'] }}. {{ $d['scope_text'] }}</p>
 @if(($d['replacement_candidates']??[]) && $source->machine_id)<p>Có {{ count($d['replacement_candidates']) }} chuỗi giấy cùng loại trên máy. <a href="{{ route('dossiers.machine',$source->machine_id) }}" target="_blank" rel="noopener">Đối chiếu giấy hiện có</a>, giữ đúng chủ thể/phạm vi phụ nếu thay giấy; chưa tự thay phiên bản.</p>@endif
@@ -63,12 +85,12 @@
 @foreach($comparison['fields'] as $key=>$row)<tr><td>{{ $key }}</td><td>{{ $row['ocr'] ?? '—' }}</td><td>{{ $row['web'] ?? '—' }}</td><td>{{ ['match'=>'Khớp','mismatch'=>'Không khớp','missing'=>'Chưa đủ dữ liệu'][$row['state']] }}</td></tr>@endforeach
 </table>@endif
 @foreach($proposal->issues as $issue)<p class="warn">{{ $issue }}</p>@endforeach
-<details><summary>Bằng chứng từng trường</summary>@foreach($f as $key=>$e)<p><a href="{{ route('dossiers.ai.image',[$aiRun,$e['page']]) }}" target="dossier-evidence">{{ $key }} · trang {{ $e['page'] }}</a>: {{ $e['value'] }} · “{{ $e['quote'] }}” @if(!empty($e['box']))(vùng {{ implode(',',$e['box']) }})@endif</p>@endforeach</details>
+<details><summary>Bằng chứng từng trường</summary>@foreach($f as $key=>$e)<p><a href="{{ ($aiRun->pages->firstWhere('page',$e['page'])?->image_object_id ? route('dossiers.ai.image',[$aiRun,$e['page']]) : route('dossiers.file',[$source,'thumbnail',$e['page']])) }}" target="dossier-evidence">{{ $key }} · trang {{ $e['page'] }}</a>: {{ $e['value'] }} · “{{ $e['quote'] }}” @if(!empty($e['box']))(vùng {{ implode(',',$e['box']) }})@endif</p>@endforeach</details>
 @if($d['insured'])<details><summary>Danh sách BIC/phạm vi — phải đối chiếu đúng người</summary>@foreach($d['insured'] as $person)<p><a href="{{ route('dossiers.ai.image',[$aiRun,$person['page']]) }}" target="dossier-evidence">{{ $person['name'] }}</a> — {{ $person['quote'] }}</p>@endforeach</details>@endif
 </details>
 @if($proposal->version_id)<p>Đã duyệt thành giấy #{{ $proposal->version_id }}. Sửa/thay qua phần Giấy tờ đã lưu, không áp lại AI.</p>
 @elseif(empty($d['multiple_documents']))
-<form class="ai-proposal-form" data-comparison="{{ route('dossiers.ai.compare',$proposal) }}" data-id="{{ $proposal->id }}" data-page="{{ route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) }}" data-original-type="{{ $d['type_id'] }}"
+<form class="ai-proposal-form" data-comparison="{{ route('dossiers.ai.compare',$proposal) }}" data-id="{{ $proposal->id }}" data-page="{{ ($aiRun->pages->firstWhere('page',$d['pages'][0])?->image_object_id ? route('dossiers.ai.image',[$aiRun,$d['pages'][0]]) : route('dossiers.file',[$source,'thumbnail',$d['pages'][0]])) }}" data-original-type="{{ $d['type_id'] }}"
     data-original-pages="{{ implode(',',$d['pages']) }}" data-recorded-expiry="{{ $expiry['value'] ?? '' }}" data-expiry-precision="{{ $precision }}"
     data-source-ready="{{ (int) ($source->machine_confirmed && $source->revision === $aiRun->source_revision) }}" method="post" action="{{ route('dossiers.ai.review',$proposal) }}">@csrf
 <input type="hidden" name="source_revision" value="{{ $source->revision }}">

@@ -15,22 +15,24 @@ use Illuminate\Support\Str;
 
 class DossierAiService
 {
-    public function request(DossierSource $source, int $actor, bool $automatic = false): DossierAiRun
+    public function request(DossierSource $source, int $actor, bool $automatic = false, bool $manual = false): DossierAiRun
     {
         app(DossierService::class)->check(\Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs'), 'Cần migration additive Phase18.1 sau khi xác minh và backup LOCAL.');
         app(DossierService::class)->check($source->status === 'ready' && ! $source->driver_reset_retired_at && $source->page_count <= 60, 'PDF chưa sẵn sàng hoặc quá60trang cho pilot AI; nhập tay vẫn dùng được.');
-        if ($source->machine_id && ! $source->replacement_cancelled_at) {
-            app(\App\Services\DossierZaloRoster::class)->provisionForMachine($source->machine_id, $actor);
-        }
         $probe = app(DossierVision::class)->probe();
 
-        return DB::transaction(function () use ($source, $actor, $probe, $automatic) {
+        return DB::transaction(function () use ($source, $actor, $probe, $automatic, $manual) {
             $s = DossierSource::lockForUpdate()->findOrFail($source->id);
             app(DossierService::class)->check(! $s->replacement_cancelled_at, 'Bản thay đã hủy.');
             $context = ['machine_id' => $s->machine_id, 'group' => ($s->document_target['subject'] ?? null) === 'driver' ? 'driver' : $s->machine?->dossier_group, 'asset_code' => $s->machine?->asset_code, 'chassis_no' => $s->machine?->chassis_no, 'plate' => $s->machine?->plate_no, 'manufacture_year' => $s->machine?->manufacture_year, 'ai_profile' => $probe['ai_profile'] ?? null, 'catalog_sha256' => hash('sha256', DB::table('dossier_types')->whereNotNull('ai_key')->orderBy('ai_key')->pluck('ai_key')->toJson()), 'rule_ids' => DB::table('dossier_ai_rules')->where('enabled', true)->where('effective_from', '<=', app(\App\Services\Dossiers\DossierStatus::class)->now()->toDateString())->pluck('id')->all(), 'provider' => $probe['provider'] ?? null, 'model' => $probe['model'] ?? null];
             $settings = [DB::table('dossier_types')->orderBy('id')->get()->toArray(), DB::table('dossier_ai_rules')->orderBy('id')->get()->toArray()];
             $key = hash('sha256', json_encode([$s->id, $s->sha256, DossierAiSchema::VERSION, $context, $settings]));
             if ($existing = DossierAiRun::where('cache_key', $key)->lockForUpdate()->first()) {
+                if (! $manual && $probe['configured'] && $existing->status === 'unconfigured' && ! $existing->paused) {
+                    $existing->update(['status' => 'queued', 'error' => null]);
+                    $this->schedule($existing);
+                }
+
                 return $existing;
             }
             // The worker binds the model on its first claim. Keep the run queued
@@ -39,14 +41,14 @@ class DossierAiService
             $unboundKey = hash('sha256', json_encode([$s->id, $s->sha256, DossierAiSchema::VERSION, $unbound, $settings]));
             $waiting = DossierAiRun::where('cache_key', $unboundKey)->lockForUpdate()->first();
             if ($waiting && (empty($waiting->context['ai_profile']) || $waiting->context['ai_profile'] === $context['ai_profile'])) {
-                if ($probe['configured'] && $waiting->status === 'unconfigured' && ! $waiting->paused) {
+                if (! $manual && $probe['configured'] && $waiting->status === 'unconfigured' && ! $waiting->paused) {
                     $waiting->update(['status' => 'queued', 'error' => null]);
                     $this->schedule($waiting);
                 }
 
                 return $waiting;
             }
-            $r = DossierAiRun::create(['source_id' => $s->id, 'user_id' => $actor, 'cache_key' => $key, 'pipeline' => DossierAiSchema::VERSION, 'source_revision' => $s->revision, 'context' => $context, 'status' => empty($probe['configured']) ? 'unconfigured' : 'queued']);
+            $r = DossierAiRun::create(['source_id' => $s->id, 'user_id' => $actor, 'cache_key' => $key, 'pipeline' => DossierAiSchema::VERSION, 'source_revision' => $s->revision, 'context' => $context, 'status' => $manual || empty($probe['configured']) ? 'unconfigured' : 'queued']);
             $r->refresh();
             if ($automatic && ! $s->batch->auto_analyze && DossierAiRun::where('id', '!=', $r->id)->count() >= 10) {
                 $r->update(['paused' => true, 'error' => 'Đã đạt giới hạn tự xếp10bộ pilot. Người dùng kiểm tra rồi chủ động xếp tiếp từng hồ sơ.']);
@@ -74,7 +76,7 @@ class DossierAiService
             } else {
                 app(DossierService::class)->check(! \App\Models\DossierWorkerJob::whereIn('kind', ['ai_page', 'ai_group'])->where('status', 'processing')->where('lease_until', '>', now())->exists(), 'Có tác vụ AI đang chạy; đợi xong trước đọc lại.');
                 // Invalidate queued/expired generations so a late worker cannot publish.
-                \App\Models\DossierWorkerJob::whereIn('kind', ['ai_page', 'ai_group'])->whereIn('status', ['pending', 'processing', 'failed'])->get()->filter(fn ($j) => (int) $j->input['run_id'] === $r->id)->each(fn ($j) => $j->update(['status' => 'cancelled', 'claim_token' => null]));
+                \App\Models\DossierWorkerJob::whereIn('kind', ['ai_page', 'ai_group'])->whereIn('status', ['pending', 'processing', 'failed'])->get()->filter(fn ($j) => ! isset($j->input['proposal_id']) && (int) $j->input['run_id'] === $r->id)->each(fn ($j) => $j->update(['status' => 'cancelled', 'claim_token' => null]));
                 $pages = $page ? $r->pages()->where('page', $page) : $r->pages()->where('status', 'failed');
                 foreach ($pages->lockForUpdate()->get() as $p) {
                     $p->update(['status' => 'pending', 'attempts' => 0, 'dpi' => $page ? 300 : $p->dpi, 'revision' => $p->revision + 1, 'error' => null]);
@@ -96,7 +98,7 @@ class DossierAiService
 
     public function schedule(DossierAiRun $r): void
     {
-        if ($r->paused || in_array($r->status, ['ready', 'failed'], true)) {
+        if ($r->paused || in_array($r->status, ['ready', 'failed', 'unconfigured'], true)) {
             return;
         }
         $jobs = app(\App\Services\Dossiers\DossierRemoteJobs::class);
@@ -105,16 +107,22 @@ class DossierAiService
         if ($page) {
             $existing = \App\Models\DossierWorkerJob::where('kind', 'ai_page')->where('subject_id', (string) $page->id)
                 ->whereIn('status', ['pending', 'processing'])->get()
-                ->contains(fn ($j) => $j->input['page_revision'] === $page->revision);
+                ->contains(fn ($j) => ! isset($j->input['proposal_id']) && $j->input['page_revision'] === $page->revision);
             if ($existing) {
                 return;
             }
             $o = app(\App\Services\Dossiers\DossierObjects::class)->source($r->source, (bool) $r->source->processed_object_id);
             $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page, $r->source->replacementVersion?->record?->type?->ai_key)], $page->revision);
         } elseif (! $r->pages()->where('status', '!=', 'ready')->exists()) {
-            $pages = $r->pages()->orderBy('page')->get()->reject(fn ($p) => ($p->result['kind'] ?? null) === 'blank')->map(fn ($p) => ['page' => $p->page, 'data' => $p->result])->values()->all();
+            $catalog = DossierType::whereNotNull('ai_key')->pluck('ai_key')->flip();
+            $pages = $r->pages()->orderBy('page')->get()->filter(fn ($page) => ($page->result['kind'] ?? null) === 'document')
+                ->map(fn ($page) => ['page' => $page->page, 'multiple_documents' => $page->result['multiple_documents'],
+                    'fragments' => collect($page->result['fragments'])->filter(fn ($fragment) => is_array($fragment) &&
+                        is_string($fragment['type_key'] ?? null) && $catalog->has($fragment['type_key']))
+                        ->map(fn ($fragment) => ['type_key' => $fragment['type_key'],
+                            'continuation' => ($fragment['continuation'] ?? false) === true])->values()->all()])->values()->all();
             if (! $pages) {
-                $r->update(['status' => 'ready', 'generation' => $r->generation + 1]);
+                $r->update(['status' => 'ready']);
 
                 return;
             }
@@ -142,6 +150,7 @@ class DossierAiService
             $page->update(['raw' => [...$previous, 'before_label_override' => $previous['before_label_override'] ?? $page->result],
                 'result' => [...$page->result, 'kind' => $kind]]);
             $jobs->each(fn ($job) => $job->update(['status' => 'cancelled', 'claim_token' => null]));
+            $run->proposals()->where('generation', $run->generation)->update(['generation' => $run->generation + 1]);
             $run->update(['status' => $run->pages()->where('status', 'failed')->exists() ? 'failed' : 'queued',
                 'generation' => $run->generation + 1, 'group_result' => null]);
             DossierAudit::write('ai_page_label_changed', $page, $actor, ['kind' => $previous['before_label_override']['kind'] ?? null]);
@@ -151,17 +160,22 @@ class DossierAiService
 
     public function acceptRemote(\App\Models\DossierWorkerJob $job, array $result, $outputs): void
     {
-        Validator::make($result, ['response.data' => 'required|array', 'response.usage' => 'present|array', 'elapsed_ms' => 'required|integer|min:0|max:3600000'])->validate();
+        Validator::make($result, ['response.data' => $job->kind === 'ai_group' ? 'present|array' : 'required|array', 'response.usage' => 'present|array', 'elapsed_ms' => 'required|integer|min:0|max:3600000'])->validate();
         // Lock source before run, matching human review lock order.
         $run = DossierAiRun::findOrFail($job->input['run_id']);
         $source = DossierSource::lockForUpdate()->findOrFail($run->source_id);
         app(DossierService::class)->check(! $source->replacement_cancelled_at, 'Bản thay đã hủy.');
         $run = DossierAiRun::lockForUpdate()->findOrFail($run->id);
-        app(DossierService::class)->check($run->status !== 'ready', 'AI run paused/completed.');
+        app(DossierService::class)->check((isset($job->input['proposal_id']) || $run->status !== 'ready'), 'AI run paused/completed.');
         $schema = app(DossierAiSchema::class);
         $response = $result['response'];
         // Only structured content and usage are retained; no provider headers/credentials.
         $response = ['data' => $response['data'], 'usage' => $response['usage'], 'mock' => (bool) ($result['mock'] ?? false), 'worker_id' => $job->worker_id, 'ai_profile' => $job->ai_profile];
+        if (isset($job->input['proposal_id'])) {
+            $this->acceptInformation($run, $job, $response['data']);
+
+            return;
+        }
         if ($job->kind === 'ai_page') {
             $p = $run->pages()->lockForUpdate()->findOrFail($job->subject_id);
             app(DossierService::class)->check($p->revision === $job->input['page_revision'] && $p->status === 'pending', 'Stale AI page revision.');
@@ -175,98 +189,130 @@ class DossierAiService
             $run->update(['status' => 'queued', 'error' => null]);
         } else {
             app(DossierService::class)->check($run->generation === $job->input['generation'] && ! $run->pages()->where('status', '!=', 'ready')->exists(), 'Stale grouping generation.');
-            $normalized = $schema->documents($response['data'], $run->source->page_count, $run->context);
-            $blank = $run->pages()->get()->filter(fn ($p) => ($p->result['kind'] ?? null) === 'blank')->pluck('page')->all();
-            foreach ($normalized as $item) {
-                app(DossierService::class)->check(! array_intersect($blank, $item['data']['pages']), 'AI nhóm giấy chứa trang trắng.');
+            $eligible = $run->pages->filter(fn ($page) => ($page->result['kind'] ?? null) === 'document' && empty($page->result['multiple_documents']))->pluck('page')->all();
+            $items = $response['data']['documents'] ?? [];
+            $next = $run->generation + 1;
+            $preserved = $run->proposals()->where('generation', $run->generation)->orderBy('position')->get();
+            $reserved = $preserved->flatMap(fn ($proposal) => $proposal->data['pages'])->all();
+            foreach ($preserved as $proposal) {
+                $proposal->update(['generation' => $next]);
             }
-            $unreadable = $run->pages()->get()->filter(fn ($p) => ($p->result['kind'] ?? null) === 'unknown')->pluck('page')->all();
-            $multi = $run->pages()->get()->filter(fn ($p) => $p->result['multiple_documents'] ?? false)->pluck('page')->all();
-            foreach ($normalized as $i => $item) {
-                if (array_intersect($unreadable, $item['data']['pages'])) {
-                    $item['issues'][] = 'Có trang mờ hoặc chưa đọc được; cần kiểm tra riêng.';
+            $position = 1 + (int) $preserved->max('position');
+            $candidates = [];
+            $counts = [];
+            foreach (array_slice(is_array($items) ? $items : [], 0, 100) as $item) {
+                $pages = is_array($item) ? ($item['pages'] ?? null) : null;
+                $key = is_array($item) ? ($item['type_key'] ?? null) : null;
+                if (! is_array($pages) || ! $pages || array_filter($pages, fn ($p) => ! is_int($p) || ! in_array($p, $eligible, true))) {
+                    continue;
                 }
-                if (array_intersect($multi, $item['data']['pages'])) {
-                    $item['data']['multiple_documents'] = true;
-                    $item['issues'][] = 'Trang chứa nhiều giấy độc lập; cần xử lý thủ công.';
+                $pages = array_values(array_unique($pages));
+                foreach ($pages as $page) {
+                    $counts[$page] = ($counts[$page] ?? 0) + 1;
                 }
-                $run->proposals()->create(['generation' => $run->generation + 1, 'position' => $i, 'data' => $item['data'], 'issues' => $item['issues']]);
+                if (! is_string($key) || ! empty($item['error']) || ! empty($item['multiple_documents'])) {
+                    continue;
+                }
+                $type = DossierType::where('ai_key', $key)->first();
+                if ($type) {
+                    $candidates[] = [$type, $pages];
+                }
             }
-            $run->update(['generation' => $run->generation + 1, 'status' => 'ready', 'group_attempts' => $job->attempts, 'error' => null]);
-            if ($run->pipeline === DossierAiSchema::VERSION) {
-                $this->autoClassify($run, $blank);
+            foreach ($candidates as [$type, $pages]) {
+                if (array_intersect($pages, $reserved) || array_filter($pages, fn ($page) => $counts[$page] !== 1)) {
+                    continue;
+                }
+                $run->proposals()->create(['generation' => $next, 'position' => $position++,
+                    'data' => $schema->classification($type, $pages, $run->context), 'issues' => []]);
             }
+            $run->update(['generation' => $next, 'status' => 'ready', 'group_attempts' => $job->attempts, 'error' => null]);
         }
         $this->schedule($run->fresh());
     }
 
-    private function autoClassify(DossierAiRun $run, array $blank): void
+    public function classify(DossierAiRun $run, DossierType $type, array $pages, int $actor, ?DossierAiProposal $proposal = null): void
     {
-        $source = $run->source->fresh();
-        if (! $source->machine_confirmed || $source->resolution === 'REPLACEMENT_MISMATCH' || $source->replacement_cancelled_at || $source->revision !== $run->source_revision) {
+        DB::transaction(function () use ($run, $type, $pages, $actor, $proposal) {
+            $source = DossierSource::lockForUpdate()->findOrFail($run->source_id);
+            $run = DossierAiRun::lockForUpdate()->findOrFail($run->id);
+            app(DossierService::class)->check($source->status === 'ready' && ! $source->driver_reset_retired_at && ! $source->replacement_cancelled_at &&
+                $pages && min($pages) >= 1 && max($pages) <= $source->page_count, 'Trang hoặc hồ sơ không hợp lệ.');
+            $current = $run->proposals()->where('generation', $run->generation);
+            $other = (clone $current)->when($proposal, fn ($q) => $q->where('id', '!=', $proposal->id))->get();
+            app(DossierService::class)->check(! $other->contains(fn ($p) => array_intersect($pages, $p->data['pages'])), 'Trang đã thuộc một giấy khác.');
+            $data = app(DossierAiSchema::class)->classification($type, $pages, $run->context);
+            if ($proposal) {
+                $proposal = $current->whereNull('version_id')->findOrFail($proposal->id);
+                app(DossierService::class)->check($data['pages'] === $proposal->data['pages'], 'Đổi loại không đổi phạm vi trang.');
+                $data['information_revision'] = ($proposal->data['information_revision'] ?? 0) + 1;
+                $proposal->update(['data' => $data, 'issues' => []]);
+            } else {
+                $proposal = $current->create(['generation' => $run->generation, 'position' => 1 + (int) $current->max('position'), 'data' => $data, 'issues' => []]);
+            }
+            DossierAudit::write('ai_classification_saved', $proposal, $actor);
+        }, 3);
+    }
+
+    public function requestInformation(DossierAiProposal $proposal): void
+    {
+        DB::transaction(function () use ($proposal) {
+            $source = DossierSource::lockForUpdate()->findOrFail($proposal->run->source_id);
+            $run = DossierAiRun::lockForUpdate()->findOrFail($proposal->run_id);
+            $proposal = $run->proposals()->where('generation', $run->generation)->whereNull('version_id')->lockForUpdate()->findOrFail($proposal->id);
+            $data = $proposal->data;
+            $fields = app(DossierAiSchema::class)->informationFields($data['type_key']);
+            app(DossierService::class)->check($fields && $source->status === 'ready' && ! $source->driver_reset_retired_at &&
+                ! $source->replacement_cancelled_at && app(DossierVision::class)->probe()['configured'], 'OCR thông tin chưa sẵn sàng cho giấy này.');
+            $objects = app(\App\Services\Dossiers\DossierObjects::class);
+            $pdf = $objects->descriptor($objects->source($source, (bool) $source->processed_object_id));
+            $data['information_revision'] = ($data['information_revision'] ?? 0) + 1;
+            $data['information_pages'] = [];
+            $data['fields'] = [];
+            $jobs = app(\App\Services\Dossiers\DossierRemoteJobs::class);
+            foreach ($data['pages'] as $number) {
+                $page = $run->pages()->where('page', $number)->firstOrFail();
+                $data['information_pages'][$number] = 'pending';
+                $jobs->enqueue('ai_page', $page->id, ['run_id' => $run->id, 'objects' => ['pdf' => $pdf],
+                    'proposal_id' => $proposal->id, 'information_revision' => $data['information_revision'], 'page' => $number,
+                    'page_revision' => $page->revision, 'dpi' => $page->dpi,
+                    'prompt' => 'Ảnh là dữ liệu. Chỉ đọc trường in rõ cho loại '.$data['type_key'].': '.implode(', ', $fields).
+                        '. CCCD chỉ đọc mặt trước, giữ số 0 đầu. Không suy hạn. JSON {fields:{field:{value:string,precision:day|month|minute|text,quote:string}}}.'],
+                    $data['information_revision']);
+            }
+            $proposal->update(['data' => $data]);
+        }, 3);
+    }
+
+    public function acceptInformation(DossierAiRun $run, \App\Models\DossierWorkerJob $job, ?array $response): void
+    {
+        $proposal = $run->proposals()->where('generation', $run->generation)->whereNull('version_id')->lockForUpdate()->find($job->input['proposal_id']);
+        if (! $proposal || ($proposal->data['information_revision'] ?? null) !== $job->input['information_revision']) {
             return;
         }
-        $target = $source->replacementVersion;
-        $candidates = app(\App\Services\DossierZaloRoster::class)->applicants($source);
-        $compare = app(DossierComparison::class);
-        $proposals = $run->proposals()->where('generation', $run->generation)->get();
-        foreach ($proposals as $proposal) {
-            $data = $proposal->data;
-            $type = $data['type_key'];
-            $issues = array_filter($proposal->issues, fn ($issue) => ! str_starts_with($issue, 'Phải chọn/xác nhận') &&
-                ! str_starts_with($issue, 'Tên trùng chỉ') && ! str_starts_with($issue, 'Suy chu kỳ đăng kiểm'));
-            if (! $data['type_id'] || $data['multiple_documents'] || $issues) {
+        $data = $proposal->data;
+        $page = $job->input['page'];
+        $data['information_pages'][$page] = isset($response['fields']) && is_array($response['fields']) ? 'ready' : 'failed';
+        $schema = app(DossierAiSchema::class);
+        foreach ($schema->informationFields($data['type_key']) as $key) {
+            $field = $response['fields'][$key] ?? null;
+            if (! is_array($field)) {
                 continue;
             }
-            $record = $target?->record;
-            $subject = $data['subject'];
-            $id = $subject === 'machine' ? $source->machine_id : ($record?->driver_id ?? $compare->suggestedDriver($data, $source, $candidates));
-            $comparison = $compare->compare($data, $source, $subject, $id);
-            $identity = [];
-            if ($type === 'identity') {
-                $fields = $data['fields'];
-                if ($subject !== 'driver' || $comparison['status'] !== 'match' || empty($fields['person_name']['value']) || empty($fields['identity']['value']) || empty($fields['birth_date']['value'])) {
-                    continue;
-                }
-                $identity = ['verify_identity' => true, 'person_name' => $fields['person_name']['value'],
-                    'identity' => $fields['identity']['value'], 'birth_date' => $fields['birth_date']['value']];
-            }
-            $tracking = in_array($type, DossierAiSchema::EXPIRY_TYPES, true);
-            $expiry = $data['fields']['expiry'] ?? null;
-            if ($target) {
-                $expected = array_values(array_diff(range(1, $source->page_count), $blank));
-                if ($proposals->count() !== 1 || $data['pages'] !== $expected || $record->type_id !== $data['type_id'] ||
-                    ($subject === 'driver' ? ! $record->driver_id : $subject !== 'machine' || $record->machine_id !== $id) ||
-                    $comparison['status'] === 'mismatch' || ($tracking && $comparison['status'] !== 'match')) {
-                    continue;
-                }
-            } else {
-                $sameType = $proposals->filter(fn ($candidate) => $candidate->data['type_id'] === $data['type_id'] && $candidate->data['subject'] === $subject && ($subject !== 'driver' || $compare->suggestedDriver($candidate->data, $source, $candidates) === $id));
-                if ($sameType->count() !== 1 || ! $id || $comparison['status'] !== 'match') {
-                    continue;
-                }
-            }
-            if ($tracking && ($expiry ? ! in_array($expiry['precision'], ['day', 'minute'], true) : ! $data['permanent_explicit'])) {
+            $v = Validator::make($field, ['value' => ['required', 'string', 'max:255'],
+                'precision' => 'required|in:day,month,minute,text', 'quote' => 'required|string|max:2000']);
+            if ($v->fails()) {
                 continue;
             }
-            $pages = $run->pages()->whereIn('page', $data['pages'])->get()->keyBy('page');
-            try {
-                $this->review($proposal, [
-                    ...$identity,
-                    'source_revision' => $source->revision, 'acknowledge_stale' => true,
-                    'reviewed_evidence' => true, 'type_id' => $data['type_id'], 'subject' => $subject, 'subject_id' => $id,
-                    'record_id' => $record?->id, 'instance' => $record?->instance ?? 'main',
-                    'pages' => array_map(fn ($page) => ['page' => $page, 'rotation' => $pages[$page]->result['rotation'] ?? 0], $data['pages']),
-                    'effective_at' => app(\App\Services\Dossiers\DossierStatus::class)->now()->format('Y-m-d H:i:s'),
-                    'expiry_precision' => ! $tracking ? 'not_tracked' : ($expiry['precision'] ?? 'permanent'),
-                    'expiry_value' => $expiry['value'] ?? null, 'confirmed' => true, 'reason' => 'Tự phân loại theo hồ sơ và bằng chứng OCR.',
-                ], $run->user_id, automatic: true);
-                $source->refresh();
-                $run->update(['source_revision' => $source->revision]);
-            } catch (\Illuminate\Validation\ValidationException) {
-                // The unchanged proposal remains available for manual review.
+            $field = $v->validated();
+            $format = ['day' => 'Y-m-d', 'month' => 'Y-m', 'minute' => 'Y-m-d H:i:s'][$field['precision']] ?? null;
+            if (($key === 'identity' && ! preg_match('/^\d{9}(\d{3})?$/D', $field['value'])) ||
+                ($key === 'birth_date' && ($field['precision'] !== 'day' || ! $schema->validDate($field['value'], 'Y-m-d'))) ||
+                ($key === 'expiry' && (! $format || ! $schema->validDate($field['value'], $format)))) {
+                continue;
             }
+            $data['fields'][$key] ??= [...$field, 'page' => $page, 'box' => null];
         }
+        $proposal->update(['data' => $data]);
     }
 
     public function review(DossierAiProposal $proposal, array $input, int $actor, bool $automatic = false): DossierVersion

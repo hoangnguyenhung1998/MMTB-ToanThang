@@ -84,8 +84,9 @@ class DossierTest extends TestCase
         }
         $old = Driver::create(['name' => 'Tài xế cũ']);
         $batch = $this->batch();
-        $this->service->upload($batch, $this->pdf(), $this->user->id);
-        $this->service->upload($batch, $this->pdf(), $this->user->id);
+        $pdf = $this->pdf();
+        $this->service->upload($batch, $pdf, $this->user->id);
+        $this->service->upload($batch, UploadedFile::fake()->createWithContent($pdf->getClientOriginalName(), $pdf->get()), $this->user->id);
         $this->assertDatabaseCount('drivers', 3);
         $this->assertDatabaseCount('zalo_sender_driver_links', 2);
         $this->assertCount(2, app(DossierReport::class)->drivers($this->machine));

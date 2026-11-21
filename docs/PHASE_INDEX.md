@@ -4,6 +4,7 @@
 
 | Phase | Purpose | Status | Dependencies | Related | Git reference | Documentation path |
 |---|---|---|---|---|---|---|
+| 18.6 | Phân loại giấy trước, OCR thông tin theo giấy | LOCAL, chờ nghiệm thu scan thật | Phase 18.1/18.2/18.4/18.5 | Worker hồ sơ, duyệt giấy | `codex/phase18-6-classification-first` từ `4ec3518` | `docs/phases/PHASE-18.6.md` |
 | 18.5 | Reset tài xế, dựng lại theo Zalo và phân trang | Reset LOCAL đã duyệt, sẵn sàng PR | Phase 18.3/18.4 | Check-in, OCR CCCD, PDF | `4932538`, `codex/phase18-5-zalo-dossier-roster` | `docs/phases/PHASE-18.5.md` |
 | 18.4 | Giao diện Hồ sơ, theo dõi PDF và thao tác tại dòng giấy | LOCAL, sẵn sàng PR | Phase 18.3 | Blade, job hồ sơ, R2 | `codex/phase18-4-dossier-workspace` từ `317190d` | `docs/phases/PHASE-18.4.md` |
 | 18.3 | Hồ sơ tài xế theo ánh xạ check-in, duyệt OCR và PDF in | LOCAL 125/988, MySQL race PASS, chờ nghiệm thu | Phase 18/18.1/18.2 | Zalo sender/machine, worker hồ sơ, R2 | `codex/phase18-review-recovery` từ `1c7480e6` | `docs/phases/PHASE-18.3.md` |

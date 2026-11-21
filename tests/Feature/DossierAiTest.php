@@ -144,6 +144,17 @@ class DossierAiTest extends TestCase
         return $r->fresh();
     }
 
+    // Exercise review compatibility with evidence saved by earlier releases.
+    private function completedWithLegacyEvidence(array $docs): DossierAiRun
+    {
+        $run = $this->completed($docs);
+        foreach (app(DossierAiSchema::class)->documents($this->group($docs), 3, $run->context) as $position => $item) {
+            $run->proposals()->updateOrCreate(['generation' => $run->generation, 'position' => $position + 1], $item);
+        }
+
+        return $run;
+    }
+
     private function reviewData(DossierAiProposal $p, array $extra = []): array
     {
         return [...['source_revision' => $this->source->fresh()->revision, 'reviewed_evidence' => true, 'type_id' => $p->data['type_id'], 'subject' => 'machine', 'subject_id' => $this->machine->id, 'instance' => 'main', 'pages' => array_map(fn ($n) => ['page' => $n, 'rotation' => 0], $p->data['pages']), 'shared_pages' => false, 'effective_at' => '2026-10-01 00:00:00', 'expiry_precision' => 'unknown', 'reason' => 'Human checked mock evidence', 'confirmed' => true], ...$extra];
@@ -158,6 +169,78 @@ class DossierAiTest extends TestCase
         $this->get(route('dossiers.source', $this->source))->assertOk()->assertSee('Chưa cấu hình AI')->assertSee('Phân loại giấy mới');
         $this->service->control($r, 'resume', null, $this->user->id);
         $this->assertSame('unconfigured', $r->fresh()->status);
+        $this->assertDatabaseCount('dossier_versions', 0);
+    }
+
+    public function test_partial_group_can_be_reviewed_and_information_is_independent(): void
+    {
+        $this->mockVision([$this->page(), [...$this->page(), 'kind' => 'unknown'], $this->page(), [
+            'documents' => [
+                ['type_key' => 'identity', 'pages' => [1], 'fields' => 'invalid OCR fields'],
+                ['type_key' => 'machine_inspection', 'pages' => [3]],
+                ['type_key' => 'health', 'pages' => [2], 'error' => true],
+            ],
+        ]]);
+        $run = $this->service->request($this->source, $this->user->id);
+        $this->drain($run, 3);
+        DB::table('dossier_ai_control')->update(['next_call_at' => null]);
+        $jobs = app(\App\Services\Dossiers\DossierRemoteJobs::class);
+        $worker = \Tests\Support\DossierTestWorker::worker();
+        $job = $jobs->claim($worker);
+        $this->assertSame('ai_group', $job->kind);
+        config(['dossiers.worker.token' => str_repeat('test-only-', 5)]);
+        $this->postJson('/api/dossiers/v1/jobs/'.$job->id.'/complete', [
+            'input_hash' => $job->input_hash, 'pipeline' => $job->pipeline,
+            'result' => ['response' => ['data' => array_shift($this->responses), 'usage' => []], 'elapsed_ms' => 0, 'mock' => true],
+        ], ['Authorization' => 'Bearer '.config('dossiers.worker.token'), 'X-Dossier-Worker' => $worker->id,
+            'X-Dossier-Claim' => $job->claim_token, 'X-Dossier-Attempt' => (string) $job->attempts])
+            ->assertOk()->assertJsonPath('status', 'succeeded');
+        $run->refresh();
+        $this->assertSame('ready', $run->status);
+        $this->assertCount(2, $run->proposals);
+        $this->assertDatabaseCount('dossier_versions', 0);
+        $this->get(route('dossiers.source', $this->source))->assertOk()->assertSee('Chưa phân loại')->assertSee('OCR thông tin');
+
+        $type = DossierType::where('ai_key', 'safety')->firstOrFail();
+        $this->post(route('dossiers.ai.classify', $run), ['type_id' => $type->id, 'pages' => [2]])->assertSessionHasNoErrors();
+        $this->assertCount(3, $run->proposals()->get());
+        $identity = $run->proposals()->get()->firstWhere('data.type_key', 'identity');
+        $this->assertSame([], $identity->data['fields']);
+        $this->assertSame('driver', $identity->data['subject']);
+        $this->post(route('dossiers.ai.information', $identity))->assertSessionHasNoErrors();
+        $this->responses = [['fields' => [
+            'identity' => $this->field('000000000001', 'text'),
+            'person_name' => $this->field('Fixture Person', 'text'),
+            'birth_date' => $this->field('1990-01-02'),
+            'expiry' => $this->field('2030-01-01'),
+        ]]];
+        $this->drain($run, 1);
+        $this->assertSame(['person_name', 'identity', 'birth_date'], array_keys($identity->fresh()->data['fields']));
+        $this->assertSame('000000000001', $identity->fresh()->data['fields']['identity']['value']);
+
+        $this->post(route('dossiers.ai.information', $identity))->assertSessionHasNoErrors();
+        config(['dossiers.worker.max_attempts' => 1]);
+        $this->responses = [new \RuntimeException('mock failure')];
+        $this->drain($run, 1);
+        $this->assertSame('failed', $identity->fresh()->data['information_pages'][1]);
+        $this->assertSame('identity', $identity->fresh()->data['type_key']);
+        $this->assertSame('ready', $run->fresh()->status);
+        $this->assertSame($this->source->sha256, hash_file('sha256', Storage::disk('dossiers')->path($this->source->path)));
+    }
+
+    public function test_manual_classification_starts_without_ai_and_rejects_out_of_scope_pages(): void
+    {
+        $this->post(route('dossiers.ai.request', $this->source), ['manual' => 1])->assertRedirect();
+        $run = DossierAiRun::sole();
+        $type = DossierType::where('ai_key', 'identity')->firstOrFail();
+        $this->postJson(route('dossiers.ai.classify', $run), ['type_id' => $type->id, 'pages' => [4]])->assertUnprocessable();
+        $this->post(route('dossiers.ai.classify', $run), ['type_id' => $type->id, 'pages' => [1, 3]])->assertSessionHasNoErrors();
+        $proposal = $run->proposals()->sole();
+        $this->assertSame([1, 3], $proposal->data['pages']);
+        $type = DossierType::where('ai_key', 'qualification')->firstOrFail();
+        $this->post(route('dossiers.ai.classify', $run), ['proposal_id' => $proposal->id, 'type_id' => $type->id, 'pages' => [1, 3]])->assertSessionHasNoErrors();
+        $this->assertSame('qualification', $proposal->fresh()->data['type_key']);
+        $this->assertDatabaseCount('dossier_worker_jobs', 0);
         $this->assertDatabaseCount('dossier_versions', 0);
     }
 
@@ -180,7 +263,7 @@ class DossierAiTest extends TestCase
 
     public function test_human_review_then_pdf_excel_use_same_confirmed_version_not_raw_ai(): void
     {
-        $r = $this->completed([$this->doc(fields: ['expiry' => $this->field('2027-01-01')])]);
+        $r = $this->completedWithLegacyEvidence([$this->doc(fields: ['expiry' => $this->field('2027-01-01')])]);
         $p = $r->proposals()->first();
         $v = $this->service->review($p, $this->reviewData($p, ['expiry_precision' => 'day', 'expiry_value' => '2027-01-01', 'number' => 'USER-EDITED']), $this->user->id);
         $this->assertTrue($v->confirmed);
@@ -254,14 +337,9 @@ class DossierAiTest extends TestCase
         $d = $this->doc(fields: ['issued_on' => $this->field('2026-02-30')]);
         $d['multiple_documents'] = true;
         $r = $this->completed([$d]);
-        $p = $r->proposals()->first();
-        $this->assertArrayNotHasKey('issued_on', $p->data['fields']);
-        try {
-            $this->service->review($p, $this->reviewData($p), $this->user->id);
-            $this->fail('multi-document accepted');
-        } catch (\Illuminate\Validation\ValidationException) {
-            $this->assertDatabaseCount('dossier_versions', 0);
-        }
+        $this->assertSame('ready', $r->status);
+        $this->assertDatabaseCount('dossier_ai_proposals', 0);
+        $this->assertDatabaseCount('dossier_versions', 0);
         $d = $this->doc(fields: ['expiry' => ['value' => '2027-01-01', 'precision' => 'day', 'page' => 1]]);
         $this->expectException(\Illuminate\Validation\ValidationException::class);
         $s->documents($this->group([$d]), 3, []);
@@ -294,7 +372,7 @@ class DossierAiTest extends TestCase
         $d = $this->doc('bic_personal', [1, 3]);
         $d['subject'] = 'driver';
         $d['insured'] = [['name' => 'Mock A', 'page' => 3, 'quote' => 'Mock A included']];
-        $r = $this->completed([$d]);
+        $r = $this->completedWithLegacyEvidence([$d]);
         $this->assertSame([1, 3], $r->proposals()->first()->data['pages']);
         $this->assertCount(1, $r->proposals()->first()->data['insured']);
         $this->assertStringContainsString('định danh', implode(' ', $r->proposals()->first()->issues));
@@ -320,7 +398,7 @@ class DossierAiTest extends TestCase
 
     public function test_bulk_review_saves_matches_and_excludes_wrong_chassis_and_unselected_proposal(): void
     {
-        $r = $this->completed([
+        $r = $this->completedWithLegacyEvidence([
             $this->doc(pages: [1], fields: ['chassis_no' => $this->field('FRAME01', 'text'), 'expiry' => $this->field('2027-01-01')]),
             $this->doc('asset_insurance', [2], ['chassis_no' => $this->field('WRONG', 'text', 2), 'expiry' => $this->field('2027-01-01', 'day', 2)]),
             $this->doc('machine_inspection', [3]),
@@ -435,7 +513,7 @@ class DossierAiTest extends TestCase
         DB::table('dossier_ai_rules')->where('type_id', $type->id)->update(['enabled' => true]);
         $d = $this->doc(fields: ['issued_on' => $this->field('2024-01-31')]);
         $d['expiry_absent'] = true;
-        $r = $this->completed([$d]);
+        $r = $this->completedWithLegacyEvidence([$d]);
         $p = $r->proposals()->first();
         $this->assertSame('2025-01-31', $p->data['expiry_suggestion']['value']);
         try {
@@ -533,7 +611,7 @@ class DossierAiTest extends TestCase
         $this->post(route('dossiers.ai.label', [$run, 2]), ['kind' => 'unknown'])->assertRedirect();
         $this->assertSame('cancelled', $group->fresh()->status);
         $this->assertSame('blank', $run->pages()->where('page', 2)->first()->raw['before_label_override']['kind']);
-        $this->assertStringContainsString('"page":2', \App\Models\DossierWorkerJob::where('kind', 'ai_group')->where('status', 'pending')->firstOrFail()->input['prompt']);
+        $this->assertStringNotContainsString('"page":2', \App\Models\DossierWorkerJob::where('kind', 'ai_group')->where('status', 'pending')->firstOrFail()->input['prompt']);
     }
 
     public function test_recovery_reuses_verified_attempt_and_queues_only_page_five(): void
@@ -580,7 +658,7 @@ class DossierAiTest extends TestCase
         $identity['subject'] = 'driver';
         $bic = $this->doc('bic_personal', [2, 3]);
         $bic['subject'] = 'driver';
-        $run = $this->completed([$identity, $bic]);
+        $run = $this->completedWithLegacyEvidence([$identity, $bic]);
         $idProposal = $run->proposals()->orderBy('position')->firstOrFail();
         $this->service->review($idProposal, $this->reviewData($idProposal, [
             'subject' => 'driver', 'subject_id' => $first->id, 'verify_identity' => true, 'person_name' => 'Mock Driver', 'birth_date' => '1990-01-01', 'identity' => '000000000001',
@@ -617,18 +695,18 @@ class DossierAiTest extends TestCase
         $this->assertSame(1, $run->pages()->where('status', 'ready')->count());
     }
 
-    public function test_matching_machine_document_with_printed_expiry_is_processed_without_review(): void
+    public function test_classification_does_not_confirm_a_machine_document_or_import_expiry(): void
     {
         $run = $this->completed([
             $this->doc(fields: ['chassis_no' => $this->field('FRAME01', 'text'), 'expiry' => $this->field('2027-01-01')]),
         ]);
-        $version = \App\Models\DossierVersion::findOrFail($run->proposals()->sole()->version_id);
-        $this->assertTrue($version->confirmed);
-        $this->assertSame('2027-01-01', $version->expiry_value);
-        $this->assertSame($this->machine->id, $version->record->machine_id);
+        $proposal = $run->proposals()->sole();
+        $this->assertNull($proposal->version_id);
+        $this->assertSame([], $proposal->data['fields']);
+        $this->assertSame('machine_inspection', $proposal->data['type_key']);
     }
 
-    public function test_clearly_classified_replacement_processes_without_date_fields(): void
+    public function test_clearly_classified_replacement_requires_confirmation(): void
     {
         $driver = Driver::create(['name' => 'Fixture trained']);
         $type = DossierType::where('ai_key', 'qualification')->firstOrFail();
@@ -647,10 +725,9 @@ class DossierAiTest extends TestCase
         $run = $this->service->request($other, $this->user->id);
         $this->drain($run);
         $proposal = $run->proposals()->sole();
-        $this->assertNotNull($proposal->version_id);
-        $new = \App\Models\DossierVersion::findOrFail($proposal->version_id);
-        $this->assertSame('not_tracked', $new->expiry_precision);
-        $this->assertSame($old->id, $new->replaces_id);
-        $this->assertCount(3, $new->pages);
+        $this->assertNull($proposal->version_id);
+        $this->assertSame('qualification', $proposal->data['type_key']);
+        $this->assertCount(3, $proposal->data['pages']);
+        $this->assertDatabaseCount('dossier_versions', 1);
     }
 }

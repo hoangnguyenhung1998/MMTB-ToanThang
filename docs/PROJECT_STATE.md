@@ -1,5 +1,9 @@
 # Project State
 
+## Phase 18.6 — LOCAL
+
+Nhánh `codex/phase18-6-classification-first` từ `4ec3518`. Đã tách luồng phân loại và OCR từng giấy. Fixture API complete, chọn loại thủ công và OCR mock đã chạy. Lý do cụ thể của 422 trên scan thật còn thiếu. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh và nghiệm thu scan thật sau phát hành. Chưa được chạy lại job hoặc sửa hosting.
+
 ## Phase 18.5 — RESET LOCAL (20/11/2026)
 
 Nhánh `codex/phase18-5-zalo-dossier-roster`, base `4932538`. MySQL LOCAL `mmtb` tại Laragon đã backup và restore thử trên MySQL cách ly. Đã áp migration tồn đọng Phase 18 tới `2026_11_20_000003_prepare_zalo_driver_reset` theo path và chạy reset. Xóa 310 Driver và 7 lịch sử phân công. Giữ 269 máy, 787 sự kiện máy, 2 nguồn. DB này không có Zalo–máy, giấy cá nhân hoặc PDF xuất trước reset, nên seed tạo 0 tài xế.
