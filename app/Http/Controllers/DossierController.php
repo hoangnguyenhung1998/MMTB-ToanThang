@@ -250,12 +250,19 @@ class DossierController extends Controller
     public function correct(Request $request, DossierVersion $version, DossierService $service)
     {
         $data = $request->validate(['request_id' => 'required|uuid', 'type_id' => 'required|integer|exists:dossier_types,id', 'reason' => 'required|string|max:2000',
-            'expiry_precision' => 'nullable|in:unknown,day,month,minute,permanent', 'expiry_value' => 'nullable|string|max:30', 'month_rule' => 'nullable|in:end_of_month']);
+            'page_order' => 'nullable|string|max:1200', 'expiry_precision' => 'nullable|in:unknown,day,month,minute,permanent', 'expiry_value' => 'nullable|string|max:30', 'month_rule' => 'nullable|in:end_of_month']);
         $record = $version->record;
         $type = DossierType::findOrFail($data['type_id']);
         $tracked = in_array($type->ai_key, \App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES, true);
         $subject = $record->driver_id ? 'driver' : ($record->assignment_id ? 'assignment' : 'machine');
         $metadata = $version->only(['source_id', 'pages', 'shared_pages', 'number', 'issuer', 'issued_on', 'certified_on', 'note']);
+        if (isset($data['page_order'])) {
+            $pages = preg_split('/[\s,]+/', trim($data['page_order']), -1, PREG_SPLIT_NO_EMPTY);
+            validator(['pages' => $pages], ['pages' => 'required|array|max:300', 'pages.*' => 'required|integer|min:1|distinct'])->validate();
+            $rotations = array_column($version->pages, 'rotation', 'page');
+            $metadata['pages'] = array_map(fn ($page) => ['page' => (int) $page, 'rotation' => $rotations[$page] ?? 0], $pages);
+            unset($data['page_order']);
+        }
         if ($record->type->ai_key === 'identity' && $record->type_id !== $type->id) {
             $metadata['number'] = null;
         }

@@ -1,5 +1,9 @@
 # Project State
 
+## Phase 18.7 — LOCAL
+
+Nhánh `codex/phase18-7-dossier-page-review` từ `6cb5393`. Đã bổ sung dấu hiệu ghép trang, ảnh chi tiết và sửa nhóm trang. Mẫu T-XL0039 đã render 22 trang, giữ SHA256, chưa có baseline AI thật. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh, rồi nghiệm thu scan thật theo bảng trong skill sau khi cập nhật worker. Chưa merge/deploy hoặc cập nhật worker laptop.
+
 ## Phase 18.6 — LOCAL
 
 Nhánh `codex/phase18-6-classification-first` từ `4ec3518`. Đã tách luồng phân loại và OCR từng giấy. Fixture API complete, chọn loại thủ công và OCR mock đã chạy. Lý do cụ thể của 422 trên scan thật còn thiếu. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh và nghiệm thu scan thật sau phát hành. Chưa được chạy lại job hoặc sửa hosting.

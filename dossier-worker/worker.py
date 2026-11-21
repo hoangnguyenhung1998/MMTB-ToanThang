@@ -135,7 +135,30 @@ class Worker:
     def heartbeat(self):
         return self.api.json('POST','/heartbeat',{'worker_id':self.api.worker,'capabilities':['prepare','export']+(['ai_page','ai_group'] if self.ai_ready else []),'versions':{**self.versions,'pipeline':PIPELINE,'python':sys.version.split()[0]},'ai_ready':self.ai_ready,'ai_profile':self.profile,'provider':'mock-only' if self.mock else 'journal-compatible-dossiers','model':'mock' if self.mock else self.model or None})
 
-    def read_ai(self,prompt,image=None):
+    def evidence_views(self, image, rotation=0):
+        from PIL import Image
+
+        if rotation not in (0, 90, 180, 270):
+            raise ProcessingError('invalid_image_rotation')
+        with Image.open(image) as original:
+            upright = original.rotate(-rotation, expand=True) if rotation else original.copy()
+            views = [image]
+            if rotation:
+                view = image.with_name('upright.jpg')
+                upright.save(view, quality=92)
+                views[0] = view
+            width, height = upright.size
+            if width > height * 1.2:
+                boxes = [(0, 0, (width * 55) // 100, height), ((width * 45) // 100, 0, width, height)]
+            else:
+                boxes = [(0, 0, width, (height * 55) // 100), (0, (height * 45) // 100, width, height)]
+            for index, box in enumerate(boxes, 1):
+                view = image.with_name(f'detail-{index}.jpg')
+                upright.crop(box).save(view, quality=92)
+                views.append(view)
+            return views
+
+    def read_ai(self,prompt,image=None,views=()):
         if not self.ai_ready: raise ProcessingError('ai_unconfigured')
         if self.mock:
             data={'documents':[{'title':'LOCAL MOCK — manual review only','type_key':'unknown','subject':'unknown','pages':[1],'fields':{},'expiry_absent':False,'permanent_explicit':False,'multiple_documents':False,'insured':[],'scope_text':'Isolated test; not a scan interpretation','issues':['Mock only; human review required']}],'unclassified_pages':[],'suggested_exclusions':[]} if image is None else {'text':'LOCAL MOCK, not extracted from scan','kind':'unknown','rotation':0,'multiple_documents':False,'suspected_duplicate':False,'fragments':[],'fields':{},'issues':['Mock only; human review required']}
@@ -145,7 +168,9 @@ class Worker:
         from mmtb_journal_worker.vision_client import JournalVisionClient,VisionError
         client=JournalVisionClient(self.endpoint,self.key,self.model,180)
         content=[{'type':'text','text':prompt}]
-        if image: content.append({'type':'image_url','image_url':{'url':client.image_data_url(image),'detail':'high'}})
+        if image:
+            for view in views or [image]:
+                content.append({'type':'image_url','image_url':{'url':client.image_data_url(view),'detail':'high'}})
         try: result=client.request_json({'model':self.model,'messages':[{'role':'user','content':content}],'temperature':0,'response_format':{'type':'json_object'}})
         except VisionError as error: raise ProcessingError('ai_request_failed',error.retryable) from None
         return {'data':result.data,'usage':result.usage}
@@ -168,8 +193,9 @@ class Worker:
         if job['kind']=='ai_page':
             image=self.engine.render(next(iter(inputs.values())),data['page'],work/'image.jpg',data['dpi']);outputs={'image':image}
         elif job['kind']!='ai_group': raise ProcessingError('job_kind_unknown')
+        views = self.evidence_views(image, data.get('rotation', 0)) if image and data.get('evidence_views') and not self.mock else ()
         self.stage='ai'
-        result={'response':self.read_ai(data['prompt'],image),'elapsed_ms':round((time.monotonic()-started)*1000),'mock':self.mock}
+        result={'response':self.read_ai(data['prompt'],image,views),'elapsed_ms':round((time.monotonic()-started)*1000),'mock':self.mock}
         return result,outputs
 
     def publish(self,job,work,receipt):

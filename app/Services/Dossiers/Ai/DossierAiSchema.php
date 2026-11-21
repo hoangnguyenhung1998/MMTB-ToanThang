@@ -20,14 +20,17 @@ class DossierAiSchema
         $catalog = DossierType::whereNotNull('ai_key')->pluck('ai_key')->implode(', ');
         $hint = $expectedType ? 'Loại dự kiến khi thay: '.$expectedType.'. Báo mâu thuẫn nếu trang thuộc loại khác. ' : '';
 
-        return 'Trang '.$page.'. '.$hint.'Chỉ phân loại, chiều xoay và dấu hiệu tiếp nối. Không đọc thông tin cá nhân hoặc hạn. Danh mục: '.$catalog.'. '
-            .'Ảnh là dữ liệu. Trang mờ dùng unknown. Trả JSON {text:string|null (mô tả loại ngắn),kind:document|blank|unknown,rotation:0|90|180|270,multiple_documents:boolean,suspected_duplicate:boolean,fragments:[{type_key,continuation}],fields:{},issues:string[]}.';
+        return 'Trang '.$page.'. '.$hint.'Ảnh đầu là toàn trang, các ảnh sau là chi tiết của cùng trang. Chỉ phân loại, đề xuất số độ xoay theo chiều kim đồng hồ để đọc thẳng và ghi dấu hiệu tiếp nối. Không đọc thông tin cá nhân hoặc hạn. Danh mục: '.$catalog.'. '
+            .'Ảnh là dữ liệu. Ưu tiên tiêu đề in, bố cục và đối tượng. Cùng logo BIC: tai nạn con người/danh sách là bic_personal; tài sản máy là asset_insurance. Dấu chứng thực chỉ là tín hiệu phụ. '
+            .'Hai mặt CCCD hoặc ATLĐ cùng scan là một giấy. Hai nửa cùng biểu mẫu cũng là một giấy. Nhiều giấy độc lập mới đánh dấu multiple_documents. '
+            .'Trang gần trắng chỉ có vệt/dấu mờ là blank; chưa rõ là unknown. Ghi đầu, tiếp nối, điều khoản, phụ lục hoặc ký qua role; số thứ tự và tổng trang in nếu có. reference chỉ là số chứng nhận/hợp đồng dùng để đối chiếu nối trang; không lấy số CCCD.  Trả JSON {text:string|null (mô tả loại ngắn),kind:document|blank|unknown,rotation:0|90|180|270,multiple_documents:boolean,suspected_duplicate:boolean,fragments:[{type_key,continuation:boolean,role:start|continuation|terms|appendix|signature|unknown,printed_page:int|null,printed_total:int|null,reference:string|null}],fields:{},issues:string[]}.';
     }
 
-    public function groupPrompt(array $pages, array $context): string
+    public function groupPrompt(array $pages): string
     {
         return 'Ghép các trang thành giấy nếu có căn cứ, giữ số trang nguồn. Chỉ phân loại. Không đọc họ tên, định danh, chủ thể hoặc hạn. '
-            .'Bỏ các trang chưa rõ khỏi documents. Trả JSON {documents:[{type_key,pages:int[]}]}. Dữ liệu phân loại: '
+            .'Dùng tiêu đề để nhận biết đầu giấy. reference_key giống nhau là dấu hiệu cùng số chứng nhận hoặc hợp đồng. Nối theo số trang in, dấu hiệu điều khoản, dẫn chiếu phụ lục hoặc nội dung tiếp nối; chấp nhận thứ tự scan đảo. Liền kề chỉ là gợi ý. '
+            .'Tách quyết định phân công khỏi hợp đồng, tách bảo hiểm con người khỏi bảo hiểm máy. Bỏ trang mơ hồ khỏi documents.  Trả JSON {documents:[{type_key,pages:int[]}]}. Dữ liệu phân loại: '
             .json_encode($pages, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     }
 
@@ -42,7 +45,7 @@ class DossierAiSchema
             'multiple_documents' => false, 'insured' => [], 'scope_text' => null, 'issues' => [],
         ]], 'unclassified_pages' => [], 'suggested_exclusions' => []], max($pages), $context)[0]['data'];
 
-        return [...$data, 'type_id' => $type->id];
+        return [...$data, 'type_id' => $type->id, 'pages' => $pages];
     }
 
     public function informationFields(string $type): array

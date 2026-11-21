@@ -12,6 +12,9 @@ class DossierAudit
         $after = $model->fresh()->toArray();
         // Audit records identifiers, decisions and state, while the private dossier
         // retains raw OCR and identity evidence.
+        if ($model->getTable() === 'dossier_ai_proposals' && str_starts_with($event, 'ai_classification_')) {
+            $after['classification'] = array_intersect_key($after['data'], array_flip(['type_id', 'pages']));
+        }
         switch ($model->getTable()) {
             case 'dossier_ai_pages':
             case 'dossier_ai_runs':
