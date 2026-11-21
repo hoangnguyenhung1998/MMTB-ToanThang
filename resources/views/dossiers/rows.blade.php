@@ -28,6 +28,8 @@
 <option value="{{ $type->id }}" data-tracked="{{ (int) in_array($type->ai_key,\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true) }}" @selected($type->id===$r['type']->id)>{{ $type->name }}</option>
 @endif
 @endforeach</select></label>
+<label>Trang theo thứ tự xuất <input name="page_order" value="{{ implode(', ', array_column($v->pages,'page')) }}" required></label>
+<a href="{{ route('dossiers.file',[$v->source_id,'source']) }}" target="_blank" rel="noopener">Xem PDF gốc để đối chiếu số trang</a>
 <fieldset data-expiry-fields @if(!$tracked) hidden disabled @endif>
 <label>Trạng thái hạn <select name="expiry_precision">@foreach(['unknown'=>'Chưa đọc được hạn','day'=>'Có hạn theo ngày','minute'=>'Có hạn tới giờ/phút','month'=>'Có hạn theo tháng','permanent'=>'Không có hạn'] as $key=>$label)<option value="{{ $key }}" @selected($v->expiry_precision===$key)>{{ $label }}</option>@endforeach</select></label>
 <label>Hạn trên giấy <input name="expiry_value" value="{{ $v->expiry_value }}" placeholder="YYYY-MM-DD"></label>

@@ -84,13 +84,31 @@ class DossierAiController extends Controller
 
     public function classify(Request $request, DossierAiRun $run, DossierAiService $service)
     {
-        $data = $request->validate(['type_id' => 'required|integer|exists:dossier_types,id',
-            'pages' => 'required|array|min:1|max:60', 'pages.*' => 'required|integer|min:1|distinct',
+        $data = $request->validate(['type_id' => 'required_without:existing_proposal|nullable|integer|exists:dossier_types,id',
+            'existing_proposal' => 'nullable|integer', 'pages' => 'required|array|min:1|max:60', 'pages.*' => 'required|integer|min:1|distinct',
             'proposal_id' => 'nullable|integer']);
+        if (isset($data['existing_proposal'])) {
+            $service->editPages($run->proposals()->findOrFail($data['existing_proposal']), array_map('intval', $data['pages']), true, false, $request->user()->id);
+
+            return back()->with('success', 'Đã thêm trang vào giấy.');
+        }
         $proposal = isset($data['proposal_id']) ? $run->proposals()->findOrFail($data['proposal_id']) : null;
         $service->classify($run, DossierType::findOrFail($data['type_id']), array_map('intval', $data['pages']), $request->user()->id, $proposal);
 
         return back()->with('success', 'Đã lưu phân loại giấy.');
+    }
+
+    public function editPages(Request $request, DossierAiProposal $proposal, DossierAiService $service)
+    {
+        $data = $request->validate(['page_order' => 'nullable|string|max:1200',
+            'pages' => 'required_without:page_order|array|min:1', 'pages.*' => 'integer|min:1|distinct',
+            'transfer' => 'sometimes|boolean']);
+        $append = ! isset($data['page_order']);
+        $pages = $append ? $data['pages'] : preg_split('/[\s,]+/', trim($data['page_order']), -1, PREG_SPLIT_NO_EMPTY);
+        validator(['pages' => $pages], ['pages' => 'required|array|max:300', 'pages.*' => 'required|integer|min:1|distinct'])->validate();
+        $service->editPages($proposal, array_map('intval', $pages), $append, $request->boolean('transfer'), $request->user()->id);
+
+        return back()->with('success', 'Đã cập nhật nhóm và thứ tự trang.');
     }
 
     public function information(DossierAiProposal $proposal, DossierAiService $service)

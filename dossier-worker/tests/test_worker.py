@@ -92,6 +92,20 @@ class TransportTests(unittest.TestCase):
             with Lock(path):
                 with self.assertRaisesRegex(ProcessingError,'duplicate_worker_process'):
                     with Lock(path):pass
+    def test_rotated_detail_views_keep_source_image(self):
+        from PIL import Image
+
+        worker = object.__new__(Worker)
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'full.jpg'
+            Image.new('RGB', (300, 180), 'white').save(source)
+            before = sha(source)
+            full, first, second = worker.evidence_views(source, 90)
+            for path, size in ((full, (180, 300)), (first, (180, 165)), (second, (180, 165))):
+                with Image.open(path) as view:
+                    self.assertEqual(size, view.size)
+            self.assertEqual(before, sha(source))
+
     def test_missing_ai_configuration_never_calls_transport(self):
         worker=object.__new__(Worker);worker.ai_ready=False
         with self.assertRaisesRegex(ProcessingError,'ai_unconfigured'):worker.read_ai('prompt')

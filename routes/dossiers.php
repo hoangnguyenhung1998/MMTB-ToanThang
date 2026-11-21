@@ -8,6 +8,7 @@ Route::middleware(['auth', 'can:manage-dossiers'])->prefix('dossiers')->name('do
     Route::get('/ai/proposals/{proposal}/compare', 'compare')->name('compare');
     Route::post('/ai/proposals/{proposal}/review', 'review')->name('review');
     Route::post('/ai/{run}/classification', 'classify')->name('classify');
+    Route::post('/ai/proposals/{proposal}/pages', 'editPages')->name('pages');
     Route::post('/ai/proposals/{proposal}/information', 'information')->name('information');
     Route::post('/ai/{run}/bulk', 'bulk')->name('bulk');
     Route::post('/ai/{run}/pages/{page}/label', 'label')->whereNumber('page')->name('label');

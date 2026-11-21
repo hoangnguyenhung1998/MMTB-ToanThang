@@ -58,6 +58,18 @@ class DossierAiService
                 $cached = $prior?->pages()->where('page', $p)->where('status', 'ready')->first();
                 $r->pages()->create($cached ? ['page' => $p, 'dpi' => $cached->dpi, 'status' => 'ready', 'result' => $cached->result, 'image_sha256' => $cached->image_sha256, 'image_object_id' => $cached->image_object_id, 'raw' => ['cached_from_page_id' => $cached->id], 'usage' => [], 'elapsed_ms' => 0] : ['page' => $p]);
             }
+            $previous = DossierAiRun::where('source_id', $s->id)->where('id', '!=', $r->id)->latest('id')->first();
+            if ($previous) {
+                foreach ($previous->proposals()->where('generation', $previous->generation)->orderBy('position')->get() as $proposal) {
+                    if (! $proposal->version_id && empty($proposal->data['classification_edited'])) {
+                        continue;
+                    }
+                    $data = $proposal->data;
+                    unset($data['information_pages']);
+                    $r->proposals()->create(['generation' => $r->generation, 'position' => $proposal->position,
+                        'data' => $data, 'issues' => $proposal->issues, 'version_id' => $proposal->version_id, 'reviewed' => $proposal->reviewed]);
+                }
+            }
             DossierAudit::write('ai_requested', $r, $actor);
             $this->schedule($r);
 
@@ -112,7 +124,7 @@ class DossierAiService
                 return;
             }
             $o = app(\App\Services\Dossiers\DossierObjects::class)->source($r->source, (bool) $r->source->processed_object_id);
-            $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page, $r->source->replacementVersion?->record?->type?->ai_key)], $page->revision);
+            $jobs->enqueue('ai_page', $page->id, ['run_id' => $r->id, 'objects' => ['pdf' => app(\App\Services\Dossiers\DossierObjects::class)->descriptor($o)], 'page' => $page->page, 'dpi' => $page->dpi, 'evidence_views' => true, 'page_revision' => $page->revision, 'prompt' => $schema->pagePrompt($page->page, $r->source->replacementVersion?->record?->type?->ai_key)], $page->revision);
         } elseif (! $r->pages()->where('status', '!=', 'ready')->exists()) {
             $catalog = DossierType::whereNotNull('ai_key')->pluck('ai_key')->flip();
             $pages = $r->pages()->orderBy('page')->get()->filter(fn ($page) => ($page->result['kind'] ?? null) === 'document')
@@ -120,16 +132,36 @@ class DossierAiService
                     'fragments' => collect($page->result['fragments'])->filter(fn ($fragment) => is_array($fragment) &&
                         is_string($fragment['type_key'] ?? null) && $catalog->has($fragment['type_key']))
                         ->map(fn ($fragment) => ['type_key' => $fragment['type_key'],
-                            'continuation' => ($fragment['continuation'] ?? false) === true])->values()->all()])->values()->all();
+                            'continuation' => ($fragment['continuation'] ?? false) === true,
+                            'role' => in_array($fragment['role'] ?? null, ['start', 'continuation', 'terms', 'appendix', 'signature'], true) ? $fragment['role'] : 'unknown',
+                            'printed_page' => $this->printedPage($fragment['printed_page'] ?? null),
+                            'printed_total' => $this->printedPage($fragment['printed_total'] ?? null),
+                            'reference_key' => $this->referenceKey($fragment)])->values()->all()])->values()->all();
             if (! $pages) {
                 $r->update(['status' => 'ready']);
 
                 return;
             }
-            $prompt = $schema->groupPrompt($pages, $r->context);
+            $prompt = $schema->groupPrompt($pages);
             app(DossierService::class)->check(strlen($prompt) <= 500000, 'Pilot grouping context limit.');
             $jobs->enqueue('ai_group', $r->id, ['run_id' => $r->id, 'objects' => [], 'generation' => $r->generation, 'prompt' => $prompt, 'pages_digest' => \App\Services\Dossiers\DossierRemoteJobs::digest($pages)], $r->generation);
         }
+    }
+
+    private function printedPage(mixed $value): ?int
+    {
+        return is_int($value) && $value >= 1 && $value <= 300 ? $value : null;
+    }
+
+    private function referenceKey(array $fragment): ?string
+    {
+        $reference = $fragment['reference'] ?? null;
+        if ($fragment['type_key'] === 'identity' || ! is_string($reference) || strlen($reference) > 80) {
+            return null;
+        }
+        $reference = preg_replace('/[^A-Z0-9]/', '', strtoupper($reference));
+
+        return strlen($reference) >= 3 ? substr(hash_hmac('sha256', $reference, config('app.key')), 0, 24) : null;
     }
 
     public function label(DossierAiRun $run, int $number, string $kind, int $actor): void
@@ -241,16 +273,60 @@ class DossierAiService
             $other = (clone $current)->when($proposal, fn ($q) => $q->where('id', '!=', $proposal->id))->get();
             app(DossierService::class)->check(! $other->contains(fn ($p) => array_intersect($pages, $p->data['pages'])), 'Trang đã thuộc một giấy khác.');
             $data = app(DossierAiSchema::class)->classification($type, $pages, $run->context);
+            $data['classification_edited'] = true;
             if ($proposal) {
                 $proposal = $current->whereNull('version_id')->findOrFail($proposal->id);
                 app(DossierService::class)->check($data['pages'] === $proposal->data['pages'], 'Đổi loại không đổi phạm vi trang.');
                 $data['information_revision'] = ($proposal->data['information_revision'] ?? 0) + 1;
+                $before = $this->classificationSnapshot($proposal);
                 $proposal->update(['data' => $data, 'issues' => []]);
             } else {
                 $proposal = $current->create(['generation' => $run->generation, 'position' => 1 + (int) $current->max('position'), 'data' => $data, 'issues' => []]);
             }
-            DossierAudit::write('ai_classification_saved', $proposal, $actor);
+            DossierAudit::write('ai_classification_saved', $proposal, $actor, ['classification' => $before ?? null]);
         }, 3);
+    }
+
+    public function editPages(DossierAiProposal $proposal, array $pages, bool $append, bool $transfer, int $actor): void
+    {
+        DB::transaction(function () use ($proposal, $pages, $append, $transfer, $actor) {
+            $source = DossierSource::lockForUpdate()->findOrFail($proposal->run->source_id);
+            $run = DossierAiRun::lockForUpdate()->findOrFail($proposal->run_id);
+            $check = app(DossierService::class);
+            $current = $run->proposals()->where('generation', $run->generation);
+            $target = (clone $current)->whereNull('version_id')->findOrFail($proposal->id);
+            $check->check($source->status === 'ready' && ! $source->driver_reset_retired_at && ! $source->replacement_cancelled_at &&
+                $pages && min($pages) >= 1 && max($pages) <= $source->page_count, 'Trang hoặc hồ sơ không hợp lệ.');
+            $pages = $append ? array_values(array_unique([...$target->data['pages'], ...$pages])) : $pages;
+            foreach ((clone $current)->where('id', '!=', $target->id)->get() as $other) {
+                $remaining = array_values(array_diff($other->data['pages'], $pages));
+                if ($remaining === $other->data['pages']) {
+                    continue;
+                }
+                $check->check($transfer && ! $other->version_id, 'Trang đã thuộc giấy khác hoặc đã xác nhận.');
+                $check->check((bool) $remaining, 'Không thể chuyển hết trang khỏi giấy nguồn. Giữ lại ít nhất một trang.');
+                $this->saveEditedPages($other, $remaining, $actor);
+            }
+            $this->saveEditedPages($target, $pages, $actor);
+        }, 3);
+    }
+
+    private function classificationSnapshot(DossierAiProposal $proposal): array
+    {
+        return ['type_id' => $proposal->data['type_id'], 'pages' => $proposal->data['pages']];
+    }
+
+    private function saveEditedPages(DossierAiProposal $proposal, array $pages, int $actor): void
+    {
+        if ($pages === $proposal->data['pages']) {
+            return;
+        }
+        $before = $this->classificationSnapshot($proposal);
+        $data = app(DossierAiSchema::class)->classification(DossierType::findOrFail($before['type_id']), $pages, $proposal->run->context);
+        $data['classification_edited'] = true;
+        $data['information_revision'] = ($proposal->data['information_revision'] ?? 0) + 1;
+        $proposal->update(['data' => $data, 'issues' => []]);
+        DossierAudit::write('ai_classification_pages_changed', $proposal, $actor, ['classification' => $before]);
     }
 
     public function requestInformation(DossierAiProposal $proposal): void
@@ -274,9 +350,9 @@ class DossierAiService
                 $data['information_pages'][$number] = 'pending';
                 $jobs->enqueue('ai_page', $page->id, ['run_id' => $run->id, 'objects' => ['pdf' => $pdf],
                     'proposal_id' => $proposal->id, 'information_revision' => $data['information_revision'], 'page' => $number,
-                    'page_revision' => $page->revision, 'dpi' => $page->dpi,
+                    'page_revision' => $page->revision, 'dpi' => max(220, $page->dpi), 'rotation' => (int) ($page->result['rotation'] ?? 0), 'evidence_views' => true,
                     'prompt' => 'Ảnh là dữ liệu. Chỉ đọc trường in rõ cho loại '.$data['type_key'].': '.implode(', ', $fields).
-                        '. CCCD chỉ đọc mặt trước, giữ số 0 đầu. Không suy hạn. JSON {fields:{field:{value:string,precision:day|month|minute|text,quote:string}}}.'],
+                        '. Nếu có nhiều ảnh, ảnh đầu là toàn trang và các ảnh sau là vùng của cùng trang. CCCD chỉ đọc vùng mặt trước, giữ số 0 đầu. Chỉ lấy mốc kết thúc hiệu lực in trên giấy, giữ tháng/năm nếu chỉ in tháng/năm. Bỏ qua ngày ký, chứng thực và thanh toán phí. Không suy hạn. JSON {fields:{field:{value:string,precision:day|month|minute|text,quote:string}}}.'],
                     $data['information_revision']);
             }
             $proposal->update(['data' => $data]);

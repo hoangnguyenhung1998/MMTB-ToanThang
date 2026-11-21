@@ -54,7 +54,7 @@ class RecoverDossierBlank extends Command
                 $candidates = [];
                 foreach ($jobs as $job) {
                     $check->check($job->status !== 'processing' || ! $job->lease_until?->gt(now()), 'Worker còn giữ lease cho trang này.');
-                    if (($job->input['run_id'] ?? null) !== $run->id ||
+                    if (isset($job->input['proposal_id']) || ($job->input['run_id'] ?? null) !== $run->id ||
                         ($job->input['page'] ?? null) !== $page->page ||
                         ($job->input['dpi'] ?? null) !== $page->dpi ||
                         ($job->input['page_revision'] ?? null) !== $page->revision ||

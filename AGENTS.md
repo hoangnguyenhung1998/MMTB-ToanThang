@@ -333,6 +333,10 @@ Polling. - Job. - Retry. - Runtime worker.
 Dùng cho: - Git workflow. - Hai máy development. - Laptop runtime. -
 GitHub. - Hosting. - Deploy. - Kiểm tra sau deploy.
 
+### `.agents/skills/mmtb-dossier-ocr/SKILL.md`
+
+Dùng cho nhận diện loại giấy, ghép và sửa trang PDF, OCR thông tin theo từng giấy và kiểm thử worker Hồ sơ điện tử.
+
 Ví dụ routing:
 
 -   Task Laravel/API/UI/migration → `laravel-mmtb`.

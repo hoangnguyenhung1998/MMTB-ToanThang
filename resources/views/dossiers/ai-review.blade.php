@@ -40,8 +40,14 @@
 <label><input type="checkbox" name="pages[]" value="{{ $number }}"> Trang {{ $number }}</label>
 <a href="{{ route('dossiers.file',[$source,'thumbnail',$number]) }}" target="_blank" rel="noopener">Xem trang</a>
 @endforeach
-<label>Loại giấy <select name="type_id" required><option value="">Chọn loại</option>@foreach($types as $t)<option value="{{ $t->id }}">{{ $t->name }}</option>@endforeach</select></label>
-<button>Lưu phân loại</button>
+<label>Loại giấy <select name="type_id"><option value="">Chọn loại</option>@foreach($types as $t)<option value="{{ $t->id }}">{{ $t->name }}</option>@endforeach</select></label>
+@if($classified->whereNull('version_id')->isNotEmpty())
+<label>Hoặc thêm các trang đã chọn vào
+<select name="existing_proposal"><option value="">Chọn giấy</option>
+@foreach($classified->whereNull('version_id') as $paper)<option value="{{ $paper->id }}">{{ $paper->data['title'] }} · {{ implode(', ', $paper->data['pages']) }}</option>@endforeach
+</select></label>
+@endif
+<button>Lưu phân loại hoặc thêm trang</button>
 </form>
 @endif
 <div class="d-review-grid">
@@ -70,6 +76,23 @@
 <label>Loại giấy <select name="type_id" required>@foreach($types as $t)<option value="{{ $t->id }}" @selected($d['type_id']===$t->id)>{{ $t->name }}</option>@endforeach</select></label>
 <button>Đổi loại</button>
 </form>
+<details><summary>Sửa trang</summary>
+<form method="post" action="{{ route('dossiers.ai.pages',$proposal) }}">@csrf
+<label>Trang theo thứ tự xuất <input name="page_order" value="{{ implode(', ', $d['pages']) }}" required></label>
+<p>Bấm số trang để thêm hoặc bỏ. Nhập lại thứ tự trong ô trên khi cần.</p>
+<div class="d-toolbar">
+@for($number=1;$number<=$source->page_count;$number++)
+<div>
+<a href="{{ route('dossiers.file',[$source,'thumbnail',$number]) }}" target="_blank" rel="noopener">
+<img loading="lazy" width="60" alt="Xem trang {{ $number }}" src="{{ route('dossiers.file',[$source,'thumbnail',$number]) }}"></a>
+<button type="button" class="secondary" data-toggle-paper-page="{{ $number }}">{{ $number }}</button>
+</div>
+@endfor
+</div>
+<label><input type="checkbox" name="transfer" value="1"> Chuyển từ giấy chưa xác nhận khác nếu trang đã được dùng</label>
+<button>Lưu trang</button>
+</form>
+</details>
 @if(app(\App\Services\Dossiers\Ai\DossierAiSchema::class)->informationFields($d['type_key']))
 <form method="post" action="{{ route('dossiers.ai.information',$proposal) }}">@csrf<button>OCR thông tin</button></form>
 @if(in_array('pending',$d['information_pages']??[],true))<p>Đang chờ OCR thông tin.</p>@endif
@@ -148,6 +171,15 @@
 @endif
 </section>
 <script>
+document.querySelectorAll('[data-toggle-paper-page]').forEach(button => {
+    button.addEventListener('click', () => {
+        const field = button.form.elements.page_order;
+        const page = button.dataset.togglePaperPage;
+        const numbers = field.value.split(/[\s,]+/).filter(Boolean);
+        field.value = (numbers.includes(page) ? numbers.filter(number => number !== page) : [...numbers, page]).join(', ');
+    });
+});
+
 function updateBulkCount() {
     const button = document.getElementById('ai-bulk');
     if (!button) return;

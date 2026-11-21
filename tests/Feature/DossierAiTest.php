@@ -240,8 +240,66 @@ class DossierAiTest extends TestCase
         $type = DossierType::where('ai_key', 'qualification')->firstOrFail();
         $this->post(route('dossiers.ai.classify', $run), ['proposal_id' => $proposal->id, 'type_id' => $type->id, 'pages' => [1, 3]])->assertSessionHasNoErrors();
         $this->assertSame('qualification', $proposal->fresh()->data['type_key']);
+        $type->update(['sort_order' => $type->sort_order + 1]);
+        $next = $this->service->request($this->source, $this->user->id, manual: true);
+        $this->assertNotSame($run->id, $next->id);
+        $this->assertSame('qualification', $next->proposals()->sole()->data['type_key']);
+        $this->assertSame([1, 3], $next->proposals()->sole()->data['pages']);
         $this->assertDatabaseCount('dossier_worker_jobs', 0);
         $this->assertDatabaseCount('dossier_versions', 0);
+    }
+
+    public function test_group_mock_keeps_two_insurance_subjects_and_unresolved_pages_separate(): void
+    {
+        $expected = [
+            'health' => [2, 1], 'identity' => [3], 'qualification' => [5], 'safety' => [7],
+            'bic_personal' => [11, 9, 10], 'employment' => [13, 14], 'assignment' => [15],
+            'machine_inspection' => [17], 'asset_insurance' => [21, 19, 20],
+        ];
+        $simulated = [];
+        foreach ($expected as $key => $pages) {
+            foreach ($pages as $page) {
+                $simulated[$page] = [...$this->page(), 'fragments' => [['type_key' => $key, 'role' => 'start']]];
+            }
+        }
+        $responses = array_map(fn ($page) => $simulated[$page] ?? [...$this->page(), 'kind' => 'unknown'], range(1, 22));
+        $groups = array_map(fn ($key, $pages) => ['type_key' => $key, 'pages' => $pages], array_keys($expected), array_values($expected));
+        $responses[] = ['documents' => [...array_reverse($groups), ['type_key' => 'health', 'pages' => [4], 'error' => true]]];
+        $this->source->update(['page_count' => 22]);
+        $this->mockVision($responses);
+        $run = $this->service->request($this->source, $this->user->id);
+        $this->drain($run, 23);
+        $actual = $run->proposals()->get()->mapWithKeys(fn ($proposal) => [$proposal->data['type_key'] => $proposal->data['pages']])->all();
+        $this->assertEquals($expected, $actual);
+        $this->assertSame([4, 6, 8, 12, 16, 18, 22], array_values(array_diff(range(1, 22), array_merge(...array_values($actual)))));
+    }
+
+    public function test_page_transfer_is_atomic_and_confirmed_export_keeps_the_edited_order(): void
+    {
+        $run = $this->completed([$this->doc('asset_insurance', [3, 2]), $this->doc('machine_inspection', [1])]);
+        $insurance = $run->proposals()->get()->firstWhere('data.type_key', 'asset_insurance');
+        $inspection = $run->proposals()->get()->firstWhere('data.type_key', 'machine_inspection');
+        $this->assertSame([3, 2], $insurance->data['pages']);
+        $this->postJson(route('dossiers.ai.pages', $insurance), ['page_order' => '3,2,1', 'transfer' => true])->assertUnprocessable();
+        $this->assertSame([1], $inspection->fresh()->data['pages']);
+        $this->assertSame([3, 2], $insurance->fresh()->data['pages']);
+
+        $this->post(route('dossiers.ai.pages', $inspection), ['page_order' => '2,1', 'transfer' => true])->assertSessionHasNoErrors();
+        $this->assertSame([3], $insurance->fresh()->data['pages']);
+        $this->assertSame([2, 1], $inspection->fresh()->data['pages']);
+        $this->assertSame(2, DB::table('activity_logs')->where('event', 'dossier.ai_classification_pages_changed')->count());
+        $version = $this->service->review($inspection, $this->reviewData($inspection->fresh()), $this->user->id);
+        $exporter = app(DossierExportService::class);
+        $before = $exporter->create($this->machine, [], [$version->id], (string) Str::uuid(), true, $this->user->id);
+        $this->assertSame([2, 1], array_column($before->manifest[0]['pages'], 'page'));
+
+        $this->post(route('dossiers.versions.correct', $version), ['request_id' => (string) Str::uuid(),
+            'type_id' => $version->record->type_id, 'reason' => 'Fixture page correction', 'page_order' => '1,2'])->assertSessionHasNoErrors();
+        $current = app(DossierStatus::class)->current($version->record->fresh());
+        $after = $exporter->create($this->machine, [], [$current->id], (string) Str::uuid(), true, $this->user->id);
+        $this->assertNotSame($version->id, $current->id);
+        $this->assertSame([1, 2], array_column($after->manifest[0]['pages'], 'page'));
+        $this->assertSame([2, 1], array_column($before->fresh()->manifest[0]['pages'], 'page'));
     }
 
     public function test_pipeline_groups_pages_saves_evidence_usage_without_confirming_and_replays_idempotently(): void
