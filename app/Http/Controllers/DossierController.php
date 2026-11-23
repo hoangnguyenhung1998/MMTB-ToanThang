@@ -266,12 +266,27 @@ class DossierController extends Controller
         if ($record->type->ai_key === 'identity' && $record->type_id !== $type->id) {
             $metadata['number'] = null;
         }
-        $service->saveVersion([
-            ...$metadata, ...$data,
-            'record_id' => $record->id, 'corrects_id' => $version->id, 'subject' => $subject, 'subject_id' => $record->{$subject.'_id'},
-            'instance' => $record->instance, 'confirmed' => true, 'effective_at' => app(DossierStatus::class)->now()->format('Y-m-d H:i:s'),
-            'expiry_precision' => $tracked ? ($data['expiry_precision'] ?? 'unknown') : 'not_tracked',
-        ], $request->user()->id, insuranceEvidence: $type->id === $record->type_id ? ($version->provenance['insurance_evidence'] ?? null) : null, inlineCorrection: true);
+        DB::transaction(function () use ($service, $metadata, $data, $record, $version, $subject, $tracked, $request, $type) {
+            $updated = $service->saveVersion([
+                ...$metadata, ...$data,
+                'record_id' => $record->id, 'corrects_id' => $version->id, 'subject' => $subject, 'subject_id' => $record->{$subject.'_id'},
+                'instance' => $record->instance, 'confirmed' => true, 'effective_at' => app(DossierStatus::class)->now()->format('Y-m-d H:i:s'),
+                'expiry_precision' => $tracked ? ($data['expiry_precision'] ?? 'unknown') : 'not_tracked',
+            ], $request->user()->id, insuranceEvidence: $type->id === $record->type_id ? ($version->provenance['insurance_evidence'] ?? null) : null, inlineCorrection: true);
+            if (\Illuminate\Support\Facades\Schema::hasTable('dossier_ai_proposals')) {
+                $run = $updated->source->latestAiRun;
+                $proposal = $run?->proposals()->where('generation', $run->generation)->where('version_id', $version->id)->first();
+                if ($proposal) {
+                    $classification = $proposal->data;
+                    if ($record->type_id !== $type->id || $version->pages !== $updated->pages) {
+                        $classification = app(\App\Services\Dossiers\Ai\DossierAiSchema::class)->classification($type, array_column($updated->pages, 'page'), $run->context);
+                    }
+                    unset($classification['information_pages']);
+                    $proposal->update(['version_id' => $updated->id, 'data' => [...$classification,
+                        'classification_edited' => true, 'information_revision' => ($proposal->data['information_revision'] ?? 0) + 1]]);
+                }
+            }
+        }, 3);
 
         return back()->with('success', 'Đã sửa giấy và ghi lịch sử phiên bản.');
     }
@@ -308,7 +323,14 @@ class DossierController extends Controller
             return $this->progressResponse($progress);
         }
 
-        return view('dossiers.machine', ['machine' => $machine, 'rows' => $report->rows($machine), 'drivers' => $drivers, 'progress' => $progress, 'editTypes' => DossierType::orderBy('sort_order')->get(),
+        $sources = \Illuminate\Support\Facades\Schema::hasTable('dossier_ai_runs')
+            ? DossierSource::where('machine_id', $machine->id)->where('status', 'ready')->whereNull('driver_reset_retired_at')
+                ->whereNull('replacement_cancelled_at')->with(['latestAiRun.pages', 'latestAiRun.proposals'])->latest('id')->get()
+            : collect();
+        $papers = $sources->flatMap(fn ($source) => $source->latestAiRun?->proposals->where('generation', $source->latestAiRun->generation) ?? []);
+        $byVersion = $papers->whereNotNull('version_id')->keyBy('version_id');
+
+        return view('dossiers.machine', ['machine' => $machine, 'sources' => $sources, 'papers' => $papers, 'byVersion' => $byVersion, 'rows' => $report->rows($machine), 'drivers' => $drivers, 'progress' => $progress, 'editTypes' => DossierType::orderBy('sort_order')->get(),
             'driverLabels' => app(\App\Services\DossierZaloRoster::class)->labels($drivers->pluck('driver')),
             'allDrivers' => Driver::orderBy('name')->get(), 'histories' => $machine->driverHistories()->with('driver')->latest('started_at')->get(),
             'exports' => DossierExport::where('machine_id', $machine->id)->where('user_id', auth()->id())->latest()->limit(20)->get(),

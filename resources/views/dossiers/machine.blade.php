@@ -1,14 +1,24 @@
 @extends('layouts.app')
 @section('content')
-<main class="dossier">
+<main class="dossier machine-dossier">
 @include('dossiers.common')
+@include('dossiers.machine-style')
 <header class="d-header">
-<div><h1>{{ $machine->asset_code }}</h1><small>{{ $machine->machine_type }}</small></div>
+<div><h1>Hồ sơ máy · {{ $machine->asset_code }}</h1><small>{{ $machine->machine_type }}</small></div>
 <div class="d-actions"><a class="d-button secondary" href="#dossier-history">Lịch sử</a>
 <form method="post" action="{{ route('dossiers.exports.print',$machine) }}">@csrf
 <input type="hidden" name="request_id" value="{{ (string) Str::uuid() }}"><button aria-label="Xuất PDF để in">Xuất PDF</button>
 </form></div>
 </header>
+@php
+    $saved = $rows->filter(fn ($row) => $row['version']?->confirmed && !$row['version']->archived && $row['status'] !== 'future');
+    $missingExpiry = $saved->filter(fn ($row) => $row['version']->expiry_precision === 'unknown');
+    $unassigned = $papers->whereNull('version_id')->filter(fn ($paper) => $paper->data['subject'] === 'driver' &&
+        ($paper->data['publication'] ?? null) !== 'candidate');
+@endphp
+<div class="d-alert machine-summary"><strong>Đã lưu {{ $saved->count() }} giấy</strong> ·
+<a href="{{ $missingExpiry->isNotEmpty() ? '#machine-paper-'.$missingExpiry->first()['version']->id : '#missing-expiry' }}">{{ $missingExpiry->count() }} thiếu hạn</a> ·
+<a href="{{ $unassigned->isNotEmpty() ? '#unassigned-drivers' : '#driver-documents' }}">{{ $unassigned->count() }} chưa gắn tài xế</a></div>
 @php
     $notices = collect(['missing'=>'giấy bắt buộc còn thiếu','expired'=>'giấy hết hạn'])->map(fn ($label,$status)=>[$rows->where('status',$status)->count(), $label]);
     $notices->push([$progress->where('replacing',true)->count(),'bản thay đang chờ']);
@@ -16,21 +26,23 @@
 @if($notices->contains(fn ($notice)=>$notice[0]))
 <p class="d-alert" role="status">{{ $notices->filter(fn ($notice)=>$notice[0])->map(fn ($notice)=>implode(' ',$notice))->implode(' · ') }}</p>
 @endif
-<section class="d-panel">
+<section class="d-panel" id="missing-expiry">
 <div class="d-toolbar"><h2>Giấy tờ máy/xe</h2><a class="d-button secondary" href="{{ route('dossiers.machine.documents.add',$machine) }}">Thêm giấy tờ</a></div>
-@include('dossiers.rows',['rows'=>$rows->whereIn('subject',['machine','assignment']),'group'=>$machine->dossier_group,'subjectKey'=>'machine:'.$machine->id])
+@include('dossiers.machine-rows',['rows'=>$rows->whereIn('subject',['machine','assignment']),'group'=>$machine->dossier_group,'subjectKey'=>'machine:'.$machine->id])
 </section>
-<section class="d-panel">
-<div class="d-toolbar"><h2>Tài xế</h2><a class="d-button secondary" href="{{ route('daily-photos.settings',['machine_id'=>$machine->id]) }}">Đổi tài xế</a></div>
+<section class="d-panel" id="driver-documents">
+<div class="d-toolbar"><h2>Giấy tờ tài xế</h2><a class="d-button secondary" href="{{ route('daily-photos.settings',['machine_id'=>$machine->id]) }}">Đổi tài xế</a></div>
 @php($ids=app(\App\Services\DossierZaloRoster::class)->identities()->filter(fn($ids)=>$ids->count()===1))
 @forelse($drivers as $history)
 <details class="d-driver" @if($loop->first) open @endif>
 <summary>{{ $driverLabels[$history->driver_id] ?? $history->driver->name }} @php($senders=$ids->filter(fn($rows)=>$rows->contains($history->driver_id))->keys()) @if($senders->isNotEmpty()) · Zalo {{ $senders->implode(', ') }} @endif</summary>
 <div class="d-actions"><a href="{{ route('dossiers.driver',$history->driver) }}">Mở hồ sơ tài xế</a><a class="d-button secondary" href="{{ route('dossiers.driver.documents.add',$history->driver) }}">Thêm giấy tờ</a></div>
-@include('dossiers.rows',['rows'=>$rows->where('subject','driver')->where('subject_id',$history->driver_id),'group'=>'driver','subjectKey'=>'driver:'.$history->driver_id])
+@include('dossiers.machine-rows',['rows'=>$rows->where('subject','driver')->where('subject_id',$history->driver_id),'group'=>'driver','subjectKey'=>'driver:'.$history->driver_id])
 </details>
-@empty<p>Chưa gắn tài xế.</p>@endforelse
+@empty<p>Chưa có tài xế đang phân công.</p>@endforelse
+@include('dossiers.machine-pending',['pending'=>$unassigned,'pendingId'=>'unassigned-drivers'])
 </section>
+@include('dossiers.machine-sources')
 @include('dossiers.progress',['progressUrl'=>route('dossiers.machine',[$machine,'progress'=>1])])
 <details class="d-panel"><summary>Tùy chọn xuất</summary>
 <form method="post" action="{{ route('dossiers.exports.create',$machine) }}">@csrf<input type="hidden" name="request_id" value="{{ (string) Str::uuid() }}"><input type="hidden" name="action" value="preview">
@@ -53,5 +65,5 @@
 @if(!$h->ended_at)<form method="post" action="{{ route('dossiers.assign.close',$h) }}">@csrf<label>Kết thúc riêng người này <input type="datetime-local" name="ended_at" required></label><button>Kết thúc</button></form>@endif</div>@endforeach
 </details>
 </main>
-<script>document.querySelector('a[href="#dossier-history"]')?.addEventListener('click',()=>document.getElementById('dossier-history').open=true);</script>
+@include('dossiers.machine-interactions')
 @endsection

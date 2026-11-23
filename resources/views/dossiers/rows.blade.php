@@ -8,6 +8,7 @@
 @foreach($shown as $r)
 @php
  $v=$r['version'];
+ $paper=($byVersion??collect())->get($v?->id);
  $paperKey=implode(':',[$r['subject'],$r['subject_id'],$r['type']->id]);
  $transfer=$progress->firstWhere('row_key',$paperKey);
  $tracked=in_array($r['type']->ai_key,\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true);
@@ -16,11 +17,11 @@
 @if($r['subject']==='assignment')<small>{{ $r['subject_name'] }}</small>@endif
 @if($v)<small><a href="{{ route('dossiers.source',$v->source_id) }}">Phiên bản #{{ $v->id }}</a></small>@endif</td>
 <td>{{ $tracked ? ($v?->expiry_value ?: ($v?->expiry_precision==='permanent' ? 'Không có hạn' : '—')) : '—' }}</td>
-<td><span class="badge {{ $r['status'] }}">{{ $r['label'] }}</span>
+<td><span class="badge {{ $r['status'] }}">{{ $tracked && $v?->expiry_precision==='unknown' ? 'Thiếu hạn' : $r['label'] }}</span>
 <a data-paper-progress="{{ $paperKey }}" @if($transfer) href="{{ $transfer['url'] }}{{ $transfer['review'] ? '#ocr-review' : '' }}" @else hidden @endif>{{ $transfer['label'] ?? '' }}{{ ($transfer['total'] ?? 0) ? ' · '.$transfer['count'].'/'.$transfer['total'].' trang' : '' }}</a></td>
 <td>@if($v?->confirmed && !$v->archived && $r['status']!=='future')
 <div class="d-actions">
-<details><summary>Sửa</summary>
+<details><summary>Đổi loại{{ $tracked ? ' / Nhập hạn' : '' }}</summary>
 <form method="post" action="{{ route('dossiers.versions.correct',$v) }}" data-dossier-expiry>@csrf
 <input type="hidden" name="request_id" value="{{ (string) Str::uuid() }}">
 <label>Loại giấy <select name="type_id">@foreach($editTypes as $type)
@@ -38,6 +39,27 @@
 <label>Lý do <input name="reason" required maxlength="2000"></label><button>Lưu sửa đổi</button>
 </form>
 </details>
+@if($paper)
+<details><summary>Sửa trang</summary>
+<form method="post" action="{{ route('dossiers.ai.pages',$paper) }}">@csrf
+<label>Trang theo thứ tự xuất <input name="page_order" value="{{ implode(', ', array_column($v->pages,'page')) }}" required></label>
+<div class="d-toolbar">
+@for($number=1;$number<=$v->source->page_count;$number++)
+<div><a href="{{ route('dossiers.file',[$v->source_id,'thumbnail',$number]) }}" target="_blank" rel="noopener"><img loading="lazy" width="56" alt="Trang {{ $number }}" src="{{ route('dossiers.file',[$v->source_id,'thumbnail',$number]) }}"></a>
+<button type="button" class="secondary" data-machine-page="{{ $number }}">{{ $number }}</button></div>
+@endfor
+</div>
+<label><input type="checkbox" name="transfer" value="1"> Chuyển từ giấy cùng nguồn</label>
+<button>Lưu thay đổi</button></form></details>
+@if($tracked)
+<form method="post" action="{{ route('dossiers.ai.information',$paper) }}">@csrf<button class="secondary">OCR lại hạn</button></form>
+@php($ocr=$paper->data['information_pages']??[])
+@if(in_array('pending',$ocr,true))<small>Đang chờ OCR</small>
+@elseif(in_array('stale',$ocr,true))<small>Giấy đã sửa trong khi OCR chạy</small>
+@elseif(in_array('failed',$ocr,true))<small>OCR chưa đọc được</small>@endif
+@if($suggestion=$paper->data['fields']['expiry']??null)<small>Hạn OCR đề xuất: {{ $suggestion['value'] }}. Đối chiếu rồi nhập hạn.</small>@endif
+@endif
+@endif
 <a href="{{ route('dossiers.versions.replace',$v) }}">Thay file</a>
 <details><summary>Xóa</summary><form method="post" action="{{ route('dossiers.versions.archive',$v) }}">@csrf
 <input type="hidden" name="archived" value="1"><label>Lý do <input name="reason" required maxlength="2000"></label><button class="secondary">Xác nhận xóa giấy này</button>

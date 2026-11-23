@@ -4,6 +4,7 @@
 
 | Phase | Purpose | Status | Dependencies | Related | Git reference | Documentation path |
 |---|---|---|---|---|---|---|
+| 18.8 | Tự lưu và sửa giấy tại hồ sơ máy | Giao diện LOCAL đã duyệt, chờ PR | Phase 18.7 | PDF, OCR hạn, tài xế | `codex/phase18-8-machine-dossier` từ `a8dcaf4` | `docs/phases/PHASE-18.8.md` |
 | 18.7 | Nhận diện và sửa nhóm trang hồ sơ | LOCAL, chờ nghiệm thu AI thật | Phase 18.6 | Worker Hồ sơ, PDF | `codex/phase18-7-dossier-page-review` từ `6cb5393` | `docs/phases/PHASE-18.7.md` |
 | 18.6 | Phân loại giấy trước, OCR thông tin theo giấy | LOCAL, chờ nghiệm thu scan thật | Phase 18.1/18.2/18.4/18.5 | Worker hồ sơ, duyệt giấy | `codex/phase18-6-classification-first` từ `4ec3518` | `docs/phases/PHASE-18.6.md` |
 | 18.5 | Reset tài xế, dựng lại theo Zalo và phân trang | Reset LOCAL đã duyệt, sẵn sàng PR | Phase 18.3/18.4 | Check-in, OCR CCCD, PDF | `4932538`, `codex/phase18-5-zalo-dossier-roster` | `docs/phases/PHASE-18.5.md` |

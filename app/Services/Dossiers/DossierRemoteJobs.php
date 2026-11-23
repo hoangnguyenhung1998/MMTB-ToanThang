@@ -152,7 +152,7 @@ class DossierRemoteJobs
                 }
                 if ($r) {
                     if (isset($j->input['proposal_id'])) {
-                        $proposal = $r->proposals()->where('generation', $r->generation)->whereNull('version_id')->find($j->input['proposal_id']);
+                        $proposal = $r->proposals()->where('generation', $r->generation)->find($j->input['proposal_id']);
                         if (! $proposal || ($proposal->data['information_revision'] ?? null) !== $j->input['information_revision']) {
                             $j->update(['status' => 'cancelled', 'claim_token' => null]);
 

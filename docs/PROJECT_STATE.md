@@ -1,5 +1,9 @@
 # Project State
 
+## Phase 18.8 — LOCAL
+
+Nhánh `codex/phase18-8-machine-dossier` từ `a8dcaf4`. Đã nối lưu tự động và nghiệm thu bố cục trên trình duyệt ở 1672 × 941 và 390 px bằng fixture. Preview SQLite tại http://127.0.0.1:8868/dossiers/machines/1 dùng fixture 26 trang. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh rồi merge theo quy trình. Chưa merge/deploy, chưa thay worker laptop.
+
 ## Phase 18.7 — LOCAL
 
 Nhánh `codex/phase18-7-dossier-page-review` từ `6cb5393`. Đã bổ sung dấu hiệu ghép trang, ảnh chi tiết và sửa nhóm trang. Mẫu T-XL0039 đã render 22 trang, giữ SHA256, chưa có baseline AI thật. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh, rồi nghiệm thu scan thật theo bảng trong skill sau khi cập nhật worker. Chưa merge/deploy hoặc cập nhật worker laptop.

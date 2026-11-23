@@ -44,6 +44,7 @@ class DossierAiTest extends TestCase
     {
         parent::setUp();
         $this->withoutVite();
+        config(['dossiers.auto_publish' => false]);
         Queue::fake();
         Http::preventStrayRequests();
         Storage::set('dossiers', Storage::fake('dossier-ai-'.getmypid(), ['throw' => true]));
@@ -272,6 +273,71 @@ class DossierAiTest extends TestCase
         $actual = $run->proposals()->get()->mapWithKeys(fn ($proposal) => [$proposal->data['type_key'] => $proposal->data['pages']])->all();
         $this->assertEquals($expected, $actual);
         $this->assertSame([4, 6, 8, 12, 16, 18, 22], array_values(array_diff(range(1, 22), array_merge(...array_values($actual)))));
+    }
+
+    public function test_machine_workbench_preserves_blank_pages_and_requires_driver_selection(): void
+    {
+        config(['dossiers.auto_publish' => true]);
+        $run = $this->completed([$this->doc('identity', [1])]);
+        $paper = $run->proposals()->sole();
+        $this->assertSame('unassigned', $paper->data['publication']);
+        $this->assertNull($paper->version_id);
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Chưa gắn tài xế')->assertSee('Chọn tài xế');
+        $driver = Driver::create(['name' => 'Fixture outside machine']);
+        $this->postJson(route('dossiers.ai.publish', $run), ['proposal_id' => $paper->id, 'driver_id' => $driver->id])->assertUnprocessable();
+        $this->post(route('dossiers.ai.white-pages', $run), ['pages' => [2, 3], 'blank' => true])->assertRedirect();
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Trang trắng · 2 trang');
+        $this->post(route('dossiers.ai.white-pages', $run), ['pages' => [2, 3], 'blank' => false])->assertRedirect();
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Chưa phân loại · 2 trang');
+        \App\Models\ZaloMessage::create(['group_id' => 'mock', 'message_id' => 'phase188-driver',
+            'sender_id' => 'phase188-driver', 'sender_name' => 'Fixture active', 'sent_at' => now(), 'received_at' => now()]);
+        app(\App\Services\ZaloSenderMachineService::class)->save('phase188-driver', $this->machine->id, $this->user->id);
+        app(\App\Services\DossierZaloRoster::class)->provisionForMachine($this->machine->id, $this->user->id);
+        $active = Driver::where('zalo_sender_id', 'phase188-driver')->firstOrFail();
+        $this->post(route('dossiers.ai.publish', $run), ['proposal_id' => $paper->id, 'driver_id' => $active->id])->assertSessionHasNoErrors();
+        $saved = \App\Models\DossierVersion::findOrFail($paper->fresh()->version_id);
+        $this->assertSame($active->id, $saved->record->driver_id);
+        $this->assertSame(3, $this->source->fresh()->page_count);
+        $this->assertSame($this->source->sha256, hash_file('sha256', Storage::disk('dossiers')->path($this->source->path)));
+    }
+
+    public function test_auto_publication_uses_saved_group_and_transfers_pages_between_current_versions(): void
+    {
+        config(['dossiers.auto_publish' => true]);
+        $run = $this->completed([$this->doc('asset_insurance', [3, 2]), $this->doc('machine_inspection', [1])]);
+        $papers = $run->proposals()->get()->keyBy('data.type_key');
+        $insurance = $papers['asset_insurance'];
+        $inspection = $papers['machine_inspection'];
+        $this->assertNotNull($insurance->version_id);
+        $this->assertNotNull($inspection->version_id);
+        $this->service->publish($run, $this->user->id);
+        $this->assertDatabaseCount('dossier_versions', 2);
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Đã lưu 2 giấy')->assertSee('Thiếu hạn')->assertSee('OCR lại hạn');
+        $first = \App\Models\DossierVersion::findOrFail($inspection->version_id);
+        $exporter = app(DossierExportService::class);
+        $old = $exporter->create($this->machine, [], [$first->id], (string) Str::uuid(), true, $this->user->id);
+        $this->post(route('dossiers.ai.pages', $inspection), ['page_order' => '2,1', 'transfer' => true])->assertSessionHasNoErrors();
+        $this->assertSame([3], $insurance->fresh()->data['pages']);
+        $this->assertSame([2, 1], $inspection->fresh()->data['pages']);
+        $new = $exporter->create($this->machine, [], [$inspection->fresh()->version_id], (string) Str::uuid(), true, $this->user->id);
+        $this->assertSame([1], array_column($old->fresh()->manifest[0]['pages'], 'page'));
+        $this->assertSame([2, 1], array_column($new->manifest[0]['pages'], 'page'));
+        \Tests\Support\DossierTestWorker::run($old->id, 'export');
+        \Tests\Support\DossierTestWorker::run($new->id, 'export');
+        $this->assertSame('ready', $old->fresh()->status);
+        $this->assertSame('ready', $new->fresh()->status);
+        $current = \App\Models\DossierVersion::findOrFail($inspection->fresh()->version_id);
+        $this->post(route('dossiers.ai.information', $inspection))->assertSessionHasNoErrors();
+        $this->post(route('dossiers.versions.correct', $current), ['request_id' => (string) Str::uuid(),
+            'type_id' => $current->record->type_id, 'expiry_precision' => 'month', 'expiry_value' => '2027-06',
+            'reason' => 'Fixture manual month'])->assertSessionHasNoErrors();
+        $this->responses = array_fill(0, 2, ['fields' => ['expiry' => $this->field('2028-02', 'month')]]);
+        $this->drain($run, 2);
+        $current = \App\Models\DossierVersion::findOrFail($inspection->fresh()->version_id);
+        $this->assertSame('month', $current->expiry_precision);
+        $this->assertSame('2027-06', $current->expiry_value);
+        $this->assertNull(app(DossierStatus::class)->expiry($current));
+
     }
 
     public function test_page_transfer_is_atomic_and_confirmed_export_keeps_the_edited_order(): void
