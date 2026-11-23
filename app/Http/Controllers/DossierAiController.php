@@ -111,6 +111,24 @@ class DossierAiController extends Controller
         return back()->with('success', 'Đã cập nhật nhóm và thứ tự trang.');
     }
 
+    public function publish(Request $request, DossierAiRun $run, DossierAiService $service)
+    {
+        $data = $request->validate(['proposal_id' => 'nullable|integer', 'driver_id' => 'nullable|integer|exists:drivers,id', 'activate' => 'sometimes|boolean']);
+        $proposal = isset($data['proposal_id']) ? $run->proposals()->where('generation', $run->generation)->findOrFail($data['proposal_id']) : null;
+        abort_if(($request->boolean('activate') || isset($data['driver_id'])) && ! $proposal, 422);
+        $service->publish($run, $request->user()->id, $proposal?->id, $data['driver_id'] ?? null, $request->boolean('activate'));
+
+        return back()->with('success', 'Đã cập nhật hồ sơ từ phân loại đã lưu.');
+    }
+
+    public function whitePages(Request $request, DossierAiRun $run, DossierAiService $service)
+    {
+        $data = $request->validate(['pages' => 'required|array|min:1|max:300', 'pages.*' => 'required|integer|min:1|distinct', 'blank' => 'required|boolean']);
+        $service->whitePages($run, array_map('intval', $data['pages']), $request->boolean('blank'), $request->user()->id);
+
+        return back();
+    }
+
     public function information(DossierAiProposal $proposal, DossierAiService $service)
     {
         $service->requestInformation($proposal);

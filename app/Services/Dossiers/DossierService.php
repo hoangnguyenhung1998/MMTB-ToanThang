@@ -210,6 +210,14 @@ class DossierService
                 'type_id' => $type->id, $data['subject'].'_id' => $subject->id, 'instance' => $data['instance'],
             ]);
             $this->check(! $source->confirmed || $correction || (! empty($data['record_id']) && $record->versions()->where('source_id', $source->id)->exists()), 'Nguồn đã đóng: chỉ được tạo phiên bản sửa thông tin cho giấy đã có.');
+            if ($inlineCorrection) {
+                $activeIds = $others->groupBy('record_id')->map(fn ($versions) => $versions->where('confirmed', true)
+                    ->where('effective_at', '<=', app(DossierStatus::class)->now()->format('Y-m-d H:i:s'))
+                    ->sortByDesc(fn ($version) => [$version->effective_at, $version->id])->first()?->id)->all();
+                $others = $others->filter(fn ($version) => ! $version->archived && (! $version->confirmed ||
+                    $version->effective_at > app(DossierStatus::class)->now()->format('Y-m-d H:i:s') ||
+                    in_array($version->id, $activeIds, true)));
+            }
             foreach ($others as $other) {
                 $this->check($other->record_id === $record->id || $other->record_id === $correction?->record_id || ! array_intersect($nums, array_column($other->pages, 'page')) || ($data['shared_pages'] && $other->shared_pages), 'Trang dùng trùng: xác nhận dùng chung trên cả hai giấy.');
             }
@@ -231,8 +239,8 @@ class DossierService
             $this->check(! $v->exists || (! $v->confirmed && $v->source_id === $source->id), 'Phiên bản xác nhận bất biến; tạo phiên bản thay thế.');
             $this->check(! $v->exists || $v->request_id === $data['request_id'], 'Mã nháp không khớp.');
             if ($data['confirmed']) {
-                $latest = $record->versions()->where('confirmed', true)->when($v->exists, fn ($q) => $q->where('id', '!=', $v->id))->latest('effective_at')->lockForUpdate()->first();
-                $this->check(! $latest || $data['effective_at'] > $latest->effective_at, 'Phiên bản mới phải hiệu lực sau phiên bản đã xác nhận gần nhất.');
+                $latest = $record->versions()->where('confirmed', true)->when($v->exists, fn ($q) => $q->where('id', '!=', $v->id))->latest('effective_at')->orderByDesc('id')->lockForUpdate()->first();
+                $this->check(! $latest || $data['effective_at'] > $latest->effective_at || ($inlineCorrection && $latest->id === $correction?->id && $data['effective_at'] === $latest->effective_at), 'Phiên bản mới phải hiệu lực sau phiên bản đã xác nhận gần nhất.');
                 $v->replaces_id = $latest?->id;
                 if ($correction && $correction->record_id !== $record->id) {
                     // Subject correction is an explicit archive + new scope, never an in-place rewrite.

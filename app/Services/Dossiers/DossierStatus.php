@@ -28,7 +28,7 @@ class DossierStatus
         // An expired or archived latest version never silently falls back to an older one.
         return $record->versions->where('confirmed', true)
             ->filter(fn ($v) => $v->effective_at <= $at->format('Y-m-d H:i:s'))
-            ->sortByDesc('effective_at')->first();
+            ->sortByDesc(fn ($version) => [$version->effective_at, $version->id])->first();
     }
 
     public function expiry(DossierVersion $v): ?CarbonImmutable
