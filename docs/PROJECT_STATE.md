@@ -1,8 +1,12 @@
 # Project State
 
-## Phase 18.8 — LOCAL
+## Phase 18.8 — Bổ sung tự gắn giấy (LOCAL)
 
-Nhánh `codex/phase18-8-machine-dossier` từ `a8dcaf4`. Đã nối lưu tự động và nghiệm thu bố cục trên trình duyệt ở 1672 × 941 và 390 px bằng fixture. Preview SQLite tại http://127.0.0.1:8868/dossiers/machines/1 dùng fixture 26 trang. NEXT ACTION: mở PR vào production, kiểm CI trên SHA nhánh rồi merge theo quy trình. Chưa merge/deploy, chưa thay worker laptop.
+Phase 18.8 giao diện đã merge qua PR #78 tại `3201823`. Nhánh bổ sung `codex/phase18-8-dossier-auto-attachment` dựa trên commit đó. Báo cáo hosting cho thấy hồ sơ đã có một tài xế Zalo nhưng giấy cá nhân chờ gắn và Đăng ký/Đăng kiểm chờ đối chiếu. Đã sửa luồng công bố theo ánh xạ Zalo đang hiệu lực và dùng máy nguồn cho Đăng ký/Đăng kiểm.
+
+Hồi quy LOCAL đạt 74 test / 846 assertion với SQLite, phản hồi AI mô phỏng và công cụ PDF thật. Đã kiểm chứng chuyển tài xế, nhập hạn sau lưu, dùng lại phân loại và giữ mục có định danh mâu thuẫn. Chưa kiểm tra dữ liệu hosting.
+
+NEXT ACTION: review nhánh bổ sung, push và mở PR sau khi được duyệt. Sau CI và phát hành, mở hồ sơ T-3C0629, bấm **Lưu từ phân loại có sẵn** một lần và kiểm tra giấy tài xế, Đăng ký/Đăng kiểm, cảnh báo hạn và bộ PDF. Chưa push, merge hay deploy bản bổ sung. Không cần migration hoặc cập nhật worker.
 
 ## Phase 18.7 — LOCAL
 

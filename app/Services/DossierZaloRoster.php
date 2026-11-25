@@ -127,6 +127,7 @@ class DossierZaloRoster
             }
         }
 
+        $zaloRows = $mapped->values();
         $at = now()->timezone(config('dossiers.timezone'))->format('Y-m-d H:i:s');
         $legacy = MachineDriverHistory::with('driver')->whereNotIn('driver_id', $controlled)
             ->where('started_at', '<=', $at)->where(fn ($query) => $query->whereNull('ended_at')->orWhere('ended_at', '>', $at))
@@ -142,6 +143,6 @@ class DossierZaloRoster
         }
 
         return ['rows' => $mapped->unique(fn ($row) => [$row->machine_id, $row->driver_id])->values(),
-            'controlled' => $controlled->unique()->values(), 'issues' => $issues];
+            'zalo_rows' => $zaloRows, 'controlled' => $controlled->unique()->values(), 'issues' => $issues];
     }
 }

@@ -226,7 +226,7 @@ class DossierController extends Controller
     private function addDocument(Request $request, DossierService $service, string $subject, int $id, string $group, string $name)
     {
         if ($request->isMethod('get')) {
-            $types = DossierType::whereJsonContains('groups', $group)->orderBy('sort_order')->get();
+            $types = DossierType::orderBy('sort_order')->get()->filter(fn ($type) => $type->supportsGroup($group));
             $existing = DossierRecord::where($subject.'_id', $id)->where('instance', 'main')->with('versions')->get()
                 ->mapWithKeys(fn ($record) => [$record->type_id => app(DossierStatus::class)->current($record)])->filter(fn ($v) => $v && ! $v->archived);
 
@@ -234,7 +234,7 @@ class DossierController extends Controller
         }
         $data = $request->validate(['type_id' => ['required', 'integer', 'exists:dossier_types,id'], 'file' => 'required|file']);
         $type = DossierType::findOrFail($data['type_id']);
-        $service->check(in_array($group, $type->groups, true), 'Loại giấy không áp dụng cho hồ sơ này.');
+        $service->check($type->supportsGroup($group), 'Loại giấy không áp dụng cho hồ sơ này.');
         $target = ['subject' => $subject, 'id' => $id, 'type_id' => $type->id, 'scope' => "$subject:$id:{$type->id}:main"];
         $actor = $request->user()->id;
         $batch = DossierBatch::create(['id' => (string) Str::uuid(), 'user_id' => $actor, 'auto_analyze' => $request->boolean('auto_analyze')]);

@@ -28,3 +28,11 @@ PHPUnit nhóm Dossier, DossierAi, DossierRemote đạt 71 test / 814 assertion. 
 ## Nghiệm thu bố cục LOCAL
 
 T-DEMO188 dùng bảng gọn, nút hạn/tài xế trên dòng, menu Thao tác và hộp riêng cho sửa trang, nhập hạn, đổi loại. Fixture có bản scan chờ kích hoạt. Đã kiểm trình duyệt 1672 × 941 và 390 px, các nút trên dòng giấy máy không tràn, các loại nhập hạn hiển thị đúng. Giữ các route lưu và phiên bản hiện hành của Phase 18.8. Người dùng đã duyệt giao diện LOCAL. Hồi quy nhóm Hồ sơ trên nhánh phát hành đạt 71 test / 814 assertion. Chờ PR và CI.
+
+## Bổ sung tự lưu theo máy và tài xế Zalo
+
+- Giấy cá nhân tự lưu cho tài xế Zalo duy nhất đang ánh xạ với máy. Khi có nhiều tài xế, dùng chủ thể đã chọn hoặc bằng chứng khớp duy nhất nếu có; trường hợp còn mơ hồ đưa ra chọn người. Giấy đã lưu thuộc hồ sơ tài xế và hiển thị theo máy hiện hành khi điều chuyển ở Cài đặt check-in.
+- Đăng ký và Đăng kiểm được lưu cho máy nguồn dù nguồn thuộc nhóm Máy. Thiếu định danh hay hạn vẫn lưu; trường định danh có dữ liệu thực sự mâu thuẫn ở đề xuất cũ giữ trạng thái cần đối chiếu. Giữ nhóm máy và trạng thái bắt buộc của loại giấy.
+- Bảo hiểm tai nạn có thể lưu theo phân loại và chủ thể đã chọn hoặc xác định qua Zalo. Phiên bản này ghi nguồn là phân loại, chưa có bằng chứng dòng danh sách. CCCD lưu giấy trước; thông tin định danh xác nhận riêng.
+- Dùng nút **Lưu từ phân loại có sẵn** ở hồ sơ máy để áp dụng quy tắc mới cho các đề xuất đang chờ. Các lượt lặp dùng lại phiên bản đã lưu.
+- Hồi quy LOCAL 74 test / 846 assertion, gồm tự lưu qua kết quả nhóm, nhiều tài xế, chuyển máy, sửa hạn, dùng lại phân loại và số khung mâu thuẫn. AI mock, qpdf/Poppler thật, DB SQLite. Chưa phát hành bản bổ sung hoặc kiểm tra dữ liệu hosting. Không cần migration hay cập nhật worker.

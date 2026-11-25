@@ -286,8 +286,14 @@ class DossierAiService
                 DossierAudit::write('ai_machine_resolved', $source, $actor);
             }
             $report = app(\App\Services\Dossiers\DossierReport::class);
-            $applicants = app(\App\Services\DossierZaloRoster::class)->applicants($source);
-            $activeDrivers = $report->drivers($source->machine)->pluck('driver_id')->all();
+            $roster = app(\App\Services\DossierZaloRoster::class)->snapshot();
+            $activeDrivers = $roster['rows']->where('machine_id', $source->machine_id)->pluck('driver');
+            $mappedDrivers = $roster['zalo_rows']->where('machine_id', $source->machine_id)->pluck('driver')->unique('id');
+            $mappingConflict = $roster['issues']->contains(fn ($issue) => in_array($source->machine_id, $issue['machine_ids'], true));
+            $comparison = app(DossierComparison::class);
+            $target = $source->document_target;
+            $fixedDriver = $source->replacementVersion?->record?->driver_id
+                ?? (($target['subject'] ?? null) === 'driver' ? $target['id'] : null);
             $proposals = $run->proposals()->where('generation', $run->generation)->whereNull('version_id')
                 ->when($only, fn ($q) => $q->whereKey($only))->orderBy('position')->lockForUpdate()->get();
             foreach ($proposals as $proposal) {
@@ -301,18 +307,26 @@ class DossierAiService
                 if (array_intersect($data['pages'], $blanks) || array_intersect($data['pages'], $source->excluded_pages ?? [])) {
                     continue;
                 }
-                $target = $source->document_target;
                 $id = match ($subject) {
                     'machine' => $source->machine_id,
-                    'driver' => $driverId ?? ($target['id'] ?? null) ?? app(DossierComparison::class)->suggestedDriver($data, $source, $applicants),
+                    'driver' => $driverId ?? $fixedDriver ?? ($activate ? ($data['driver_id'] ?? null) : null),
                     'assignment' => $report->assignments($source->machine)->count() === 1 ? $report->assignments($source->machine)->sole()->id : null,
                 };
-                if ($subject === 'driver' && ! in_array($id, $activeDrivers, true)) {
+                if ($subject === 'driver' && ! $id && ! $mappingConflict) {
+                    if ($mappedDrivers->count() === 1) {
+                        $mapped = $mappedDrivers->sole()->id;
+                        $id = $comparison->compare($data, $source, 'driver', $mapped)['status'] === 'mismatch' ? null : $mapped;
+                    } else {
+                        $id = $comparison->suggestedDriver($data, $source, $mappedDrivers->isEmpty() ? $activeDrivers : $mappedDrivers);
+                    }
+                }
+                if ($subject === 'driver' && ! $activeDrivers->contains('id', $id)) {
                     app(DossierService::class)->check(! $driverId, 'Tài xế không thuộc phân công hiện hành của máy.');
 
                     $id = null;
                 }
-                if (! $id || ($target && ($target['subject'] !== $subject || $target['id'] !== $id || $target['type_id'] !== $type->id))) {
+                $assetMismatch = $subject === 'machine' && $comparison->compare($data, $source, 'machine')['status'] === 'mismatch';
+                if (! $id || $assetMismatch || ($target && ($target['subject'] !== $subject || $target['id'] !== $id || $target['type_id'] !== $type->id))) {
                     $proposal->update(['data' => [...$data, 'publication' => $subject === 'driver' ? 'unassigned' : 'needs_review']]);
 
                     continue;
@@ -341,7 +355,7 @@ class DossierAiService
                         'expiry_precision' => in_array($type->ai_key, DossierAiSchema::EXPIRY_TYPES, true) ? ($expiry['precision'] ?? 'unknown') : 'not_tracked',
                         'expiry_value' => $expiry['value'] ?? null, 'reason' => 'Lưu phân loại hồ sơ', 'confirmed' => true,
                         'record_id' => $record?->id,
-                    ], $actor, newScopeOnly: ! $activate);
+                    ], $actor, newScopeOnly: ! $activate, fromClassification: true);
                     $proposal->update(['version_id' => $version->id, 'data' => [...$data, 'publication' => 'saved']]);
                     DossierAudit::write('ai_auto_classified', $proposal, $actor);
                 } catch (\Illuminate\Validation\ValidationException $e) {

@@ -20,7 +20,7 @@
 <form method="post" action="{{ route('dossiers.versions.correct',$v) }}">@csrf
 <input type="hidden" name="request_id" value="{{ (string) Str::uuid() }}">
 <label>Loại mới <select name="type_id" required><option value="">Chọn loại</option>@foreach($editTypes as $type)
-@if(in_array($group,$type->groups,true) && $type->id!==$r['type']->id)<option value="{{ $type->id }}">{{ $type->name }}</option>@endif
+@if($type->supportsGroup($group) && $type->id!==$r['type']->id)<option value="{{ $type->id }}">{{ $type->name }}</option>@endif
 @endforeach</select></label>
 <label>Lý do <input name="reason" required maxlength="2000"></label>
 <footer><button>Lưu loại</button></footer>
