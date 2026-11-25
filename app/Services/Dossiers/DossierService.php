@@ -124,7 +124,7 @@ class DossierService
         }
     }
 
-    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null, bool $newScopeOnly = false, bool $inlineCorrection = false): DossierVersion
+    public function saveVersion(array $input, int $actor, ?DossierVersion $draft = null, ?array $insuranceEvidence = null, bool $newScopeOnly = false, bool $inlineCorrection = false, bool $fromClassification = false): DossierVersion
     {
         if ($draft?->corrects_id) {
             $input['corrects_id'] = $draft->corrects_id;
@@ -161,7 +161,7 @@ class DossierService
             $data['month_rule'] = null;
         }
 
-        return DB::transaction(function () use ($data, $actor, $draft, $insuranceEvidence, $newScopeOnly, $inlineCorrection) {
+        return DB::transaction(function () use ($data, $actor, $draft, $insuranceEvidence, $newScopeOnly, $inlineCorrection, $fromClassification) {
             if (! $draft && ($existing = DossierVersion::where('request_id', $data['request_id'])->first())) {
                 return $existing;
             }
@@ -186,7 +186,7 @@ class DossierService
             $type = DossierType::findOrFail($data['type_id']);
             $this->check($data['expiry_precision'] !== 'not_tracked' || ! in_array($type->ai_key, Ai\DossierAiSchema::EXPIRY_TYPES, true), 'Loại giấy này cần trạng thái hạn.');
             $group = $data['subject'] === 'driver' ? 'driver' : $source->machine->dossier_group;
-            $this->check(in_array($group, $type->groups, true), 'Loại giấy không áp dụng cho nhóm chủ thể này.');
+            $this->check($type->supportsGroup($group), 'Loại giấy không áp dụng cho nhóm chủ thể này.');
             $scopeKey = implode(':', [$data['subject'], $subject->id, $type->id, $data['instance']]);
             if ($target = $source->document_target) {
                 $this->check($target['subject'] === $data['subject'] && $target['id'] === $subject->id && ($correction || $target['scope'] === $scopeKey), 'Giấy phải thuộc đúng chủ thể và loại đã chọn khi nhập.');
@@ -262,7 +262,7 @@ class DossierService
             }
             if ($correction && $correction->record_id !== $record->id && $v->provenance) {
                 $provenance = $v->provenance;
-                unset($provenance['verified_identity']);
+                unset($provenance['verified_identity'], $provenance['insurance_evidence'], $provenance['insurance_scope']);
                 $v->provenance = $provenance;
             }
             if ($data['confirmed']) {
@@ -284,9 +284,14 @@ class DossierService
                             $insuranceEvidence = null;
                         }
                     }
-                    $this->check($data['subject'] === 'driver' && $insuranceEvidence && in_array($insuranceEvidence['page'], $nums, true),
+                    $classified = $fromClassification || ($inlineCorrection && ($provenance['insurance_scope'] ?? null) === 'classification');
+                    $this->check($data['subject'] === 'driver' && ($insuranceEvidence ? in_array($insuranceEvidence['page'], $nums, true) : $classified),
                         'Cần chọn đúng tài xế và chỉ rõ trang cùng dòng danh sách BIC có họ tên và số CCCD đã đối chiếu.');
-                    $provenance['insurance_evidence'] = $insuranceEvidence;
+                    if ($insuranceEvidence) {
+                        $provenance['insurance_evidence'] = $insuranceEvidence;
+                    } else {
+                        $provenance['insurance_scope'] = 'classification';
+                    }
                 }
                 $v->provenance = $provenance;
             }

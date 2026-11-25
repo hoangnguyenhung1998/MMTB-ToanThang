@@ -25,7 +25,7 @@
 <form method="post" action="{{ route('dossiers.versions.correct',$v) }}" data-dossier-expiry>@csrf
 <input type="hidden" name="request_id" value="{{ (string) Str::uuid() }}">
 <label>Loại giấy <select name="type_id">@foreach($editTypes as $type)
-@if(in_array($group,$type->groups,true))
+@if($type->supportsGroup($group))
 <option value="{{ $type->id }}" data-tracked="{{ (int) in_array($type->ai_key,\App\Services\Dossiers\Ai\DossierAiSchema::EXPIRY_TYPES,true) }}" @selected($type->id===$r['type']->id)>{{ $type->name }}</option>
 @endif
 @endforeach</select></label>

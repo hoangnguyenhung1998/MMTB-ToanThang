@@ -57,7 +57,10 @@ class DossierComparison
         } else {
             $machine = $source->machine;
             $expected = ['asset_code' => $machine?->asset_code, 'chassis_no' => $machine?->chassis_no, 'plate' => $machine?->plate_no];
-            $keys = $machine?->dossier_group === 'vehicle' ? ['asset_code', 'chassis_no', 'plate'] : ['asset_code', 'chassis_no'];
+            $keys = ['asset_code', 'chassis_no'];
+            if ($machine?->dossier_group === 'vehicle' || in_array($data['type_key'], ['registration', 'vehicle_inspection'], true)) {
+                $keys[] = 'plate';
+            }
         }
 
         $rows = [];

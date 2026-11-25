@@ -92,7 +92,7 @@ class DossierAiSchema
             $group = $d['subject'] === 'driver' ? 'driver' : ($context['group'] ?? null);
             if (! $type) {
                 $issues[] = 'Chưa xác định loại giấy trong danh mục.';
-            } elseif (! in_array($group, $type->groups, true)) {
+            } elseif (! $type->supportsGroup($group)) {
                 $issues[] = 'Loại giấy không phù hợp nhóm chủ thể đang lưu; không tự đổi Xe/Máy.';
             }
             if ($d['subject'] !== 'machine') {

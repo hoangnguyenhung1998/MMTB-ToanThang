@@ -9,6 +9,7 @@ use App\Models\DossierAiRun;
 use App\Models\DossierBatch;
 use App\Models\DossierSource;
 use App\Models\DossierType;
+use App\Models\DossierVersion;
 use App\Models\Driver;
 use App\Models\Machine;
 use App\Models\User;
@@ -301,6 +302,88 @@ class DossierAiTest extends TestCase
         $this->assertSame($this->source->sha256, hash_file('sha256', Storage::disk('dossiers')->path($this->source->path)));
     }
 
+    public function test_auto_publication_applies_current_zalo_driver_and_vehicle_papers_without_identifiers(): void
+    {
+        config(['dossiers.auto_publish' => true]);
+        $driver = $this->mapZaloDriver('dossier-auto-sole');
+        $run = $this->completed([
+            $this->doc('bic_personal', [1]), $this->doc('registration', [2]), $this->doc('vehicle_inspection', [3]),
+        ]);
+
+        $papers = $run->proposals()->get()->keyBy('data.type_key');
+        $personal = DossierVersion::find($papers['bic_personal']->version_id);
+        $this->assertNotNull($personal);
+        $this->assertSame($driver->id, $personal->record->driver_id);
+        $this->assertArrayNotHasKey('insurance_evidence', $personal->provenance);
+        foreach (['registration', 'vehicle_inspection'] as $type) {
+            $version = DossierVersion::find($papers[$type]->version_id);
+            $this->assertNotNull($version);
+            $this->assertTrue($version->confirmed);
+            $this->assertSame($this->machine->id, $version->record->machine_id);
+            $this->assertSame('unknown', $version->expiry_precision);
+        }
+        $this->assertSame('machine', $this->machine->fresh()->dossier_group);
+        $this->post(route('dossiers.versions.correct', $personal), [
+            'request_id' => (string) Str::uuid(), 'type_id' => $personal->record->type_id,
+            'expiry_precision' => 'day', 'expiry_value' => '2027-11-01', 'reason' => 'Fixture manual expiry',
+        ])->assertSessionHasNoErrors();
+        $current = DossierVersion::findOrFail($papers['bic_personal']->fresh()->version_id);
+        $this->assertSame('2027-11-01', $current->expiry_value);
+
+        $otherMachine = Machine::create(['asset_code' => 'T-AI02', 'chassis_no' => 'FRAME02', 'company' => 'VINCONS', 'status' => 'ACTIVE']);
+        app(\App\Services\ZaloSenderMachineService::class)->save($driver->zalo_sender_id, $otherMachine->id, $this->user->id, effectiveNow: true);
+        $report = app(\App\Services\Dossiers\DossierReport::class);
+        $this->assertFalse($report->rows($this->machine)->contains(fn ($row) => $row['version']?->id === $current->id));
+        $this->assertTrue($report->rows($otherMachine)->contains(fn ($row) => $row['version']?->id === $current->id));
+        $this->assertTrue($report->rows($this->machine)->contains(fn ($row) => $row['version']?->id === $papers['registration']->version_id));
+    }
+
+    public function test_saved_classification_can_be_replayed_once_when_zalo_roster_becomes_unambiguous(): void
+    {
+        config(['dossiers.auto_publish' => true]);
+        $first = $this->mapZaloDriver('dossier-auto-first');
+        $second = $this->mapZaloDriver('dossier-auto-second');
+        $run = $this->completed([$this->doc('identity', [1])]);
+        $proposal = $run->proposals()->sole();
+        $this->assertSame('unassigned', $proposal->data['publication']);
+
+        $otherMachine = Machine::create(['asset_code' => 'T-AI02', 'chassis_no' => 'FRAME02', 'company' => 'VINCONS', 'status' => 'ACTIVE']);
+        app(\App\Services\ZaloSenderMachineService::class)->save($second->zalo_sender_id, $otherMachine->id, $this->user->id, effectiveNow: true);
+        $this->post(route('dossiers.ai.publish', $run))->assertSessionHasNoErrors();
+        $proposal->refresh();
+        $this->assertNotNull($proposal->version_id);
+        $version = DossierVersion::findOrFail($proposal->version_id);
+        $this->assertSame($first->id, $version->record->driver_id);
+        $this->assertNull($first->fresh()->cccd_no);
+        $this->assertArrayNotHasKey('verified_identity', $version->provenance);
+        $this->post(route('dossiers.ai.publish', $run))->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('dossier_versions', 1);
+    }
+
+    public function test_saved_vehicle_classification_uses_source_machine_only_when_identifiers_do_not_conflict(): void
+    {
+        $run = $this->completedWithLegacyEvidence([
+            $this->doc('registration', [1]),
+            $this->doc('vehicle_inspection', [2], ['chassis_no' => $this->field('OTHERFRAME', 'text', 2)]),
+        ]);
+        $this->post(route('dossiers.ai.publish', $run))->assertSessionHasNoErrors();
+        $papers = $run->proposals()->get()->keyBy('data.type_key');
+        $this->assertNotNull($papers['registration']->version_id);
+        $this->assertNull($papers['vehicle_inspection']->version_id);
+        $this->assertSame('needs_review', $papers['vehicle_inspection']->data['publication']);
+        $this->get(route('dossiers.machine', $this->machine))->assertOk()->assertSee('Đăng ký xe')->assertSee('Thiếu hạn');
+    }
+
+    private function mapZaloDriver(string $sender): Driver
+    {
+        \App\Models\ZaloMessage::create(['group_id' => 'mock', 'message_id' => $sender,
+            'sender_id' => $sender, 'sender_name' => $sender, 'sent_at' => now(), 'received_at' => now()]);
+        app(\App\Services\ZaloSenderMachineService::class)->save($sender, $this->machine->id, $this->user->id);
+        app(\App\Services\DossierZaloRoster::class)->provisionForMachine($this->machine->id, $this->user->id);
+
+        return Driver::where('zalo_sender_id', $sender)->firstOrFail();
+    }
+
     public function test_auto_publication_uses_saved_group_and_transfers_pages_between_current_versions(): void
     {
         config(['dossiers.auto_publish' => true]);
@@ -448,7 +531,7 @@ class DossierAiTest extends TestCase
         $this->assertNotSame(DossierType::where('ai_key', 'registration')->value('id'), DossierType::where('ai_key', 'vehicle_inspection')->value('id'));
         $s = app(DossierAiSchema::class);
         $r = $s->documents($this->group([$this->doc('vehicle_inspection', fields: ['expiry' => $this->field('2026-11-01')])]), 3, ['group' => 'machine']);
-        $this->assertStringContainsString('không phù hợp', implode(' ', $r[0]['issues']));
+        $this->assertStringNotContainsString('không phù hợp', implode(' ', $r[0]['issues']));
         $this->assertNull($r[0]['data']['expiry_suggestion']);
         $this->assertSame('2026-11-01', $r[0]['data']['fields']['expiry']['value']);
         $this->post(route('dossiers.group', $this->machine), ['dossier_group' => 'excavator'])->assertSessionHasErrors();
